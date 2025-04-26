@@ -1,0 +1,8 @@
+# requirements.txt
+python-dotenv
+requests
+python-dateutil # For parsing dates reliably
+google-generativeai
+PyGithub
+python-gitlab
+azure-devops

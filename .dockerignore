@@ -1,0 +1,30 @@
+# .dockerignore
+
+# Git files
+.git/
+.gitignore
+
+# Virtual environment
+.venv/
+venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS-specific files
+.DS_Store
+
+# Secrets - should be passed via environment variables at runtime
+.env
+
+# IDE/Editor specific
+.vscode/
+.idea/
+
+# Output files (these will be generated at runtime)
+*.log
+*.csv
+code.json
