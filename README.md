@@ -50,3 +50,69 @@ Execute the main script from the project's root directory:
 
 ```bash
 python generate_codejson.py
+```
+## Running with Docker
+
+This project includes a `Dockerfile` to allow building and running the application within a containerized environment. This ensures consistency across different systems.
+
+### Prerequisites
+
+*   Docker installed and running on your system.
+*   A `.env` file created in the project root directory containing the necessary API tokens and configuration (see **Configuration** section above).
+
+### Building the Docker Image
+
+1.  **Navigate** to the root directory of the project (where the `Dockerfile` is located) in your terminal.
+2.  **Build the image** using the following command. Replace `cdc-repo-scanner` with your desired image name and tag:
+
+    ```bash
+    docker build -t cdc-repo-scanner .
+    ```
+
+    *   If you encounter issues with cached layers (e.g., after updating dependencies or certificates), you might need to build without the cache:
+        ```bash
+        docker build --no-cache -t cdc-repo-scanner .
+        ```
+
+### Running the Docker Container
+
+Once the image is built, you can run the scanner using the `docker run` command. It's crucial to provide the environment variables from your `.env` file and map the output directory so the generated files (`code.json`, logs, CSVs) persist on your host machine.
+
+1.  **Ensure your `.env` file** is present in the project root directory on your host machine.
+2.  **Create an `output` directory** in the project root on your host machine if it doesn't exist. This is where the container will write its results.
+
+    ```bash
+    mkdir output
+    ```
+
+3.  **Run the container:**
+
+    ```bash
+    docker run --rm \
+      --env-file .env \
+      -v "$(pwd)/output:/app/output" \
+      cdc-repo-scanner
+    ```
+
+    **Explanation of options:**
+    *   `--rm`: Automatically removes the container when it exits.
+    *   `--env-file .env`: Loads environment variables from the `.env` file in your current host directory into the container.
+    *   `-v "$(pwd)/output:/app/output"`: Mounts the `output` directory from your current host directory into the `/app/output` directory inside the container. This allows the container to write results back to your host.
+    *   `cdc-repo-scanner`: The name of the image you built.
+
+4.  **(Optional) Overriding Environment Variables:** If you need to override specific variables from the `.env` file or pass variables not included in it (like proxy settings or SSL flags), you can use the `-e` flag:
+
+    ```bash
+    docker run --rm \
+      --env-file .env \
+      -e HTTPS_PROXY=http://your-proxy-server:port \
+      -e HTTP_PROXY=http://your-proxy-server:port \
+      -e GITLAB_SSL_VERIFY=false \
+      -v "$(pwd)/output:/app/output" \
+      cdc-repo-scanner
+    ```
+
+### Accessing Results
+
+After the container finishes running, the generated `code.json`, `exempted_log.csv`, `privateid_mapping.csv`, and log files will be available in the `output` directory on your host machine.
+
