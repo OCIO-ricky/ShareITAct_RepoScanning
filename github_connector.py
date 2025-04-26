@@ -5,8 +5,6 @@ from datetime import datetime
 from github import Github, BadCredentialsException, UnknownObjectException, GithubException
 from requests.exceptions import RequestException
 import base64
-# --- Import the new processor ---
-import exemption_processor
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +17,10 @@ def fetch_repositories(token, org_name) -> list[dict]:
     Fetches repository details from GitHub, processes exemptions,
     and returns a list of processed repository data dictionaries.
     """
+    
+    # --- Import the new processor ---
+    import exemption_processor
+
     if is_placeholder_token(token):
         logger.info("GitHub token is missing or appears to be a placeholder. Skipping GitHub scan.")
         return []
@@ -43,6 +45,13 @@ def fetch_repositories(token, org_name) -> list[dict]:
             count = i + 1
             repo_data = {} # Start with an empty dict for this repo
             try:
+               # --- Add fork check early ---
+                if repo.fork:
+                    # Log at INFO level so it appears in the terminal by default
+                    logger.info(f"Skipping forked repository: {repo.full_name}")
+                    continue # Move to the next repository in the loop
+                # --- End fork check ---
+
                 logger.debug(f"Fetching data for GitHub repo: {repo.full_name}")
                 # --- Fetch Base Data ---
                 created_at_iso = repo.created_at.isoformat() if repo.created_at else None

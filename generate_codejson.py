@@ -14,8 +14,6 @@ import gitlab_connector
 import azure_devops_connector
 # Import utils
 from utils import ExemptionLogger, PrivateIdManager
-# Import processor
-import exemption_processor # Assuming exemption_processor.py is in the same directory or accessible path
 
 # --- setup_logging() function remains the same ---
 def setup_logging():
@@ -108,6 +106,9 @@ if __name__ == "__main__":
     setup_logging()
     logger = logging.getLogger(__name__)
 
+    # Import processor
+    import exemption_processor
+
     # --- Backup existing code.json AT THE START ---
     backup_existing_json(output_dir="output", filename="code.json") # Call the backup function early
 
@@ -177,10 +178,14 @@ if __name__ == "__main__":
             logger.debug(f"Final processing for repo {count}/{total_received}: {org_name}/{repo_name}")
 
             try:
-                # --- Generate/Get Private ID ---
+               # --- Get extracted emails (default to empty string) ---
+                extracted_emails = repo_data.get('extracted_contact_emails', '')
+
+                 # --- Generate/Get Private ID, passing emails ---
                 private_id = privateid_manager.get_or_generate_id(
                     repo_name=repo_name,
-                    organization=org_name
+                    organization=org_name,
+                    contact_emails=extracted_emails # Pass the extracted emails
                 )
                 repo_data['privateID'] = private_id
 
@@ -198,6 +203,9 @@ if __name__ == "__main__":
                 for key, value in repo_data.items():
                     if isinstance(value, datetime):
                         repo_data[key] = value.isoformat()
+
+                # Erase 'extracted_contact_emails' from memory:
+                repo_data.pop('extracted_contact_emails', None)
 
                 final_output_list.append(repo_data)
 

@@ -13,14 +13,17 @@ WORKDIR /app
 # --- Add CA Certificate ---
 # Create the directory for extra CA certificates
 # Copy your custom CA certificate file into the container
-# IMPORTANT: Place your CA certificate file (e.g., "my-corp-ca.crt")
-# in the same directory as this Dockerfile on your host machine.
-# RUN mkdir -p /usr/local/share/ca-certificates/
-# COPY my-corp-ca.crt /usr/local/share/ca-certificates/my-corp-ca.crt
+RUN mkdir -p /usr/local/share/ca-certificates/
 
 # (Optional) Set the environment variable for requests
 #ENV REQUESTS_CA_BUNDLE=/app/my-corp-ca.crt
 
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+# Handle certificates
+COPY ./zscaler/CDC-CSPO-PA.crt /usr/local/share/ca-certificates/
+COPY ./zscaler/ZScalerRootCA.crt /usr/local/share/ca-certificates/
+COPY ./zscaler/CloudflareR2.crt /usr/local/share/ca-certificates/
+RUN chmod -R 755 /etc/ssl/certs
 # Update the container's certificate store to include the new certificate
 RUN update-ca-certificates
 # --- End CA Certificate Addition ---

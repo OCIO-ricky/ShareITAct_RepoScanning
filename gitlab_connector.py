@@ -58,6 +58,13 @@ def fetch_repositories(token, group_name) -> list[dict]:
             count += 1
             repo_data = {} # Start fresh for each project
             try:
+               # --- Add fork check early ---
+                if project.forked_from_project:
+                    # Log at INFO level 
+                    logger.info(f"Skipping forked repository: {project.path_with_namespace}")
+                    continue # Move to the next repository in the loop
+                # --- End fork check ---
+
                 logger.debug(f"Fetching data for GitLab project: {project.path_with_namespace}")
 
                 # --- Fetch Base Data ---

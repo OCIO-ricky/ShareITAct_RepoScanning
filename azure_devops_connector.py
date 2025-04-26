@@ -92,6 +92,14 @@ def fetch_repositories(token, org_name, project_name=None) -> list[dict]:
                     total_repos_found += 1
                     repo_data = {} # Start fresh for each repo
                     try:
+                        # --- Add fork check early ---
+                        # Azure DevOps uses 'is_fork' boolean attribute
+                        if repo.is_fork:
+                            # Log at INFO level
+                            logger.info(f"Skipping forked repository: {project.name}/{repo.name}")
+                            continue # Move to the next repository
+                        # --- End fork check ---
+
                         logger.debug(f"Fetching data for ADO repo: {project.name}/{repo.name}")
 
                         # --- Fetch Base Data ---
