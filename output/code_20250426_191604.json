@@ -10,7 +10,7 @@
             "description": "Collection of required and optional practices that we follow to improve usability of the cdcent organization.",
             "organization": "cdcent",
             "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
-            "homepageURL": "http://cdcent.github.io/enterprise_practices",
+            "homepageURL": "https://github.com/cdcent/enterprise_practices",
             "downloadURL": null,
             "vcs": "git",
             "repositoryVisibility": "private",
@@ -18,16 +18,11 @@
             "version": "N/A",
             "laborHours": 0,
             "languages": [],
-            "tags": [
-                "ocio",
-                "governance",
-                "templates",
-                "support"
-            ],
+            "tags": [],
             "date": {
                 "created": "2019-10-08T16:13:28+00:00",
                 "lastModified": "2025-04-11T15:53:45+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "exemptNonCode",
@@ -66,7 +61,7 @@
             "date": {
                 "created": "2020-02-24T19:38:39+00:00",
                 "lastModified": "2023-01-20T13:54:46+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "exemptNonCode",
@@ -101,24 +96,11 @@
             "languages": [
                 "SAS"
             ],
-            "tags": [
-                "tuberculosis",
-                "collaboration-external",
-                "rct",
-                "randomized-controlled-trials",
-                "clinic",
-                "clinical-research",
-                "nchhstp-dte",
-                "cdc",
-                "centers-for-disease-control",
-                "new-york-city",
-                "nyc-dohmh",
-                "nchhstp"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-04-10T19:21:33+00:00",
                 "lastModified": "2022-08-12T23:07:10+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -154,15 +136,11 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [
-                "oadc",
-                "analytics",
-                "survey"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-05-14T17:51:31+00:00",
                 "lastModified": "2025-04-24T16:14:31+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -198,14 +176,11 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [
-                "oadc",
-                "automated-testing"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-05-19T10:45:58+00:00",
                 "lastModified": "2022-05-20T20:47:34+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -241,14 +216,11 @@
             "languages": [
                 "HTML"
             ],
-            "tags": [
-                "oadc",
-                "templates"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-05-19T13:23:55+00:00",
                 "lastModified": "2020-06-18T15:32:15+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "exemptNonCode",
@@ -288,7 +260,7 @@
             "date": {
                 "created": "2020-05-19T16:26:36+00:00",
                 "lastModified": "2023-09-26T02:13:36+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "exemptNonCode",
@@ -323,14 +295,11 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [
-                "oadc",
-                "templates"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-06-01T12:26:07+00:00",
                 "lastModified": "2025-04-25T20:26:21+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -364,20 +333,11 @@
             "version": "N/A",
             "laborHours": 0,
             "languages": [],
-            "tags": [
-                "ocio",
-                "eoc",
-                "covid-19",
-                "powerbi",
-                "data",
-                "catalog",
-                "viz",
-                "srrg"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-06-05T14:34:04+00:00",
                 "lastModified": "2021-10-29T15:11:23+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "exemptNonCode",
@@ -413,22 +373,11 @@
             "languages": [
                 "HTML"
             ],
-            "tags": [
-                "ocio",
-                "eoc",
-                "covid-19",
-                "privacy",
-                "sdc",
-                "case",
-                "governance",
-                "r",
-                "tableau",
-                "srrg"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-06-05T14:52:24+00:00",
                 "lastModified": "2024-06-21T18:16:39+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "exemptNonCode",
@@ -464,18 +413,15 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [
-                "oadc",
-                "browser-extension"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-06-12T17:08:28+00:00",
                 "lastModified": "2024-07-18T15:18:36+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "exemptByAgencySystem",
-                "exemptionText": "AI Suggestion: The extension facilitates access to internal CDC systems (Jira and SharePoint) that are typically only accessible via the CDC network and smart card, indicating it's for internal use only.",
+                "exemptionText": "AI Suggestion: The extension facilitates access to internal CDC systems (Jira and SharePoint) that are typically only accessible via the CDC network and smart card, indicating its use within an internal CDC infrastructure.",
                 "licenses": [
                     {
                         "name": "Apache License 2.0",
@@ -507,15 +453,11 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [
-                "oadc",
-                "maps",
-                "covid-19"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-06-15T11:23:56+00:00",
                 "lastModified": "2020-09-09T17:49:36+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -551,19 +493,15 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [
-                "oadc",
-                "maps",
-                "covid-19"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-06-15T11:24:40+00:00",
                 "lastModified": "2020-09-09T17:49:14+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
-                "usageType": "exemptByMissionSystem",
-                "exemptionText": "AI Suggestion: The repository displays COVID-19 case and death data, directly supporting public health surveillance and potentially informing outbreak response efforts.",
+                "usageType": "exemptByCIO",
+                "exemptionText": "AI Suggestion: The repository displays COVID-19 case and death data, which is sensitive public health information requiring careful consideration of privacy and data security implications, thus necessitating CIO review.",
                 "licenses": [
                     {
                         "name": "Apache License 2.0",
@@ -589,19 +527,17 @@
             "downloadURL": null,
             "vcs": "git",
             "repositoryVisibility": "private",
-            "status": "archived",
+            "status": "development",
             "version": "N/A",
             "laborHours": 0,
             "languages": [
                 "TypeScript"
             ],
-            "tags": [
-                "oadc"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-06-16T17:57:43+00:00",
                 "lastModified": "2023-11-27T19:57:45+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -637,17 +573,15 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [
-                "oadc"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-06-17T13:27:31+00:00",
                 "lastModified": "2023-08-29T18:15:05+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "exemptByAgencySystem",
-                "exemptionText": "AI Suggestion: The repository is explicitly for internal use at the CDC, as indicated by its name (\"CDCLighthouse\"), description (\"Extensions to Lighthouse for use at CDC\"), and README's mention of internal organizational units and points of contact.",
+                "exemptionText": "AI Suggestion: The repository is explicitly for internal use at the CDC, as indicated by its name (\"OADCLighthouse\"), description (\"Extensions to Lighthouse for use at CDC\"), and README's mention of internal organizational units and points of contact.",
                 "licenses": [
                     {
                         "name": "Apache License 2.0",
@@ -679,14 +613,11 @@
             "languages": [
                 "C++"
             ],
-            "tags": [
-                "oadc",
-                "spellcheck"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-06-17T13:48:54+00:00",
                 "lastModified": "2020-06-18T15:16:10+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -712,7 +643,7 @@
             "description": "Shortcake makes using WordPress shortcodes a piece of cake.",
             "organization": "cdcent",
             "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
-            "homepageURL": "https://github.com/wp-shortcake/shortcake",
+            "homepageURL": "https://github.com/cdcent/shortcake",
             "downloadURL": null,
             "vcs": "git",
             "repositoryVisibility": "private",
@@ -722,15 +653,11 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [
-                "oadc",
-                "wcms",
-                "wordpress-plugin"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-06-17T13:54:56+00:00",
                 "lastModified": "2020-06-18T15:15:16+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -766,13 +693,11 @@
             "languages": [
                 "PHP"
             ],
-            "tags": [
-                "oadc"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-06-17T13:59:06+00:00",
                 "lastModified": "2020-06-18T15:14:31+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -807,13 +732,11 @@
             "languages": [
                 "PHP"
             ],
-            "tags": [
-                "oadc"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-06-17T19:10:24+00:00",
                 "lastModified": "2025-03-06T14:43:15+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -849,20 +772,11 @@
             "languages": [
                 "Jupyter Notebook"
             ],
-            "tags": [
-                "ocio",
-                "viz",
-                "python",
-                "d3",
-                "javascript",
-                "graph",
-                "network",
-                "it-policy"
-            ],
+            "tags": [],
             "date": {
                 "created": "2020-06-19T13:46:10+00:00",
                 "lastModified": "2023-06-30T22:18:38+00:00",
-                "metadataLastUpdated": "2025-04-26T20:07:19.141847+00:00"
+                "metadataLastUpdated": "2025-04-26T18:54:47.099213+00:00"
             },
             "permissions": {
                 "usageType": "exemptNonCode",

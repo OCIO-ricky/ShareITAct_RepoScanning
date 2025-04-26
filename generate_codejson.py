@@ -8,6 +8,7 @@ import time
 import re
 from datetime import datetime, timezone # Ensure timezone is imported
 from dotenv import load_dotenv
+
 # Import connectors
 import github_connector
 import gitlab_connector
@@ -101,6 +102,57 @@ def backup_existing_file(output_dir="output", filename="file.ext"):
     else:
         logger.info(f"No existing '{filename}' found to back up. A new file will be created.")
 
+def infer_tags(repo_data):
+    """Infers tags from repository topics/tag_list."""
+    # 'tags' field is already populated by connectors using topics/tag_list
+    topics = repo_data.get('tags', []) # Use the 'tags' field directly
+    if topics and isinstance(topics, list):
+        return sorted([str(topic) for topic in topics])
+    return []
+
+def parse_semver(tag_name):
+    """Attempts to parse a semantic version string, handling common prefixes."""
+    if not tag_name or not isinstance(tag_name, str): return None
+    cleaned_tag = re.sub(r'^(v|release-|Release-|jenkins-\S+-)', '', tag_name.strip()) # More prefixes
+    try: return packaging_version.parse(cleaned_tag)
+    except packaging_version.InvalidVersion: return None
+
+def infer_version(repo_data):
+    """Infers the latest semantic version from API tags stored in _api_tags."""
+    # Use the temporary field where connectors stored actual Git tags
+    api_tags = repo_data.get('_api_tags', [])
+    if not api_tags: return "N/A"
+
+    parsed_versions = []
+    for tag_name in api_tags:
+        parsed = parse_semver(tag_name)
+        if parsed and not parsed.is_prerelease: # Prioritize stable releases
+            parsed_versions.append(parsed)
+
+    if parsed_versions:
+        parsed_versions.sort()
+        return str(parsed_versions[-1]) # Latest stable version
+
+    # Fallback: If no stable versions, check for pre-releases
+    parsed_prereleases = []
+    for tag_name in api_tags:
+        parsed = parse_semver(tag_name)
+        if parsed and parsed.is_prerelease:
+             parsed_prereleases.append(parsed)
+    if parsed_prereleases:
+         parsed_prereleases.sort()
+         return str(parsed_prereleases[-1]) # Latest pre-release
+
+    return "N/A" # No parsable versions found
+
+def infer_status(repo_data):
+    """Infers status based on archived flag and potentially README/activity later."""
+    # Use the 'archived' field passed from connectors
+    if repo_data.get('archived', False):
+         return "archived"
+    # TODO: Add README keyword search (e.g., "Status: Maintained", "Status: Deprecated")
+    # TODO: Add check based on lastModified date for inactivity
+    return "development" # Default fallback
 
 
 # --- Main Execution ---
@@ -118,7 +170,6 @@ if __name__ == "__main__":
     CODE_JSON_FILENAME = "code.json"
     EXEMPTION_LOG_FILENAME = os.getenv("ExemptedCSVFile", "exempted_log.csv") # Get just filename
     PRIVATE_ID_FILENAME = os.getenv("PrivateIDCSVFile", "privateid_mapping.csv") # Get just filename
-
     EXEMPTION_FILE_PATH = os.path.join(OUTPUT_DIR, EXEMPTION_LOG_FILENAME)
     PRIVATE_ID_FILE_PATH = os.path.join(OUTPUT_DIR, PRIVATE_ID_FILENAME)
 
@@ -140,6 +191,8 @@ if __name__ == "__main__":
     PRIVATE_ID_FILE = os.getenv("PrivateIDCSVFile", "output/privateid_mapping.csv")
     logger.debug(f"Using EXEMPTION_FILE path: '{EXEMPTION_FILE}'")
     logger.debug(f"Using PRIVATE_ID_FILE path: '{PRIVATE_ID_FILE}'")
+    
+    # Manager initialization
     try:
         # Ensure output directory exists before initializing managers that write there
         os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -229,6 +282,7 @@ if __name__ == "__main__":
             logger.error(f"Critical error during Azure DevOps fetch/process: {e}", exc_info=True)
     else:
         logger.warning("--- DEBUG MODE: Global limit reached. Skipping Azure DevOps scan. ---")
+        
 
     # --- Final Processing Loop (ID Generation and Exemption Logging) ---
     logger.info(f"Total processed repositories received from connectors: {len(all_processed_repos)}")
@@ -246,7 +300,19 @@ if __name__ == "__main__":
 
             logger.debug(f"Final processing for repo {count}/{total_received}: {org_name}/{repo_name}")
 
+           # Check for processing errors from connector stage
+            if 'processing_error' in repo_data:
+                 logger.error(f"Skipping final processing for {org_name}/{repo_name} due to connector error: {repo_data['processing_error']}")
+                 # Add minimal error entry to output
+                 final_output_list.append({
+                     "name": repo_name,
+                     "organization": org_name,
+                     "processing_error": repo_data['processing_error']
+                 })
+                 continue # Skip to next repo
+             
             try:
+                # This field is populated by exemption_processor now
                 private_emails_list = repo_data.get('_private_contact_emails', [])
 
                 # --- Get/Generate Private ID (stores actual emails in CSV) ---
@@ -262,34 +328,47 @@ if __name__ == "__main__":
 
                 # --- UPDATE repositoryURL for private repos ---
                 if is_private and INSTRUCTIONS_URL:
-                    original_url = repo_data.get('repositoryURL')
                     repo_data['repositoryURL'] = INSTRUCTIONS_URL
-                    logger.debug(f"Replaced repositoryURL for private repo {repo_name} with instructions URL. Original: {original_url}")
-                elif is_private and not INSTRUCTIONS_URL:
-                     logger.warning(f"Private repo {repo_name} found, but INSTRUCTIONS_PDF_URL is not set. repositoryURL not replaced.")
- 
-                # --- Log Exemption (if applicable) ---
+                elif is_private: logger.warning(f"Private repo {repo_name}: INSTRUCTIONS_PDF_URL not set.")
+
+                # --- Log Exemption ---
                 usage_type = repo_data.get('permissions', {}).get('usageType')
                 if usage_type and usage_type.lower().startswith('exempt'):
                     exemption_text = repo_data.get('permissions', {}).get('exemptionText', '')
                     log_id = private_id if is_private else f"PublicRepo-{org_name}-{repo_name}"
-                    # --- UPDATE Call: Remove 'reason' argument ---
-                    exemption_manager.log_exemption(
-                        private_id=log_id,
-                        repo_name=repo_name,
-                        usage_type=usage_type,
-                        exemption_text=exemption_text
-                        # reason=exemption_text # Removed this line
-                    )
+                    exemption_manager.log_exemption(log_id, repo_name, usage_type, exemption_text)
 
-                # --- Ensure Datetime Conversion (Safety Net) ---
+               # --- Apply Final Inference ---
+                repo_data['status'] = infer_status(repo_data)
+                repo_data['version'] = infer_version(repo_data)
+                # 'tags' field is already populated by connectors using topics/tag_list
+
+                # --- Ensure Datetime Conversion ---
                 if 'date' in repo_data and isinstance(repo_data['date'], dict):
                     for key, value in repo_data['date'].items():
-                         if isinstance(value, datetime):
-                              repo_data['date'][key] = value.isoformat()
+                         if isinstance(value, datetime): repo_data['date'][key] = value.isoformat()
 
-                # --- Remove temporary fields used only for processing ---
+                # --- Remove temporary fields used only for processing/inference ---
                 repo_data.pop('_private_contact_emails', None)
+                repo_data.pop('_api_tags', None) # Remove the temp field for Git tags
+                repo_data.pop('archived', None) # Remove the temp field for archived status
+
+                # --- Clean up None values before adding to list ---
+                # Create a new dict to avoid modifying the original while iterating
+                cleaned_repo_data = {}
+                for k, v in repo_data.items():
+                    if isinstance(v, dict):
+                         # Clean nested dictionaries (date, permissions, contact)
+                         cleaned_v = {nk: nv for nk, nv in v.items() if nv is not None}
+                         if cleaned_v: # Only add if not empty after cleaning
+                              cleaned_repo_data[k] = cleaned_v
+                    elif v is not None:
+                         cleaned_repo_data[k] = v
+
+                # Ensure essential nested dicts exist even if empty after cleaning (optional, depends on schema strictness)
+                # if 'date' not in cleaned_repo_data: cleaned_repo_data['date'] = {}
+                # if 'permissions' not in cleaned_repo_data: cleaned_repo_data['permissions'] = {}
+                # if 'contact' not in cleaned_repo_data: cleaned_repo_data['contact'] = {}
 
                 final_output_list.append(repo_data)
 
@@ -301,8 +380,6 @@ if __name__ == "__main__":
                     "processing_error": f"Final stage: {final_proc_err}"
                 })
 
-            # --- REMOVED the unconditional processed_count increment ---
-            # The global counter is now incremented within the connectors
 
         logger.info(f"Finished final processing loop for {len(final_output_list)} repositories.")
     else:
