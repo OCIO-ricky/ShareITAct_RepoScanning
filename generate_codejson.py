@@ -5,44 +5,36 @@ import json
 import logging
 import logging.handlers
 import time
+import re
 from datetime import datetime # Ensure datetime is imported
 from dotenv import load_dotenv
+# Import connectors
 import github_connector
 import gitlab_connector
 import azure_devops_connector
-# Import the classes from utils
+# Import utils
 from utils import ExemptionLogger, PrivateIdManager
+# Import processor
+import exemption_processor # Assuming exemption_processor.py is in the same directory or accessible path
 
-# --- Define setup_logging ---
+# --- setup_logging() function remains the same ---
 def setup_logging():
     """Configures logging for the application."""
     log_directory = "logs"
     log_file = os.path.join(log_directory, "repo_scan.log")
-
-    # Create logs directory if it doesn't exist
     os.makedirs(log_directory, exist_ok=True)
-
-    # Define log format
-    log_format = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-
-    # Get root logger
+    log_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger = logging.getLogger()
-    # Clear existing handlers (useful if script is run multiple times in one session)
     if logger.hasHandlers():
         logger.handlers.clear()
+    logger.setLevel(logging.INFO) # Set level (e.g., INFO, DEBUG)
 
-    # Set the default level back to INFO
-    logger.setLevel(logging.INFO)
-
-    # --- Console Handler ---
+    # Console Handler
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(log_format)
     logger.addHandler(console_handler)
 
-    # --- Rotating File Handler ---
-    # Rotates logs, keeping 5 backups, max 5MB each
+    # Rotating File Handler
     try:
         file_handler = logging.handlers.RotatingFileHandler(
             log_file, maxBytes=5*1024*1024, backupCount=5, encoding='utf-8'
@@ -54,209 +46,194 @@ def setup_logging():
         logging.error(f"Failed to configure file logging to {log_file}: {e}")
         logging.info("Logging configured: Outputting to console only.")
 
-
-# --- Define write_output_files ---
+# --- write_output_files() function remains the same ---
 def write_output_files(data, filename="code.json"):
     """Writes the provided data to a JSON file."""
     output_directory = "output"
     output_path = os.path.join(output_directory, filename)
-
-    # Create output directory if it doesn't exist
     os.makedirs(output_directory, exist_ok=True)
-
     try:
+        # Use 'w' mode to always create a new file or overwrite existing
         with open(output_path, 'w', encoding='utf-8') as f:
-            # Use indent for pretty-printing the JSON file
             json.dump(data, f, ensure_ascii=False, indent=4)
         logging.info(f"Successfully wrote output data to {output_path}")
     except TypeError as e:
-        logging.error(f"Data type error writing JSON to {output_path}: {e}. Ensure all data is JSON serializable (check datetime objects).")
+        logging.error(f"Data type error writing JSON to {output_path}: {e}. Ensure all data is JSON serializable.")
     except IOError as e:
         logging.error(f"File I/O error writing JSON to {output_path}: {e}")
     except Exception as e:
         logging.error(f"Unexpected error writing JSON to {output_path}: {e}", exc_info=True)
 
+# --- Backup Function (remains the same) ---
+def backup_existing_json(output_dir="output", filename="code.json"):
+    """
+    Checks for an existing JSON file and renames it with a date/timestamp
+    to prevent overwriting on subsequent runs.
+    """
+    logger = logging.getLogger(__name__) # Get logger instance
+    current_filepath = os.path.join(output_dir, filename)
+
+    if os.path.isfile(current_filepath):
+        try:
+            # Generate timestamped backup filename
+            now = datetime.now()
+            timestamp_str = now.strftime("%Y%m%d_%H%M%S")
+            base_name, ext = os.path.splitext(filename)
+            backup_filename = f"{base_name}_{timestamp_str}{ext}"
+            backup_filepath = os.path.join(output_dir, backup_filename)
+
+            # Ensure the backup name doesn't somehow already exist (highly unlikely with timestamp)
+            counter = 1
+            while os.path.exists(backup_filepath):
+                 backup_filename = f"{base_name}_{timestamp_str}_{counter}{ext}"
+                 backup_filepath = os.path.join(output_dir, backup_filename)
+                 counter += 1
+                 logger.warning(f"Backup file collision, trying {backup_filename}")
+
+            # Perform the rename
+            os.rename(current_filepath, backup_filepath)
+            logger.info(f"Existing '{filename}' found. Renamed to '{backup_filename}'.")
+
+        except OSError as e:
+            logger.error(f"Error renaming existing '{filename}': {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Unexpected error during backup of '{filename}': {e}", exc_info=True)
+    else:
+        logger.info(f"No existing '{filename}' found to back up. A new file will be created.")
+
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    # --- Load environment variables ---
     load_dotenv()
+    setup_logging()
+    logger = logging.getLogger(__name__)
 
-    # --- Call setup_logging ---
-    setup_logging() # Configure logging first
+    # --- Backup existing code.json AT THE START ---
+    backup_existing_json(output_dir="output", filename="code.json") # Call the backup function early
 
-    # --- Get a logger instance for this module ---
-    logger = logging.getLogger(__name__) # Or logging.getLogger() for root logger
-
-    # --- Get file paths from environment or use defaults ---
+    # --- File Paths and Manager Initialization ---
     EXEMPTION_FILE = os.getenv("ExemptedCSVFile", "output/exempted_log.csv")
     PRIVATE_ID_FILE = os.getenv("PrivateIDCSVFile", "output/privateid_mapping.csv")
-    # --- Add Debug Logging ---
-    logging.debug(f"Read EXEMPTION_FILE path: '{EXEMPTION_FILE}'")
-    logging.debug(f"Read PRIVATE_ID_FILE path: '{PRIVATE_ID_FILE}'")
-    # --- End Debug Logging ---
-
-    # --- Instantiate the managers ---
-    # These will load existing data or create files from templates
+    logger.debug(f"Using EXEMPTION_FILE path: '{EXEMPTION_FILE}'")
+    logger.debug(f"Using PRIVATE_ID_FILE path: '{PRIVATE_ID_FILE}'")
     try:
+        # Ensure output directory exists before initializing managers that write there
+        os.makedirs("output", exist_ok=True)
         exemption_manager = ExemptionLogger(EXEMPTION_FILE)
         privateid_manager = PrivateIdManager(PRIVATE_ID_FILE)
     except Exception as mgr_err:
-        logging.critical(f"Failed to initialize managers: {mgr_err}", exc_info=True)
-        # Consider exiting if managers are critical
-        exit(1) # Or handle more gracefully
+        logger.critical(f"Failed to initialize managers: {mgr_err}", exc_info=True)
+        exit(1)
 
-    # --- Get tokens and org/group names from environment variables ---
+    # --- Environment Variables for Connectors ---
     GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
     GITHUB_ORG = os.getenv("GITHUB_ORG")
     GITLAB_TOKEN = os.getenv("GITLAB_TOKEN")
     GITLAB_GROUP = os.getenv("GITLAB_GROUP")
     AZURE_DEVOPS_TOKEN = os.getenv("AZURE_DEVOPS_TOKEN")
     AZURE_DEVOPS_ORG = os.getenv("AZURE_DEVOPS_ORG")
-    AZURE_DEVOPS_PROJECT = os.getenv("AZURE_DEVOPS_PROJECT") # Optional
+    AZURE_DEVOPS_PROJECT = os.getenv("AZURE_DEVOPS_PROJECT")
 
-    all_repos = [] # Initialize list to hold data from all platforms
+    # --- Fetch Data from Connectors ---
+    all_processed_repos = []
 
-    # --- GitHub ---
-    # Connector now handles placeholder checks internally
-    logging.info(f"Attempting GitHub scan...")
+    logger.info(f"Attempting GitHub scan...")
     try:
-        # Call the refactored connector which handles init inside
         github_repos = github_connector.fetch_repositories(GITHUB_TOKEN, GITHUB_ORG)
-
-        # Assuming the connector returns data in the desired common format
-        # If not, adaptation/processing is needed here
-        # Ensure datetime objects are converted to strings if returned by connector
-        processed_github_repos = []
-        for repo_data_raw in github_repos:
-            # Example adaptation (adjust based on actual connector output)
-            repo_data_processed = repo_data_raw.copy() # Start with fetched data
-            for key, value in repo_data_processed.items():
-                 # Check if value is a datetime object before calling isoformat()
-                 if isinstance(value, datetime): # Example: Convert datetime to ISO string
-                     repo_data_processed[key] = value.isoformat()
-            processed_github_repos.append(repo_data_processed)
-
-        all_repos.extend(processed_github_repos)
-        if processed_github_repos: # Log success only if data was actually added
-            logging.info(f"Successfully processed {len(processed_github_repos)} repositories from GitHub.")
-        # No explicit 'else' needed if connector logged the skip/error reason
+        all_processed_repos.extend(github_repos)
+        if github_repos: logger.info(f"Received {len(github_repos)} processed repositories from GitHub.")
     except Exception as e:
-        # Catch unexpected errors *outside* the connector function itself
-        logging.error(f"Critical error during GitHub processing in main script: {e}", exc_info=True)
+        logger.error(f"Critical error during GitHub fetch/process: {e}", exc_info=True)
 
-
-    # --- GitLab ---
-    # The gitlab_connector.fetch_repositories handles placeholder checks internally
-    logging.info(f"Attempting GitLab scan...")
+    logger.info(f"Attempting GitLab scan...")
     try:
         gitlab_repos = gitlab_connector.fetch_repositories(GITLAB_TOKEN, GITLAB_GROUP)
-        # Assuming gitlab_connector returns data in the common format
-        all_repos.extend(gitlab_repos)
-        if gitlab_repos: # Log success only if data was actually added
-             logging.info(f"Successfully processed {len(gitlab_repos)} repositories from GitLab.")
-        # No explicit 'else' needed if connector logged the skip/error reason
+        all_processed_repos.extend(gitlab_repos)
+        if gitlab_repos: logger.info(f"Received {len(gitlab_repos)} processed repositories from GitLab.")
     except Exception as e:
-        # Catch unexpected errors *outside* the connector function itself
-        logging.error(f"Critical error during GitLab processing in main script: {e}", exc_info=True)
+        logger.error(f"Critical error during GitLab fetch/process: {e}", exc_info=True)
 
-
-    # --- Azure DevOps ---
-    # The azure_devops_connector.fetch_repositories handles placeholder checks internally
-    logging.info(f"Attempting Azure DevOps scan...")
+    logger.info(f"Attempting Azure DevOps scan...")
     try:
         azure_repos = azure_devops_connector.fetch_repositories(
             AZURE_DEVOPS_TOKEN, AZURE_DEVOPS_ORG, AZURE_DEVOPS_PROJECT
         )
-        # Assuming azure_devops_connector returns data in the common format
-        all_repos.extend(azure_repos)
-        if azure_repos: # Log success only if data was actually added
-             logging.info(f"Successfully processed {len(azure_repos)} repositories from Azure DevOps.")
-        # No explicit 'else' needed if connector logged the skip/error reason
+        all_processed_repos.extend(azure_repos)
+        if azure_repos: logger.info(f"Received {len(azure_repos)} processed repositories from Azure DevOps.")
     except Exception as e:
-        # Catch unexpected errors *outside* the connector function itself
-        logging.error(f"Critical error during Azure DevOps processing in main script: {e}", exc_info=True)
+        logger.error(f"Critical error during Azure DevOps fetch/process: {e}", exc_info=True)
 
+    # --- Final Processing Loop (ID Generation and Exemption Logging) ---
+    logger.info(f"Total processed repositories received from connectors: {len(all_processed_repos)}")
+    final_output_list = []
+    total_received = len(all_processed_repos)
 
-    # --- Process all_repos (Example: Add Private IDs) ---
-    logging.info(f"Total repositories fetched across platforms: {len(all_repos)}")
-    processed_repos_final = []
-    total_fetched = len(all_repos)
-    # log_interval = 100 # Log progress every 100 repos processed - Using print approach now
-
-    if all_repos: # Only process if we actually got some repo data
-        logging.info("Processing fetched repositories (adding private IDs, checking exemptions, etc.)...")
-        # Use enumerate for progress counting
-        for i, repo_data in enumerate(all_repos):
+    if all_processed_repos:
+        logger.info("Generating Private IDs and logging exemptions...")
+        for i, repo_data in enumerate(all_processed_repos):
             count = i + 1
-            try:
- 
-                # Ensure necessary keys exist before accessing, provide defaults
-                repo_name = repo_data.get('repo_name', 'UnknownRepo')
-                org_name = repo_data.get('org_name', 'UnknownOrg')
+            repo_name = repo_data.get('repo_name', f'UnknownRepo_{count}')
+            org_name = repo_data.get('org_name', 'UnknownOrg')
+            logger.debug(f"Final processing for repo {count}/{total_received}: {org_name}/{repo_name}")
 
-                # Get or generate private ID using the manager
-                # Note: The DEBUG logs from get_or_generate_id will still print on new lines
+            try:
+                # --- Generate/Get Private ID ---
                 private_id = privateid_manager.get_or_generate_id(
                     repo_name=repo_name,
                     organization=org_name
-                    # Optionally pass contact emails if available in repo_data
                 )
-                repo_data['privateID'] = private_id # Add the ID to the dictionary
+                repo_data['privateID'] = private_id
 
-                # --- Add other processing steps here ---
-                # Example: Check exemption status based on repo_data and log if needed
-                # if should_be_exempt(repo_data): # Your logic here
-                #     logged_ok = exemption_manager.log_exemption(
-                #         private_id=private_id,
-                #         repo_name=repo_name,
-                #         reason="Example Reason",
-                #         usage_type="Example Usage",
-                #         exemption_text="Example Text"
-                #     )
-                #     if logged_ok:
-                #         repo_data['exempted'] = True
-                #         repo_data['exemption_reason'] = "Example Reason"
-                # --- End other processing steps ---
+                # --- Log Exemption (if applicable) ---
+                if repo_data.get('exempted', False):
+                    exemption_manager.log_exemption(
+                        private_id=private_id,
+                        repo_name=repo_name,
+                        usage_type=repo_data.get('usageType', 'Unknown'),
+                        exemption_text=repo_data.get('exemptionText', ''),
+                        reason=repo_data.get('exemptionText', '') # Use exemption text as reason
+                    )
 
-                processed_repos_final.append(repo_data)
-            except Exception as proc_err:
-                # Log errors using the logger (will print on a new line)
-                # Print a newline first to avoid overwriting the error message
-                print() # Move to next line before logging error
-                logger.error(f"Error processing repository data for {repo_data.get('repo_name')}: {proc_err}", exc_info=True)
+                # --- Ensure Datetime Conversion (Safety Net) ---
+                for key, value in repo_data.items():
+                    if isinstance(value, datetime):
+                        repo_data[key] = value.isoformat()
 
+                final_output_list.append(repo_data)
 
-        # Log completion of processing using the logger
-        logger.info(f"Finished processing {len(processed_repos_final)} repositories.")
+            except Exception as final_proc_err:
+                logger.error(f"Error during final processing (ID gen/logging) for {org_name}/{repo_name}: {final_proc_err}", exc_info=True)
+                final_output_list.append({
+                    "repo_name": repo_name,
+                    "org_name": org_name,
+                    "processing_error": f"Final stage: {final_proc_err}"
+                })
+
+        logger.info(f"Finished final processing loop.")
     else:
-        logging.info("No repositories fetched, skipping final processing.")
-
+        logger.info("No processed repositories received from connectors.")
 
     # --- Write final output ---
-    logging.info(f"Writing final data for {len(processed_repos_final)} repositories to code.json...")
-    write_output_files(processed_repos_final, filename="code.json") # Call the output function
+    # Backup was already done at the start
+    logger.info(f"Writing final data for {len(final_output_list)} repositories to code.json...")
+    write_output_files(final_output_list, filename="code.json")
 
-    # --- Save any new Private IDs generated during the run ---
-    # (Ensure this call is present if using the save_new_mappings approach)
+    # --- Save new Private IDs ---
     try:
         privateid_manager.save_new_mappings()
     except Exception as save_err:
-        logging.error(f"Error occurred during final save of private IDs: {save_err}", exc_info=True)
-    # --- End save call ---
+        logger.error(f"Error occurred during final save of private IDs: {save_err}", exc_info=True)
 
-    # --- Log Summary ---
+    # --- Log Summary (remains the same) ---
     logging.info("--- Run Summary ---")
-    logging.info(f"Total repositories fetched: {total_fetched}")
-    logging.info(f"Total repositories processed: {len(processed_repos_final)}")
-    # Get counts from managers
+    logging.info(f"Total repositories received from connectors: {total_received}")
+    logging.info(f"Total repositories in final output: {len(final_output_list)}")
     new_ids = privateid_manager.get_new_id_count()
     new_exemptions = exemption_manager.get_new_exemption_count()
     logging.info(f"New private IDs generated: {new_ids}")
-    logging.info(f"New exemptions logged: {new_exemptions}")
+    logging.info(f"New exemptions logged (this run): {new_exemptions}")
     logging.info("-------------------")
 
     logging.info("Pausing briefly before exit...")
-    time.sleep(3) # Pause for 3 seconds
-
+    time.sleep(3)
     logging.info("Script finished.")

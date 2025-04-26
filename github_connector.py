@@ -1,147 +1,144 @@
 # github_connector.py
 import os
 import logging
-from datetime import datetime # Ensure datetime is imported
-# Make sure to import specific exceptions
+from datetime import datetime
 from github import Github, BadCredentialsException, UnknownObjectException, GithubException
-# Import requests exceptions if PyGithub uses it under the hood for network errors
 from requests.exceptions import RequestException
+import base64
+# --- Import the new processor ---
+import exemption_processor
 
 logger = logging.getLogger(__name__)
 
-# Placeholder check helper (optional, but cleaner)
 def is_placeholder_token(token):
     """Checks if the token is missing or likely a placeholder."""
-    # Add more robust checks if needed (e.g., length, specific patterns)
-    # This basic check assumes 'ghp_' tokens are usually longer than 40 chars if real
     return not token or (token.startswith("ghp_") and len(token) < 40)
 
 def fetch_repositories(token, org_name) -> list[dict]:
-    """Fetches all repositories for the configured organization using PyGithub."""
-    # --- Check for placeholder/missing token/org ---
+    """
+    Fetches repository details from GitHub, processes exemptions,
+    and returns a list of processed repository data dictionaries.
+    """
     if is_placeholder_token(token):
         logger.info("GitHub token is missing or appears to be a placeholder. Skipping GitHub scan.")
         return []
     if not org_name:
         logger.warning("GitHub organization name not provided. Skipping GitHub scan.")
         return []
-    # --- End Check ---
 
-    repos_data = []
+    processed_repo_list = [] # Store final processed data
     g = None
     try:
-        # --- Initialize SDK inside ---
         logger.info(f"Attempting to connect to GitHub API...")
-        # Optional: Add base_url for GitHub Enterprise
-        # github_api_url = os.getenv("GITHUB_API_URL")
-        # g = Github(base_url=github_api_url, login_or_token=token) if github_api_url else Github(login_or_token=token)
         g = Github(login_or_token=token)
-        user = g.get_user() # Verify authentication works early
+        user = g.get_user()
         logger.info(f"GitHub SDK initialized and authenticated as user: {user.login}")
-        # --- End Initialization ---
 
         logger.info(f"Fetching repositories for GitHub organization: {org_name} ..")
         org = g.get_organization(org_name)
-        repos = org.get_repos(type='all') # PaginatedList
+        repos = org.get_repos(type='all')
 
         count = 0
-        log_interval = 50 # Log progress every 50 repositories
-
-        # Use enumerate for easier counting if total isn't readily available
         for i, repo in enumerate(repos):
-             count = i + 1
-             try:
+            count = i + 1
+            repo_data = {} # Start with an empty dict for this repo
+            try:
+                logger.debug(f"Fetching data for GitHub repo: {repo.full_name}")
+                # --- Fetch Base Data ---
+                created_at_iso = repo.created_at.isoformat() if repo.created_at else None
+                updated_at_iso = repo.updated_at.isoformat() if repo.updated_at else None
+                pushed_at_iso = repo.pushed_at.isoformat() if repo.pushed_at else None
 
-                 # Convert datetime objects to ISO strings for JSON serialization
-                 created_at_iso = repo.created_at.isoformat() if repo.created_at else None
-                 updated_at_iso = repo.updated_at.isoformat() if repo.updated_at else None
-                 pushed_at_iso = repo.pushed_at.isoformat() if repo.pushed_at else None
+                repo_data = {
+                    'source': 'GitHub',
+                    'id': repo.id,
+                    'repo_name': repo.name,
+                    'full_name': repo.full_name,
+                    'description': repo.description or '',
+                    'url': repo.html_url,
+                    'html_url': repo.html_url,
+                    'api_url': repo.url,
+                    'is_private': repo.private,
+                    'org_name': repo.owner.login, # Initial org name
+                    'created_at': created_at_iso,
+                    'updated_at': updated_at_iso,
+                    'pushed_at': pushed_at_iso,
+                    'last_updated': pushed_at_iso,
+                    'languages_url': repo.languages_url,
+                    'tags_url': repo.tags_url,
+                    'contents_url': repo.contents_url.replace('{+path}', ''),
+                    'commits_url': repo.commits_url.replace('{/sha}', ''),
+                    'license': {'name': repo.license.name, 'key': repo.license.key} if repo.license else None,
+                    "default_branch": repo.default_branch,
+                    "language": repo.language, # Primary language
+                    "readme_url": None,
+                    "readme_content": None, # Will be fetched next
+                    "contact_email": None,
+                    # Exemption fields will be added by the processor
+                }
 
-                 # Create dictionary using the common keys ('repo_name', 'org_name')
-                 repos_data.append({
-                     'source': 'GitHub',
-                     'id': repo.id,
-                     'repo_name': repo.name,      # Use 'repo_name'
-                     'full_name': repo.full_name,
-                     'description': repo.description or '',
-                     'url': repo.html_url,        # Renamed from html_url for consistency? Check generate_codejson
-                     'html_url': repo.html_url,   # Keep html_url if needed elsewhere
-                     'api_url': repo.url,
-                     'is_private': repo.private,
-                     'org_name': repo.owner.login, # Use 'org_name'
-                     'created_at': created_at_iso,
-                     'updated_at': updated_at_iso,
-                     'pushed_at': pushed_at_iso,   # Use 'pushed_at' instead of 'last_updated'? Check generate_codejson
-                     'last_updated': pushed_at_iso, # Keep last_updated if needed
-                     'languages_url': repo.languages_url,
-                     'tags_url': repo.tags_url,
-                     'contents_url': repo.contents_url.replace('{+path}', ''),
-                     'commits_url': repo.commits_url.replace('{/sha}', ''),
-                     'license': {'name': repo.license.name, 'key': repo.license.key} if repo.license else None,
-                     # Add fields from your common format
-                     "default_branch": repo.default_branch,
-                     "language": None, # Placeholder - requires separate API call (repo.get_languages())
-                     "readme_url": None, # Placeholder - requires separate API call (repo.get_readme())
-                     "contact_email": None, # Placeholder - logic to determine this needed
-                     "exempted": False, # Placeholder
-                     "exemption_reason": None # Placeholder
-                 })
+                # --- Fetch README Content ---
+                try:
+                    readme_file = repo.get_readme()
+                    readme_content_bytes = base64.b64decode(readme_file.content)
+                    try:
+                        repo_data['readme_content'] = readme_content_bytes.decode('utf-8')
+                    except UnicodeDecodeError:
+                        try:
+                            repo_data['readme_content'] = readme_content_bytes.decode('latin-1')
+                            logger.warning(f"Decoded README for {repo.name} using latin-1 encoding.")
+                        except Exception:
+                            repo_data['readme_content'] = readme_content_bytes.decode('utf-8', errors='ignore')
+                            logger.warning(f"Decoded README for {repo.name} using utf-8, ignoring errors.")
+                    repo_data['readme_url'] = readme_file.html_url
+                    logger.debug(f"Successfully fetched README for {repo.name}")
+                except UnknownObjectException:
+                    logger.debug(f"No README found for repository: {repo.name}")
+                    repo_data['readme_content'] = None # Ensure it's None if not found
+                except Exception as readme_err:
+                    logger.error(f"Error fetching or decoding README for {repo.name}: {readme_err}", exc_info=True)
+                    repo_data['readme_content'] = None # Ensure it's None on error
 
-             except Exception as repo_err:
-                 # Log error for individual repo processing but continue
-                 logger.error(f"Error processing GitHub repository '{repo.name}': {repo_err}", exc_info=True)
-                 # Continue to the next repository
+                # --- Call Exemption Processor ---
+                # Pass the collected repo_data to the central processor
+                processed_data = exemption_processor.process_repository_exemptions(repo_data)
 
-        # Log final count after the loop
-        logger.info(f"Successfully fetched details for {count} total repositories from GitHub organization '{org_name}'.")
+                # --- Clean up before adding to list ---
+                # Remove readme_content as it's large and processed now
+                processed_data.pop('readme_content', None)
 
-    # --- Specific Exception Handling ---
+                # Add the fully processed data to the list
+                processed_repo_list.append(processed_data)
+
+            except Exception as repo_err:
+                logger.error(f"Error processing GitHub repository '{repo.name}' (within main loop): {repo_err}", exc_info=True)
+                # Optionally append minimal error info if needed downstream
+                # processed_repo_list.append({'repo_name': repo.name, 'error': str(repo_err)})
+
+        logger.info(f"Successfully fetched and processed {len(processed_repo_list)} total repositories from GitHub organization '{org_name}'.")
+
+    # --- Exception Handling (as before) ---
     except BadCredentialsException:
-        logger.error(f"GitHub authentication failed (401 Bad Credentials). Please check your GITHUB_TOKEN. Skipping GitHub scan.")
-        return [] # Return empty list
+        logger.error(f"GitHub authentication failed. Check GITHUB_TOKEN. Skipping.")
+        return []
     except UnknownObjectException:
-        logger.error(f"GitHub organization '{org_name}' not found (404 Not Found). Please check your GITHUB_ORG. Skipping GitHub scan.")
-        return [] # Return empty list
+        logger.error(f"GitHub organization '{org_name}' not found. Check GITHUB_ORG. Skipping.")
+        return []
     except GithubException as e:
-        # Catch other specific GitHub API errors
-        logger.error(f"A GitHub API error occurred: {e.status} {e.data.get('message', '')}. Skipping GitHub scan.", exc_info=True)
-        return [] # Return empty list
+        logger.error(f"GitHub API error: {e.status} {e.data.get('message', '')}. Skipping.", exc_info=True)
+        return []
     except RequestException as e:
-        # Catch network-related errors
-        logger.error(f"A network error occurred connecting to GitHub: {e}. Skipping GitHub scan.", exc_info=True)
-        return [] # Return empty list
+        logger.error(f"Network error connecting to GitHub: {e}. Skipping.", exc_info=True)
+        return []
     except Exception as e:
-        # Catch any other unexpected errors during initialization or fetching
-        logger.error(f"An unexpected error occurred during GitHub fetch for org '{org_name}': {e}. Skipping GitHub scan.", exc_info=True)
-        return [] # Return empty list
+        logger.error(f"Unexpected error during GitHub fetch for org '{org_name}': {e}. Skipping.", exc_info=True)
+        return []
 
-    return repos_data
+    return processed_repo_list
 
-# --- Placeholder/Example functions for fetching additional details ---
-# These would typically be called within the main loop or afterwards,
-# potentially adding performance overhead due to extra API calls per repo.
-
-# def fetch_readme_content(repo_sdk_obj):
-#     """Fetches README content for a given PyGithub repository object."""
-#     try:
-#         content_file = repo_sdk_obj.get_readme()
-#         return content_file.decoded_content.decode('utf-8')
-#     except GithubException as e:
-#         if e.status == 404:
-#             logger.debug(f"No README found for repository: {repo_sdk_obj.full_name}")
-#         else:
-#             logger.error(f"API error fetching README for {repo_sdk_obj.full_name}: {e}")
-#         return None
-#     except Exception as e:
-#          logger.error(f"Error decoding README for {repo_sdk_obj.full_name}: {e}")
-#          return None
-
-# def fetch_languages(repo_sdk_obj):
-#      """Fetches language breakdown for a given PyGithub repository object."""
-#      try:
-#          languages = repo_sdk_obj.get_languages()
-#          return languages # Returns a dict like {'Python': 12345, 'JavaScript': 6789}
-#      except Exception as e:
-#          logger.error(f"Error fetching languages for {repo_sdk_obj.full_name}: {e}")
-#          return None
-
+# --- Note: Apply similar changes to gitlab_connector.py and azure_devops_connector.py ---
+# 1. Import exemption_processor
+# 2. Fetch base data + README + language into a repo_data dict
+# 3. Call exemption_processor.process_repository_exemptions(repo_data)
+# 4. Pop 'readme_content' from the result
+# 5. Append the result to the list returned by the connector
