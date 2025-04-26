@@ -5,6 +5,7 @@ from datetime import datetime
 from github import Github, BadCredentialsException, UnknownObjectException, GithubException
 from requests.exceptions import RequestException
 import base64
+from typing import List, Optional, Dict, Any # Added typing
 
 logger = logging.getLogger(__name__)
 
@@ -12,12 +13,48 @@ def is_placeholder_token(token):
     """Checks if the token is missing or likely a placeholder."""
     return not token or (token.startswith("ghp_") and len(token) < 40)
 
-def fetch_repositories(token, org_name) -> list[dict]:
+# --- ADD Helper to fetch CODEOWNERS ---
+def _get_codeowners_content(repo) -> Optional[str]:
+    """Fetches CODEOWNERS content from standard locations."""
+    common_paths = [
+        ".github/CODEOWNERS",
+        "docs/CODEOWNERS",
+        "CODEOWNERS"
+    ]
+    for path in common_paths:
+        try:
+            content_file = repo.get_contents(path)
+            content_bytes = base64.b64decode(content_file.content)
+            try:
+                return content_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                logger.warning(f"Could not decode CODEOWNERS at {path} as UTF-8 for {repo.name}. Trying latin-1.")
+                try:
+                    return content_bytes.decode('latin-1')
+                except Exception:
+                     logger.error(f"Failed to decode CODEOWNERS at {path} for {repo.name} even with latin-1.")
+                     return None # Give up if decode fails
+        except UnknownObjectException:
+            continue # Try next path
+        except Exception as e:
+            logger.error(f"Error fetching CODEOWNERS at {path} for {repo.name}: {e}", exc_info=True)
+            # Don't stop processing the repo, just skip CODEOWNERS
+    logger.debug(f"No CODEOWNERS file found in standard locations for {repo.name}")
+    return None
+# --- END Helper ---
+
+
+def fetch_repositories(token, org_name, processed_counter: list[int], debug_limit: int | None) -> list[dict]:
     """
     Fetches repository details from GitHub, processes exemptions,
-    and returns a list of processed repository data dictionaries.
+    respecting a global limit, and returns a list of processed repository data dictionaries.
+
+    Args:
+        token: GitHub PAT.
+        org_name: GitHub organization name.
+        processed_counter: A mutable list containing the current global count of processed repos.
+        debug_limit: The maximum number of repos to process globally (or None).
     """
-    
     # --- Import the new processor ---
     import exemption_processor
 
@@ -40,9 +77,14 @@ def fetch_repositories(token, org_name) -> list[dict]:
         org = g.get_organization(org_name)
         repos = org.get_repos(type='all')
 
-        count = 0
+        # --- Loop through repos, respecting the limit ---
         for i, repo in enumerate(repos):
-            count = i + 1
+            # --- ADD DEBUG CHECK ---
+            if debug_limit is not None and processed_counter[0] >= debug_limit:
+                logger.warning(f"--- DEBUG MODE: Global limit ({debug_limit}) reached during GitHub scan. Stopping GitHub fetch. ---")
+                break # Exit the loop over GitHub repos
+            # --- END DEBUG CHECK ---
+
             repo_data = {} # Start with an empty dict for this repo
             try:
                # --- Add fork check early ---
@@ -54,77 +96,121 @@ def fetch_repositories(token, org_name) -> list[dict]:
 
                 logger.debug(f"Fetching data for GitHub repo: {repo.full_name}")
                 # --- Fetch Base Data ---
+                # --- Prepare Base Data and Initial Schema Structure ---
                 created_at_iso = repo.created_at.isoformat() if repo.created_at else None
-                updated_at_iso = repo.updated_at.isoformat() if repo.updated_at else None
+                # updated_at_iso = repo.updated_at.isoformat() if repo.updated_at else None # Not used directly
                 pushed_at_iso = repo.pushed_at.isoformat() if repo.pushed_at else None
+                repo_visibility = "private" if repo.private else "public"
+                repo_language = repo.language # Get primary language
 
-                repo_data = {
-                    'source': 'GitHub',
-                    'id': repo.id,
-                    'repo_name': repo.name,
-                    'full_name': repo.full_name,
-                    'description': repo.description or '',
-                    'url': repo.html_url,
-                    'html_url': repo.html_url,
-                    'api_url': repo.url,
-                    'is_private': repo.private,
-                    'org_name': repo.owner.login, # Initial org name
-                    'created_at': created_at_iso,
-                    'updated_at': updated_at_iso,
-                    'pushed_at': pushed_at_iso,
-                    'last_updated': pushed_at_iso,
-                    'languages_url': repo.languages_url,
-                    'tags_url': repo.tags_url,
-                    'contents_url': repo.contents_url.replace('{+path}', ''),
-                    'commits_url': repo.commits_url.replace('{/sha}', ''),
-                    'license': {'name': repo.license.name, 'key': repo.license.key} if repo.license else None,
-                    "default_branch": repo.default_branch,
-                    "language": repo.language, # Primary language
-                    "readme_url": None,
-                    "readme_content": None, # Will be fetched next
-                    "contact_email": None,
-                    # Exemption fields will be added by the processor
-                }
+                # Prepare license structure (Schema requires a list)
+                licenses_list = []
+                if repo.license:
+                    licenses_list.append({
+                        "name": repo.license.name,
+                        # "URL": None # Placeholder - API doesn't give file URL directly
+                    })
+                # --- ADD DEFAULT LICENSE ---
+                if not licenses_list:
+                    logger.debug(f"No license found via API for {repo.name}. Applying default: Apache License 2.0")
+                    licenses_list.append({
+                        "name": "Apache License 2.0",
+                        "URL": "https://www.apache.org/licenses/LICENSE-2.0"
+                    })
+                # --- END DEFAULT LICENSE ---
 
                 # --- Fetch README Content ---
+                readme_content_str: Optional[str] = None
+                readme_url: Optional[str] = None # Initialize readme_url
                 try:
                     readme_file = repo.get_readme()
+                    readme_url = readme_file.html_url # Store the URL early
                     readme_content_bytes = base64.b64decode(readme_file.content)
-                    try:
-                        repo_data['readme_content'] = readme_content_bytes.decode('utf-8')
+                    try: readme_content_str = readme_content_bytes.decode('utf-8')
                     except UnicodeDecodeError:
-                        try:
-                            repo_data['readme_content'] = readme_content_bytes.decode('latin-1')
-                            logger.warning(f"Decoded README for {repo.name} using latin-1 encoding.")
-                        except Exception:
-                            repo_data['readme_content'] = readme_content_bytes.decode('utf-8', errors='ignore')
-                            logger.warning(f"Decoded README for {repo.name} using utf-8, ignoring errors.")
-                    repo_data['readme_url'] = readme_file.html_url
+                        try: readme_content_str = readme_content_bytes.decode('latin-1')
+                        except Exception: readme_content_str = readme_content_bytes.decode('utf-8', errors='ignore')
                     logger.debug(f"Successfully fetched README for {repo.name}")
-                except UnknownObjectException:
-                    logger.debug(f"No README found for repository: {repo.name}")
-                    repo_data['readme_content'] = None # Ensure it's None if not found
-                except Exception as readme_err:
-                    logger.error(f"Error fetching or decoding README for {repo.name}: {readme_err}", exc_info=True)
-                    repo_data['readme_content'] = None # Ensure it's None on error
+                except UnknownObjectException: logger.debug(f"No README found for repository: {repo.name}")
+                except Exception as readme_err: logger.error(f"Error fetching/decoding README for {repo.name}: {readme_err}", exc_info=True)
+
+                # --- Fetch CODEOWNERS Content ---
+                codeowners_content_str = _get_codeowners_content(repo)
+                # --- END Fetch ---
+
+
+                # Build the dictionary using schema 2.0 field names where possible
+                # This dictionary will be passed to the exemption processor
+                repo_data = {
+                    # === Core Schema Fields ===
+                    "name": repo.name,
+                    "description": repo.description or '',
+                    "organization": repo.owner.login, # Use owner login as organization
+                    "repositoryURL": repo.html_url,
+                    "homepageURL": repo.html_url, # Default to repo URL, adjust if specific homepage exists
+                    "downloadURL": None, # Requires specific release asset info, not available here
+                    "vcs": "git",
+                    "repositoryVisibility": repo_visibility,
+                    "status": "development", # Placeholder - could be inferred later (e.g., based on activity)
+                    "version": "N/A", # Placeholder - requires fetching tags/releases
+                    "laborHours": 0, # Placeholder - requires estimation logic
+                    "languages": [repo_language] if repo_language else [], # Schema expects a list
+                    "tags": [], # Placeholder - requires fetching tags
+
+                    # === Nested Schema Fields ===
+                    "date": {
+                        "created": created_at_iso,
+                        "lastModified": pushed_at_iso, # Use pushed_at as best indicator of code change
+                        # "metadataLastUpdated": Will be added globally later
+                    },
+                    "permissions": {
+                        "usageType": None, # To be determined by exemption_processor
+                        "exemptionText": None, # To be determined by exemption_processor
+                        "licenses": licenses_list
+                    },
+                    "contact": {
+                        "name": "Centers for Disease Control and Prevention", # Default contact name
+                        "email": None # To be determined by exemption_processor
+                    },
+                    "contractNumber": None, # To be determined by exemption_processor
+
+                    # === Fields needed for processing (will be removed later) ===
+                    "readme_content": readme_content_str, # Pass fetched content
+                    "_codeowners_content": codeowners_content_str, # Pass fetched content
+                    "_is_private_flag": repo.private, # Temp flag for exemption_processor logic
+                    "_language_heuristic": repo_language, # Temp field for exemption_processor non-code check
+
+                    # === /Additional Fields (Kept at the end) ===
+                    "repo_id": repo.id,
+                    "readme_url": readme_url, # Pass the found URL
+                }
 
                 # --- Call Exemption Processor ---
-                # Pass the collected repo_data to the central processor
-                processed_data = exemption_processor.process_repository_exemptions(repo_data)
+                # The processor will modify repo_data directly (permissions, contact, contractNumber)
+                # It needs access to 'readme_content', '_is_private_flag', '_language_heuristic' etc.
+                processed_data = exemption_processor.process_repository_exemptions(repo_data) # Pass the dict
 
-                # --- Clean up before adding to list ---
-                # Remove readme_content as it's large and processed now
-                processed_data.pop('readme_content', None)
+                # --- Clean up temporary/processed fields ---
+                # Processor now handles removing readme_content and _codeowners_content
+                processed_data.pop('_is_private_flag', None)
+                processed_data.pop('_language_heuristic', None)
 
                 # Add the fully processed data to the list
                 processed_repo_list.append(processed_data)
+
+                # --- INCREMENT GLOBAL COUNTER ---
+                # Increment only after successfully processing and appending
+                processed_counter[0] += 1
+                # --- END INCREMENT ---
+
 
             except Exception as repo_err:
                 logger.error(f"Error processing GitHub repository '{repo.name}' (within main loop): {repo_err}", exc_info=True)
                 # Optionally append minimal error info if needed downstream
                 # processed_repo_list.append({'repo_name': repo.name, 'error': str(repo_err)})
+                # Do NOT increment counter if an error occurred during processing this repo
 
-        logger.info(f"Successfully fetched and processed {len(processed_repo_list)} total repositories from GitHub organization '{org_name}'.")
+        logger.info(f"Finished GitHub scan. Processed {len(processed_repo_list)} repositories in this connector. Global count: {processed_counter[0]}")
 
     # --- Exception Handling (as before) ---
     except BadCredentialsException:
@@ -144,10 +230,3 @@ def fetch_repositories(token, org_name) -> list[dict]:
         return []
 
     return processed_repo_list
-
-# --- Note: Apply similar changes to gitlab_connector.py and azure_devops_connector.py ---
-# 1. Import exemption_processor
-# 2. Fetch base data + README + language into a repo_data dict
-# 3. Call exemption_processor.process_repository_exemptions(repo_data)
-# 4. Pop 'readme_content' from the result
-# 5. Append the result to the list returned by the connector

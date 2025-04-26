@@ -1,205 +1,247 @@
 # utils/privateid_manager.py
 import csv
 import os
-import random
+import uuid # Keep if using as fallback
 import logging
+from datetime import datetime, timezone
+import random
+import string
+from typing import Optional, List, Dict, Any
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 class PrivateIdManager:
-    """Handles loading, generating, and saving private IDs and contact emails."""
+    """Manages the mapping between repositories and unique private IDs."""
+    EXPECTED_HEADER = ["PrivateID", "RepositoryName", "Organization", "ContactEmails", "DateAdded"]
 
-    # --- Define fieldnames including contactEmails ---
-    FIELDNAMES = ['name', 'organization', 'privateID', 'contactEmails']
-
-    def __init__(self, filepath, template_path="templates/privateid_mapping_template.csv"):
-        """Initializes the PrivateIdManager."""
+    def __init__(self, filepath="output/privateid_mapping.csv"):
         self.filepath = filepath
-        self.template_path = template_path
-        self.mapping = {}
-        self.existing_ids = set()
-        self.new_ids_generated_count = 0
-        self.new_mappings_to_save = []
-        self._ensure_file_with_headers()
-        self._load_mapping()
+        # This now holds the single source of truth, loaded initially and updated during run
+        self.mappings: Dict[tuple[str, str], Dict[str, Any]] = {}
+        # --- REMOVE new_mappings tracker ---
+        # self.new_mappings = {}
+        self.logger = logging.getLogger(__name__) # Instance logger if preferred
+        self.new_id_count = 0 # Track genuinely new IDs generated
+        self.updated_email_count = 0 # Track records where emails were updated
+        self._ensure_csv_headers() # Ensure file/headers exist before loading
+        self._load_mappings()
 
-    def _ensure_file_with_headers(self):
-        """Ensures the mapping file exists and has the correct headers."""
-        file_exists = os.path.isfile(self.filepath)
-        headers_needed = False
-        write_mode = 'w' # Default to write if creating or empty
-
-        if not file_exists:
-            dir_path = os.path.dirname(self.filepath)
-            if dir_path:
-                 os.makedirs(dir_path, exist_ok=True)
-            logger.info(f"Mapping file not found. Creating '{self.filepath}'.")
-            try:
-                with open(self.template_path, 'r', encoding='utf-8') as tpl, open(self.filepath, 'w', encoding='utf-8') as out:
-                    template_content = tpl.read()
-                    if template_content.strip():
-                        out.write(template_content)
-                        logger.info(f"Created private ID mapping from template: {self.filepath}")
-                        file_exists = True
-                        # Check if template headers match FIELDNAMES
-                        with open(self.filepath, 'r', encoding='utf-8') as check_file:
-                            reader = csv.reader(check_file)
-                            try:
-                                headers = next(reader)
-                                if headers != self.FIELDNAMES:
-                                    logger.warning(f"Template headers mismatch expected headers. Will overwrite. Template: {headers}, Expected: {self.FIELDNAMES}")
-                                    headers_needed = True # Force rewrite
-                                else:
-                                     write_mode = 'a' # Template is good, append later
-                            except StopIteration: # Empty template
-                                headers_needed = True
-                    else:
-                        logger.warning(f"Template file '{self.template_path}' is empty. Will write headers directly.")
-                        headers_needed = True
-            except FileNotFoundError:
-                logger.warning(f"Template file not found at {self.template_path}. Will create mapping file with headers.")
-                headers_needed = True
-            except Exception as e:
-                 logger.error(f"Error copying template file '{self.template_path}': {e}. Will create mapping file with headers.")
-                 headers_needed = True
-
-            if not file_exists:
-                 if dir_path:
-                     os.makedirs(dir_path, exist_ok=True)
-                 open(self.filepath, 'a').close()
-                 headers_needed = True
-
-        if file_exists and os.path.getsize(self.filepath) == 0:
-            logger.info(f"Existing mapping file '{self.filepath}' is empty. Headers will be written.")
-            headers_needed = True
-            write_mode = 'w'
-        elif file_exists and not headers_needed: # Check headers if file exists and wasn't created/template checked
-             try:
+    def _ensure_csv_headers(self):
+        """Ensure the CSV file exists and has the correct headers."""
+        try:
+            file_exists = os.path.isfile(self.filepath)
+            # Check if file needs header (doesn't exist or is empty)
+            needs_header = not file_exists or os.path.getsize(self.filepath) == 0
+            if needs_header:
+                # Ensure directory exists before writing
+                os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
+                with open(self.filepath, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow(self.EXPECTED_HEADER)
+                self.logger.info(f"Created or initialized headers in {self.filepath}")
+            elif file_exists: # Check header if file exists and is not empty
                  with open(self.filepath, 'r', newline='', encoding='utf-8') as csvfile:
-                     reader = csv.DictReader(csvfile)
-                     if not reader.fieldnames or reader.fieldnames != self.FIELDNAMES:
-                         logger.warning(f"Headers in existing file '{self.filepath}' are missing or incorrect. Will overwrite. Found: {reader.fieldnames}, Expected: {self.FIELDNAMES}")
-                         headers_needed = True
-                         write_mode = 'w'
-                     else:
-                         write_mode = 'a' # Headers are good, append later
-             except Exception as e:
-                  logger.error(f"Error checking headers in '{self.filepath}': {e}. Assuming headers need writing.")
-                  headers_needed = True
-                  write_mode = 'w'
+                    reader = csv.reader(csvfile)
+                    try:
+                        header = next(reader)
+                        if header != self.EXPECTED_HEADER:
+                            self.logger.error(f"Header mismatch in {self.filepath}. Expected: {self.EXPECTED_HEADER}, Found: {header}. Please fix manually or delete the file.")
+                            # Consider raising an error to stop execution
+                            # raise ValueError(f"Header mismatch in {self.filepath}")
+                    except StopIteration: # File exists but is empty after all
+                         self.logger.warning(f"File {self.filepath} exists but is empty. Headers will be written if needed by save.")
+                         # Re-create with header just in case
+                         with open(self.filepath, 'w', newline='', encoding='utf-8') as csvfile_fix:
+                              writer = csv.writer(csvfile_fix)
+                              writer.writerow(self.EXPECTED_HEADER)
 
-        if headers_needed:
-            try:
-                dir_path = os.path.dirname(self.filepath)
-                if dir_path:
-                    os.makedirs(dir_path, exist_ok=True)
-                with open(self.filepath, write_mode, newline='', encoding='utf-8') as csvfile:
-                     writer = csv.DictWriter(csvfile, fieldnames=self.FIELDNAMES)
-                     writer.writeheader()
-                     logger.info(f"Wrote headers {self.FIELDNAMES} to '{self.filepath}'.")
-            except Exception as e:
-                 logger.error(f"Failed to write headers to '{self.filepath}': {e}")
+        except IOError as e:
+            self.logger.error(f"Error ensuring CSV headers for {self.filepath}: {e}", exc_info=True)
+            raise # Re-raise critical error
 
-    def _load_mapping(self):
-        """Loads the existing private ID mapping including contact emails."""
+    def _load_mappings(self):
+        """Loads existing mappings from the CSV file into self.mappings."""
+        if not os.path.isfile(self.filepath) or os.path.getsize(self.filepath) == 0:
+            self.logger.info(f"Mapping file {self.filepath} not found or empty. Starting fresh.")
+            return # Nothing to load
+
         try:
-            with open(self.filepath, 'r', newline='', encoding='utf-8') as csvfile:
+            with open(self.filepath, mode='r', newline='', encoding='utf-8') as csvfile:
                 reader = csv.DictReader(csvfile)
-                if not reader.fieldnames:
-                     logger.error(f"Could not read headers from '{self.filepath}'. File might be empty or corrupted.")
-                     return
+                # Check header directly from DictReader fieldnames
+                if reader.fieldnames != self.EXPECTED_HEADER:
+                     self.logger.error(f"Header mismatch loading mappings from {self.filepath}. Expected: {self.EXPECTED_HEADER}, Found: {reader.fieldnames}. Cannot load.")
+                     return # Stop loading if headers don't match
 
-                # Check for essential headers
-                if not all(h in reader.fieldnames for h in ['name', 'organization', 'privateID']):
-                     logger.error(f"Missing essential headers in '{self.filepath}'. Found: {reader.fieldnames}")
-                     return
+                loaded_count = 0
+                for row_num, row in enumerate(reader, start=2): # Start row count after header
+                    try:
+                        # Use .get with defaults for robustness
+                        private_id = row.get('PrivateID', '').strip()
+                        repo_name = row.get('RepositoryName', '').strip()
+                        org_name = row.get('Organization', '').strip()
+                        emails_str = row.get('ContactEmails', '')
+                        date_added = row.get('DateAdded', '')
 
-                count = 0
-                for row in reader:
-                    if row.get('name') and row.get('organization') and row.get('privateID'):
-                        key = (row['name'], row['organization'])
-                        self.mapping[key] = {
-                            'privateID': row['privateID'],
-                            # Load contactEmails, default to empty string if column missing/empty
-                            'contactEmails': row.get('contactEmails', '')
+                        if not private_id or not repo_name or not org_name:
+                             self.logger.warning(f"Skipping row {row_num} in {self.filepath}: Missing required field(s). Row: {row}")
+                             continue
+
+                        # Store emails as a sorted list internally
+                        contact_emails = sorted(list(set(email.strip() for email in emails_str.split(';') if email.strip())))
+
+                        key = (org_name.lower(), repo_name.lower())
+                        self.mappings[key] = {
+                            'id': private_id,
+                            'repo': repo_name, # Store original case for writing
+                            'org': org_name,   # Store original case for writing
+                            'emails': contact_emails, # Store as list
+                            'date': date_added
                         }
-                        self.existing_ids.add(row['privateID'])
-                        count += 1
-                    else:
-                        logger.warning(f"Skipping incomplete row in '{self.filepath}': {row}")
+                        loaded_count += 1
+                    except Exception as row_err:
+                         self.logger.warning(f"Error processing row {row_num} in {self.filepath}: {row_err}. Row: {row}")
 
-            logger.info(f"Loaded {count} existing entries from {self.filepath}")
+            self.logger.info(f"Loaded {loaded_count} existing private ID mappings from {self.filepath}")
+
         except FileNotFoundError:
-             logger.error(f"Private ID mapping file unexpectedly not found at {self.filepath} during load.")
+             self.logger.warning(f"Mapping file {self.filepath} not found during load. Starting fresh.") # Should be caught earlier
         except Exception as e:
-            logger.error(f"Error loading private ID mapping {self.filepath}: {e}", exc_info=True)
+            self.logger.error(f"Error loading private ID mappings from {self.filepath}: {e}", exc_info=True)
 
-    def _generate_unique_id(self):
-        """Generates a unique 6-digit random number string."""
-        while True:
-            new_id = str(random.randint(100000, 999999))
-            if new_id not in self.existing_ids:
-                self.existing_ids.add(new_id)
+
+    def _generate_short_id(self, length=6):
+        """Generates a random alphanumeric ID, checking for collisions."""
+        characters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        max_retries = 100
+        # Combine all known IDs (case-insensitive) for collision check
+        used_ids_lower = {data['id'].lower() for data in self.mappings.values()}
+
+        for _ in range(max_retries):
+            new_id = ''.join(random.choice(characters) for _ in range(length))
+            if new_id.lower() not in used_ids_lower:
                 return new_id
+            else:
+                self.logger.debug(f"Generated short ID {new_id} collided, retrying...")
+        self.logger.error(f"Failed to generate a unique short ID after {max_retries} retries.")
+        # Fallback to ensure uniqueness if short ID fails
+        # Ensure uuid is imported if using this fallback
+        import uuid
+        return str(uuid.uuid4())
 
-    # --- Updated to accept contact_emails ---
-    def get_or_generate_id(self, repo_name, organization, contact_emails=""):
-        """Gets existing ID or generates a new one including contact emails."""
-        key = (repo_name, organization)
-        if key in self.mapping:
-            logger.debug(f"Found existing privateID for '{repo_name}' in org '{organization}'.")
-            # Optional: Update contact emails if provided and different? For now, just return existing ID.
-            # if contact_emails and self.mapping[key].get('contactEmails') != contact_emails:
-            #     logger.info(f"Contact emails for existing entry '{repo_name}' differ. Keeping existing ID, not updating emails here.")
-            return self.mapping[key]['privateID']
 
-        logger.debug(f"Generating new privateID for '{repo_name}' in org '{organization}'.")
-        new_id = self._generate_unique_id()
-        new_entry_data = {
-            'name': repo_name,
-            'organization': organization,
-            'privateID': new_id,
-            'contactEmails': contact_emails # Store provided emails
-        }
+    def get_or_generate_id(self, repo_name: str, organization: str, contact_emails: Optional[List[str]] = None) -> str:
+        """
+        Gets the existing PrivateID or generates a new one.
+        Updates contact emails in the main mapping if necessary.
+        """
+        key = (organization.lower(), repo_name.lower())
+        # Prepare new emails list (lowercase, sorted, unique)
+        actual_emails_list = sorted(list(set(email.lower() for email in contact_emails if email))) if contact_emails else []
 
-        self.mapping[key] = {
-            'privateID': new_id,
-            'contactEmails': contact_emails
-        }
-        self.new_mappings_to_save.append(new_entry_data)
-        self.new_ids_generated_count += 1
-        logger.debug(f"Queued new privateID {new_id} with emails '{contact_emails}' for '{repo_name}' for saving.")
+        if key in self.mappings:
+            # Existing mapping found
+            existing_data = self.mappings[key]
+            existing_emails_list = existing_data.get('emails', [])
 
-        return new_id
+            # Check if emails need updating
+            if actual_emails_list and actual_emails_list != existing_emails_list:
+                log_level = logging.INFO if not existing_emails_list else logging.WARNING
+                self.logger.log(log_level, f"Updating contact emails for existing PrivateID {existing_data['id']} ({organization}/{repo_name}). New: {';'.join(actual_emails_list)}")
+                # --- Directly update the main mapping ---
+                existing_data['emails'] = actual_emails_list
+                self.updated_email_count += 1 # Increment update counter
+                # --- No need to add to new_mappings ---
 
-    def save_new_mappings(self):
-        """Appends all newly generated mappings (including emails) to the CSV file."""
-        if not self.new_mappings_to_save:
-             logger.info("No new private IDs generated to save.")
-             return
+            return existing_data['id']
+        else:
+            # Generate new ID and add to main mapping
+            new_id = self._generate_short_id()
+            date_added = datetime.now(timezone.utc).isoformat()
+            emails_str_log = ";".join(actual_emails_list) if actual_emails_list else ""
 
-        logger.info(f"Saving {len(self.new_mappings_to_save)} new private ID mappings to {self.filepath}...")
+            # Log generation (DEBUG level)
+            self.logger.debug(f"Generating new PrivateID '{new_id}' for {organization}/{repo_name}. Contacts: '{emails_str_log}'")
+
+            # --- Add directly to the main mapping ---
+            self.mappings[key] = {
+                'id': new_id,
+                'repo': repo_name, # Store original case
+                'org': organization, # Store original case
+                'emails': actual_emails_list, # Store as list
+                'date': date_added
+            }
+            self.new_id_count += 1 # Increment new counter
+            return new_id
+
+    def get_contact_email_for_json(self, organization: str, repo_name: str, is_private: bool) -> Optional[str]:
+        """
+        Returns the appropriate contact email string for the code.json.
+        - Public repos: Returns the first found actual email (alphabetically sorted) or None.
+        - Private repos: Returns the generic email address.
+        """
+        if is_private:
+            return PRIVATE_REPO_CONTACT_EMAIL  # i.e., shareit@cdc.gov
+        else:
+            key = (organization.lower(), repo_name.lower())
+            if key in self.mappings:
+                mapping_data = self.mappings[key]
+                # Emails are already sorted in the mapping
+                if mapping_data.get('emails'):
+                    return mapping_data['emails'][0] # Return the first actual email
+            return None # No mapping or no emails found for public repo
+
+    # --- save_all_mappings ---
+    def save_all_mappings(self):
+        """Saves the entire current state of mappings to the CSV file, overwriting it."""
+        if not self.mappings:
+            self.logger.info("No private ID mappings exist in memory to save.")
+            return
+
+        saved_count = 0
         try:
-            with open(self.filepath, 'a', newline='', encoding='utf-8') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=self.FIELDNAMES)
-                # Check if file is empty AFTER opening in append mode, write header if needed
-                # This is a fallback in case _ensure_file_with_headers failed somehow
-                csvfile.seek(0, os.SEEK_END) # Go to end of file
-                if csvfile.tell() == 0: # Check if file is empty
-                    writer.writeheader()
-                    logger.warning(f"File '{self.filepath}' was empty before saving new mappings. Wrote headers.")
+            # Open in write mode ('w') to overwrite the file
+            with open(self.filepath, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                # Write the header first
+                writer.writerow(self.EXPECTED_HEADER)
 
-                writer.writerows(self.new_mappings_to_save)
-                csvfile.flush()
-                os.fsync(csvfile.fileno())
-
-            logger.info(f"Successfully saved {len(self.new_mappings_to_save)} new mappings.")
-            self.new_mappings_to_save = []
-
+                # Write all rows from the in-memory dictionary
+                # Sort by org then repo for consistent output order (optional)
+                sorted_keys = sorted(self.mappings.keys())
+                for key in sorted_keys:
+                    data = self.mappings[key]
+                    # Convert list of emails back to semicolon-separated string for CSV
+                    emails_str = ";".join(data.get('emails', []))
+                    writer.writerow([
+                        data['id'],
+                        data['repo'], 
+                        data['org'],  
+                        emails_str,
+                        data['date']
+                    ])
+                    saved_count += 1
+            self.logger.info(f"Successfully saved {saved_count} private ID mappings to {self.filepath}")
+        except IOError as e:
+            self.logger.error(f"Failed to save private ID mappings to {self.filepath}: {e}", exc_info=True)
         except Exception as e:
-            logger.error(f"Error saving new private ID mappings to {self.filepath}: {e}", exc_info=True)
+             self.logger.error(f"An unexpected error occurred while saving mappings: {e}", exc_info=True)
 
-    def get_new_id_count(self):
-        """Returns the count of new IDs generated during this run."""
-        return self.new_ids_generated_count
+        # Reset counters after successful save
+        self.new_id_count = 0
+        self.updated_email_count = 0
+    # --- END UPDATE ---
 
+    def get_new_id_count(self) -> int:
+        """Returns the count of *new* IDs generated since the last save."""
+        return self.new_id_count
+
+    def get_updated_email_count(self) -> int:
+        """Returns the count of records where emails were updated since the last save."""
+        return self.updated_email_count
+
+# --- End PrivateIdManager ---

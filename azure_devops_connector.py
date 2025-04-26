@@ -12,8 +12,9 @@ from requests.exceptions import RequestException
 from datetime import datetime
 import base64
 # --- Import the new processor ---
-import exemption_processor
+import exemption_processor # Ensure this import is present
 
+# DO NOT CHANGE THESE PLACEHOLDERS !!!
 PLACEHOLDER_AZURE_TOKEN = "YOUR_AZURE_DEVOPS_PAT"
 PLACEHOLDER_AZURE_ORG = "YourAzureDevOpsOrgName"
 PLACEHOLDER_AZURE_PROJECT = "YourAzureDevOpsProjectName"
@@ -28,10 +29,18 @@ def get_azure_devops_org_url():
     base_url = os.getenv("AZURE_DEVOPS_API_URL", "https://dev.azure.com")
     return f"{base_url.rstrip('/')}/{org_name}"
 
-def fetch_repositories(token, org_name, project_name=None) -> list[dict]:
+# --- UPDATE function signature ---
+def fetch_repositories(token, org_name, project_name, processed_counter: list[int], debug_limit: int | None) -> list[dict]:
     """
     Fetches repository details from Azure DevOps, processes exemptions,
-    and returns a list of processed repository data dictionaries.
+    respecting a global limit, and returns a list of processed repository data dictionaries.
+
+    Args:
+        token: Azure DevOps PAT.
+        org_name: Azure DevOps organization name.
+        project_name: Specific Azure DevOps project name (or None/placeholder to scan all).
+        processed_counter: A mutable list containing the current global count of processed repos.
+        debug_limit: The maximum number of repos to process globally (or None).
     """
     if not token or token == PLACEHOLDER_AZURE_TOKEN:
         logger.info("Azure DevOps token is missing or is a placeholder. Skipping Azure DevOps scan.")
@@ -69,11 +78,11 @@ def fetch_repositories(token, org_name, project_name=None) -> list[dict]:
                       logger.error(f"Azure DevOps specific project '{project_name}' not found (404). Skipping.")
                  else:
                       logger.error(f"Azure DevOps error fetching specific project '{project_name}': {proj_404_err}. Skipping.", exc_info=True)
-                 return []
+                 return [] # Exit if specific project not found or error occurs
             except Exception as proj_err:
                  logger.error(f"Unexpected error fetching specific Azure DevOps project '{project_name}': {proj_err}. Skipping.", exc_info=True)
-                 return []
-        else:
+                 return [] # Exit on other errors fetching specific project
+        else: 
             logger.info("Fetching all projects in the organization...")
             projects_to_scan = core_client.get_projects()
 
@@ -81,58 +90,48 @@ def fetch_repositories(token, org_name, project_name=None) -> list[dict]:
              logger.warning(f"No Azure DevOps projects found for organization '{org_name}'" + (f" matching name '{project_name}'" if scan_specific_project else "."))
              return []
 
-        total_repos_found = 0
+        # --- Loop through projects ---
         for project in projects_to_scan:
-            project_repo_count = 0
+            # --- ADD DEBUG CHECK (Project Level) ---
+            # Check limit before even fetching repos for this project
+            if debug_limit is not None and processed_counter[0] >= debug_limit:
+                logger.warning(f"--- DEBUG MODE: Global limit ({debug_limit}) reached before processing project '{project.name}'. Skipping project. ---")
+                continue # Skip to the next project (or effectively stop if this was the last one)
+            # --- END DEBUG CHECK ---
+
             logger.debug(f"Fetching repositories for project: {project.name}...")
             try:
                 project_repos = git_client.get_repositories(project.id)
+                # --- Loop through repos, respecting the limit ---
                 for i, repo in enumerate(project_repos):
-                    project_repo_count = i + 1
-                    total_repos_found += 1
+                    # --- ADD DEBUG CHECK (Repo Level) ---
+                    if debug_limit is not None and processed_counter[0] >= debug_limit:
+                        logger.warning(f"--- DEBUG MODE: Global limit ({debug_limit}) reached during ADO scan within project '{project.name}'. Stopping ADO fetch for this project. ---")
+                        break # Exit the loop over repos within this project
+                    # --- END DEBUG CHECK ---
+
                     repo_data = {} # Start fresh for each repo
                     try:
                         # --- Add fork check early ---
-                        # Azure DevOps uses 'is_fork' boolean attribute
                         if repo.is_fork:
-                            # Log at INFO level
                             logger.info(f"Skipping forked repository: {project.name}/{repo.name}")
-                            continue # Move to the next repository
+                            continue
                         # --- End fork check ---
 
                         logger.debug(f"Fetching data for ADO repo: {project.name}/{repo.name}")
 
                         # --- Fetch Base Data ---
                         default_branch = repo.default_branch.replace('refs/heads/', '') if repo.default_branch else None
+                        repo_visibility = "private" if project.visibility != core_models.ProjectVisibility.PUBLIC else "public"
+                        # ADO doesn't provide created_at for repo easily, default to None
+                        created_at_iso = None
+                        # Language and License are not readily available in ADO API
+                        repo_language = None
+                        licenses_list = []
 
-                        repo_data = {
-                            "source": "AzureDevOps",
-                            "id": repo.id, # Use repo ID
-                            "org_name": org_name, # Use the overall org name
-                            "project_name": project.name, # Keep project name separate if needed
-                            "repo_name": repo.name, # Just the repo name
-                            "full_name": f"{project.name}/{repo.name}", # Combine project/repo name
-                            "description": repo.name, # No separate description field easily available
-                            "html_url": repo.web_url,
-                            "api_url": repo.url,
-                            "is_private": project.visibility != core_models.ProjectVisibility.PUBLIC,
-                            "is_fork": repo.is_fork,
-                            "created_at": None, # Not easily available
-                            "updated_at": None, # Will fetch last commit date
-                            "pushed_at": None, # Will fetch last commit date
-                            "last_updated": None, # Will fetch last commit date
-                            "default_branch": default_branch,
-                            "language": None, # Placeholder - ADO doesn't provide easily
-                            "license_name": None, # Placeholder
-                            "readme_url": None,
-                            "readme_content": None, # Will be fetched next
-                            "contact_email": None,
-                            # Exemption fields added by processor
-                        }
-
-                        # --- Fetch Last Commit (for last_updated) ---
+                        # --- Fetch Last Commit Date ---
                         last_updated_iso = None
-                        if default_branch: # Need branch to get commits usually
+                        if default_branch:
                             try:
                                 commits = git_client.get_commits(
                                     repository_id=repo.id,
@@ -151,24 +150,77 @@ def fetch_repositories(token, org_name, project_name=None) -> list[dict]:
                                         last_updated_iso = committer_date.isoformat()
                                     elif isinstance(committer_date, str):
                                         try:
-                                            # Handle potential timezone formats
+                                            # Attempt parsing ISO format, handling potential 'Z'
                                             dt_obj = datetime.fromisoformat(committer_date.replace('Z', '+00:00'))
                                             last_updated_iso = dt_obj.isoformat()
                                         except ValueError:
                                             logger.warning(f"Could not parse commit date string '{committer_date}' for {project.name}/{repo.name}")
-                                repo_data['updated_at'] = last_updated_iso
-                                repo_data['pushed_at'] = last_updated_iso
-                                repo_data['last_updated'] = last_updated_iso
                             except Exception as commit_err:
                                 logger.error(f"Error fetching last commit for {project.name}/{repo.name}: {commit_err}", exc_info=True)
                         else:
                             logger.debug(f"Skipping last commit fetch for {project.name}/{repo.name} - no default branch.")
 
+                        # --- ADD DEFAULT LICENSE ---
+                        if not licenses_list:
+                            logger.debug(f"No license found via API for {project.name}/{repo.name}. Applying default: Apache License 2.0")
+                            licenses_list.append({
+                                "name": "Apache License 2.0",
+                                "URL": "https://www.apache.org/licenses/LICENSE-2.0"
+                            })
+                        # --- END DEFAULT LICENSE ---
 
-                        # --- Fetch README Content ---
+                        # Build the dictionary using schema 2.0 field names where possible
+                        repo_data = {
+                            # === Core Schema Fields ===
+                            "name": repo.name,
+                            # Use repo name as description if none available
+                            "description": repo.name,
+                            # Use the overall org name passed to the function
+                            "organization": org_name,
+                            "repositoryURL": repo.web_url,
+                            "homepageURL": repo.web_url, # Default to repo URL
+                            "downloadURL": None, # Requires release info
+                            "vcs": "git",
+                            "repositoryVisibility": repo_visibility,
+                            "status": "development", # Placeholder
+                            "version": "N/A", # Placeholder
+                            "laborHours": 0, # Placeholder
+                            "languages": [], # ADO doesn't provide easily
+                            "tags": [], # Placeholder - requires fetching tags API
+
+                            # === Nested Schema Fields ===
+                            "date": {
+                                "created": created_at_iso, # Often None for ADO
+                                "lastModified": last_updated_iso, # From last commit
+                                # "metadataLastUpdated": Will be added globally later
+                            },
+                            "permissions": {
+                                "usageType": None, # To be determined by exemption_processor
+                                "exemptionText": None, # To be determined by exemption_processor
+                                "licenses": licenses_list # Use the potentially updated list
+                            },
+                            "contact": {
+                                "name": "Centers for Disease Control and Prevention", # Default contact name
+                                "email": None # To be determined by exemption_processor
+                            },
+                            "contractNumber": None, # To be determined by exemption_processor
+
+                            # === Fields needed for processing (will be removed later) ===
+                            "readme_content": None, # Fetched next
+                            "_is_private_flag": repo_visibility == 'private', # Temp flag
+                            "_language_heuristic": repo_language, # Temp field (will be None)
+
+                            # === Additional Fields (Kept at the end) / Doesn't hurt ===
+                            "repo_id": repo.id,
+                            "readme_url": None, # Will be updated after fetching README
+                        }
+
+
+                        # --- Fetch README.MD Content ---
                         if default_branch:
                             try:
                                 # Look for common README filenames
+                                readme_found = False
                                 for readme_path in ["README.md", "README.txt", "README"]:
                                     try:
                                         item = git_client.get_item(
@@ -183,22 +235,33 @@ def fetch_repositories(token, org_name, project_name=None) -> list[dict]:
                                         )
                                         if item and item.content:
                                             try:
-                                                readme_content_bytes = base64.b64decode(item.content)
-                                                try:
-                                                    repo_data['readme_content'] = readme_content_bytes.decode('utf-8')
-                                                except UnicodeDecodeError:
-                                                    repo_data['readme_content'] = readme_content_bytes.decode('latin-1')
-                                            except Exception: # Fallback if not base64
+                                                # ADO content might not be base64, try direct first
                                                 repo_data['readme_content'] = item.content
-                                            repo_data['readme_url'] = f"{repo.web_url}?path=/{readme_path}&version=GB{default_branch}&_a=contents"
-                                            logger.debug(f"Fetched README '{readme_path}' for {project.name}/{repo.name}")
-                                            break # Found one, stop looking
+                                            except Exception: # Fallback to base64 decode if direct fails
+                                                try:
+                                                    readme_content_bytes = base64.b64decode(item.content)
+                                                    try:
+                                                        repo_data['readme_content'] = readme_content_bytes.decode('utf-8')
+                                                    except UnicodeDecodeError:
+                                                        repo_data['readme_content'] = readme_content_bytes.decode('latin-1')
+                                                except Exception as decode_err:
+                                                     logger.warning(f"Could not decode README content for {project.name}/{repo.name}: {decode_err}")
+                                                     repo_data['readme_content'] = None # Ensure it's None if decode fails
+
+                                            if repo_data['readme_content']: # Only set URL if content was obtained
+                                                # Construct a likely README URL
+                                                repo_data['readme_url'] = f"{repo.web_url}?path=/{readme_path}&version=GB{default_branch}&_a=contents"
+                                                logger.debug(f"Fetched README '{readme_path}' for {project.name}/{repo.name}")
+                                                readme_found = True
+                                                break # Found one, stop looking
                                     except AzureDevOpsClientRequestError as item_404_err:
                                         status_code = getattr(item_404_err, 'status_code', None)
                                         if status_code == 404:
                                             continue # Try next readme filename
                                         else:
                                             raise # Re-raise other API errors
+                                if not readme_found:
+                                     logger.debug(f"No common README file found for {project.name}/{repo.name}")
                             except AzureDevOpsClientRequestError as item_err:
                                  logger.error(f"API error fetching README item for {project.name}/{repo.name}: {item_err}", exc_info=True)
                             except Exception as readme_err:
@@ -208,26 +271,34 @@ def fetch_repositories(token, org_name, project_name=None) -> list[dict]:
 
 
                         # --- Call Exemption Processor ---
+                        # Pass the repo_data dictionary, processor modifies it in place
                         processed_data = exemption_processor.process_repository_exemptions(repo_data)
 
-                        # --- Clean up ---
+                        # --- Clean up temporary/processed fields ---
                         processed_data.pop('readme_content', None)
+                        processed_data.pop('_is_private_flag', None)
+                        processed_data.pop('_language_heuristic', None)
 
                         # Add the fully processed data
                         processed_repo_list.append(processed_data)
 
+                        # --- INCREMENT GLOBAL COUNTER ---
+                        processed_counter[0] += 1
+                        # --- END INCREMENT ---
+
                     except Exception as repo_proc_err:
                          logger.error(f"Error processing ADO repository '{project.name}/{repo.name}': {repo_proc_err}", exc_info=True)
-                         # Optionally append minimal error info
-                         # processed_repo_list.append({'repo_name': f"{project.name}/{repo.name}", 'error': str(repo_proc_err)})
+                         # Do NOT increment counter if an error occurred
 
             except AzureDevOpsClientRequestError as proj_repo_err:
                  logger.error(f"Azure DevOps API error fetching repositories for project '{project.name}': {proj_repo_err}. Skipping project.", exc_info=True)
             except Exception as proj_repo_err:
                  logger.error(f"Unexpected error fetching repositories for project '{project.name}': {proj_repo_err}. Skipping project.", exc_info=True)
 
-        logger.info(f"Successfully fetched and processed {len(processed_repo_list)} total repositories from Azure DevOps.")
+        # --- UPDATE Log Message ---
+        logger.info(f"Finished Azure DevOps scan. Processed {len(processed_repo_list)} repositories in this connector. Global count: {processed_counter[0]}")
 
+    # --- Exception Handling (as before) ---
     except AzureDevOpsClientRequestError as e:
         status_code = getattr(e, 'status_code', None)
         if status_code == 401:
