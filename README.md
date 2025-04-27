@@ -4,7 +4,7 @@ This tool was developed in response to the Strengthening Homeland and Organizati
 
 The SHARE IT Act mandates that federal agencies:
 1. Inventory Custom Code: Require federal agencies to create and maintain inventories of their custom-developed software.
-2. Enable Government-Wide Reuse: Require agencies to acquire the necessary rights and make their new custom-developed code available for reuse across other federal agencies, unless a specific exception applies.
+2. Enable Government-Wide Reuse: Require agencies to acquire the necessary rights and make their new custom-developed code available for reuse across other federal agencies, unless a specific exception applies. This means agencies must ensure their contracts or development processes give them the legal permission (intellectual property rights/licenses) to share the code with other agencies.
 3. Pilot Open Source Release: Establish a requirement for agencies to release at least 20% of their newly developed custom code to the public as Open Source Software (OSS).
 4. Document Exceptions: Require agencies to formally document the justification when custom code cannot be shared for reuse or released as OSS due to specific, predefined exceptions (like security risks, privacy concerns, national security, etc.).
 
