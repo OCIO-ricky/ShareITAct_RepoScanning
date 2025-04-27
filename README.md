@@ -3,12 +3,12 @@
 This tool was developed in response to the Strengthening Homeland and Organizational Resilience through Empowering Innovative Technologies (SHARE IT) Act, which requires federal agencies to inventory their software assets and make appropriate code available for reuse across government or as open source. 
 
 The SHARE IT Act mandates that federal agencies:
-1. Inventory Custom Code: Require federal agencies to create and maintain inventories of their custom-developed software.
-2. Enable Government-Wide Reuse: Require agencies to acquire the necessary rights and make their new custom-developed code available for reuse across other federal agencies, unless a specific exception applies. This means agencies must ensure their contracts or development processes give them the legal permission (intellectual property rights/licenses) to share the code with other agencies.
-3. Pilot Open Source Release: Establish a requirement for agencies to release at least 20% of their newly developed custom code to the public as Open Source Software (OSS).
-4. Document Exceptions: Require agencies to formally document the justification when custom code cannot be shared for reuse or released as OSS due to specific, predefined exceptions (like security risks, privacy concerns, national security, etc.).
+1. **Inventory Custom Code**: Require federal agencies to create and maintain inventories of their custom-developed software.
+2. **Enable Government-Wide Reuse**: Require agencies to acquire the necessary rights and make their new custom-developed code available for reuse across other federal agencies, unless a specific exception applies. This means agencies must ensure their contracts or development processes give them the legal permission (intellectual property rights/licenses) to share the code with other agencies.
+3. **Pilot Open Source Release**: Establish a requirement for agencies to release at least 20% of their newly developed custom code to the public as Open Source Software (OSS).
+4. **Document Exceptions**: Require agencies to formally document the justification when custom code cannot be shared for reuse or released as OSS due to specific, predefined exceptions (like security risks, privacy concerns, national security, etc.).
 
-This application automates the process of scanning repositories across multiple platforms (GitHub, GitLab, Azure DevOps), analyzing their content, determining appropriate sharing status, and generating a compliant code.json file. It uses AI-powered analysis to identify organization ownership, determine appropriate exemption codes when needed, and extract relevant metadata to ensure compliance with federal requirements.
+The existing OMB M-16-21 Federal Source Code Policy, which aims to enhance government efficiency and innovation through software reuse and open source practices, already has specifications that align well with the goals outlined in the proposed SHARE IT Act. Following this approach, the CDC team chose to adopt the `code.json` schema version 2.0 specification to publish the software inventory. This application directly supports that decision by automating the production of the compliant `code.json` file, ensuring the inventory captures custom-developed code residing in **both public and private repositories**. It achieves this by scanning repositories across multiple platforms (GitHub, GitLab, Azure DevOps), analyzing content to determine appropriate sharing status, and utilizing AI-powered analysis to identify organization ownership, assign necessary exemption codes, and extract the relevant metadata required by the schema.
 
 By automating these processes, the tool helps agencies efficiently meet their SHARE IT Act obligations while ensuring sensitive code remains properly protected through appropriate exemption categorization.
 
@@ -50,8 +50,8 @@ By automating these processes, the tool helps agencies efficiently meet their SH
 
 1.  **Clone the repository:**
     ```bash
-    git clone <your-repo-url>
-    cd <your-repo-directory>
+    git clone https://github.com/OCIO-ricky/ShareITAct_RepoScanning.git
+    cd ShareITAct_RepoScanning
     ```
 
 2.  **Create a virtual environment (recommended):**
@@ -81,7 +81,11 @@ Execute the main script from the project's root directory:
 ```bash
 python generate_codejson.py
 ```
-## Running with Docker
+
+---
+## ✨ *Setup with Docker* ✨
+---
+
 
 This project includes a `Dockerfile` to allow building and running the application within a containerized environment. This ensures consistency across different systems.
 
