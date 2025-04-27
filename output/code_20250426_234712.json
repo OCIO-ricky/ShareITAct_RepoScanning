@@ -8,9 +8,9 @@
         {
             "name": "enterprise_practices",
             "description": "Collection of required and optional practices that we follow to improve usability of the cdcent organization.",
-            "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/enterprise_practices",
-            "homepageURL": "https://github.com/cdcent/enterprise_practices",
+            "organization": "Centers for Disease Control and Prevention (CDC)",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
+            "homepageURL": "http://cdcent.github.io/enterprise_practices",
             "downloadURL": null,
             "vcs": "git",
             "repositoryVisibility": "private",
@@ -18,11 +18,16 @@
             "version": "N/A",
             "laborHours": 0,
             "languages": [],
-            "tags": [],
+            "tags": [
+                "ocio",
+                "governance",
+                "templates",
+                "support"
+            ],
             "date": {
                 "created": "2019-10-08T16:13:28+00:00",
                 "lastModified": "2025-04-11T15:53:45+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "exemptNonCode",
@@ -33,18 +38,20 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 213692182,
-            "api_url": "https://api.github.com/repos/cdcent/enterprise_practices",
-            "tags_url": "https://api.github.com/repos/cdcent/enterprise_practices/tags",
             "readme_url": "https://github.com/cdcent/enterprise_practices/blob/master/README.md",
-            "privateID": "JK8D7J"
+            "privateID": "E7ZG8A"
         },
         {
             "name": "cloud",
             "description": "Initial repo for CTF Cloud Ecosystem ",
-            "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/cloud",
+            "organization": "Centers for Disease Control and Prevention",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/cloud",
             "downloadURL": null,
             "vcs": "git",
@@ -59,7 +66,7 @@
             "date": {
                 "created": "2020-02-24T19:38:39+00:00",
                 "lastModified": "2023-01-20T13:54:46+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "exemptNonCode",
@@ -70,18 +77,20 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 242826247,
-            "api_url": "https://api.github.com/repos/cdcent/cloud",
-            "tags_url": "https://api.github.com/repos/cdcent/cloud/tags",
             "readme_url": "https://github.com/cdcent/cloud/blob/master/README.md",
-            "privateID": "5WR426"
+            "privateID": "9N2YNT"
         },
         {
             "name": "eDOTnonInfer",
             "description": "Evaluation of ipDOT and eDOT for TB treatment (CDC with NYC DoHMH)",
-            "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/eDOTnonInfer",
+            "organization": "Centers for Disease Control and Prevention",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/eDOTnonInfer",
             "downloadURL": null,
             "vcs": "git",
@@ -92,11 +101,24 @@
             "languages": [
                 "SAS"
             ],
-            "tags": [],
+            "tags": [
+                "tuberculosis",
+                "collaboration-external",
+                "rct",
+                "randomized-controlled-trials",
+                "clinic",
+                "clinical-research",
+                "nchhstp-dte",
+                "cdc",
+                "centers-for-disease-control",
+                "new-york-city",
+                "nyc-dohmh",
+                "nchhstp"
+            ],
             "date": {
                 "created": "2020-04-10T19:21:33+00:00",
                 "lastModified": "2022-08-12T23:07:10+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -108,18 +130,20 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 254717441,
-            "api_url": "https://api.github.com/repos/cdcent/eDOTnonInfer",
-            "tags_url": "https://api.github.com/repos/cdcent/eDOTnonInfer/tags",
             "readme_url": "https://github.com/cdcent/eDOTnonInfer/blob/dev/README.md",
-            "privateID": "2SBZEN"
+            "privateID": "JGXSQ2"
         },
         {
             "name": "JScript",
             "description": "A repo to maintain code for the CDC implementations of Adobe Analytics and ForeSee as well as supporting metrics and survey code.",
             "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/JScript",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/JScript",
             "downloadURL": null,
             "vcs": "git",
@@ -130,11 +154,15 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [],
+            "tags": [
+                "oadc",
+                "analytics",
+                "survey"
+            ],
             "date": {
                 "created": "2020-05-14T17:51:31+00:00",
                 "lastModified": "2025-04-24T16:14:31+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -146,10 +174,12 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 263986199,
-            "api_url": "https://api.github.com/repos/cdcent/JScript",
-            "tags_url": "https://api.github.com/repos/cdcent/JScript/tags",
             "readme_url": "https://github.com/cdcent/JScript/blob/master/README.md",
             "privateID": "YFWRMK"
         },
@@ -157,7 +187,7 @@
             "name": "OADCAutomatedTesting",
             "description": "A collection of various NodeJS-based tests for presentation/CSS, APIs, and performance testing.",
             "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/OADCAutomatedTesting",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/OADCAutomatedTesting",
             "downloadURL": null,
             "vcs": "git",
@@ -168,11 +198,14 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [],
+            "tags": [
+                "oadc",
+                "automated-testing"
+            ],
             "date": {
                 "created": "2020-05-19T10:45:58+00:00",
                 "lastModified": "2022-05-20T20:47:34+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -184,10 +217,12 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 265219956,
-            "api_url": "https://api.github.com/repos/cdcent/OADCAutomatedTesting",
-            "tags_url": "https://api.github.com/repos/cdcent/OADCAutomatedTesting/tags",
             "readme_url": "https://github.com/cdcent/OADCAutomatedTesting/blob/master/README.md",
             "privateID": "X7L2N6"
         },
@@ -195,7 +230,7 @@
             "name": "TPJekyll",
             "description": "Jekyll templates for the CDC.gov TemplatePackage",
             "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/TPJekyll",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/TPJekyll",
             "downloadURL": null,
             "vcs": "git",
@@ -206,11 +241,14 @@
             "languages": [
                 "HTML"
             ],
-            "tags": [],
+            "tags": [
+                "oadc",
+                "templates"
+            ],
             "date": {
                 "created": "2020-05-19T13:23:55+00:00",
                 "lastModified": "2020-06-18T15:32:15+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "exemptNonCode",
@@ -222,10 +260,12 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 265253763,
-            "api_url": "https://api.github.com/repos/cdcent/TPJekyll",
-            "tags_url": "https://api.github.com/repos/cdcent/TPJekyll/tags",
             "readme_url": "https://github.com/cdcent/TPJekyll/blob/master/README.md",
             "privateID": "4HZWEW"
         },
@@ -233,7 +273,7 @@
             "name": "csels-datahub",
             "description": "Code for CSELS Datahub project, such as AWS IAM-related json",
             "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/csels-datahub",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/csels-datahub",
             "downloadURL": null,
             "vcs": "git",
@@ -248,7 +288,7 @@
             "date": {
                 "created": "2020-05-19T16:26:36+00:00",
                 "lastModified": "2023-09-26T02:13:36+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "exemptNonCode",
@@ -259,10 +299,12 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 265300740,
-            "api_url": "https://api.github.com/repos/cdcent/csels-datahub",
-            "tags_url": "https://api.github.com/repos/cdcent/csels-datahub/tags",
             "readme_url": "https://github.com/cdcent/csels-datahub/blob/master/README.md",
             "privateID": "U2XYUE"
         },
@@ -270,7 +312,7 @@
             "name": "TemplatePackage",
             "description": "Templates for CDC.gov web sites and applications.",
             "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/TemplatePackage",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/TemplatePackage",
             "downloadURL": null,
             "vcs": "git",
@@ -281,11 +323,14 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [],
+            "tags": [
+                "oadc",
+                "templates"
+            ],
             "date": {
                 "created": "2020-06-01T12:26:07+00:00",
                 "lastModified": "2025-04-25T20:26:21+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -297,18 +342,20 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 268515353,
-            "api_url": "https://api.github.com/repos/cdcent/TemplatePackage",
-            "tags_url": "https://api.github.com/repos/cdcent/TemplatePackage/tags",
             "readme_url": "https://github.com/cdcent/TemplatePackage/blob/master/README.md",
             "privateID": "4CCLS2"
         },
         {
             "name": "covid_data_catalog",
             "description": "Viewer for CDC COVID-19 Response Data Catalog, https://cdc.sharepoint.com/teams/DIMDataSurveillance-COVID19/SitePages/Home.aspx",
-            "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/covid_data_catalog",
+            "organization": "Centers for Disease Control and Prevention",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/covid_data_catalog",
             "downloadURL": null,
             "vcs": "git",
@@ -317,11 +364,20 @@
             "version": "N/A",
             "laborHours": 0,
             "languages": [],
-            "tags": [],
+            "tags": [
+                "ocio",
+                "eoc",
+                "covid-19",
+                "powerbi",
+                "data",
+                "catalog",
+                "viz",
+                "srrg"
+            ],
             "date": {
                 "created": "2020-06-05T14:34:04+00:00",
                 "lastModified": "2021-10-29T15:11:23+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "exemptNonCode",
@@ -333,18 +389,20 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 269667024,
-            "api_url": "https://api.github.com/repos/cdcent/covid_data_catalog",
-            "tags_url": "https://api.github.com/repos/cdcent/covid_data_catalog/tags",
             "readme_url": "https://github.com/cdcent/covid_data_catalog/blob/master/readme.md",
-            "privateID": "ZUUNZ6"
+            "privateID": "E3FWY5"
         },
         {
             "name": "case_privacy",
             "description": "Reviewing case data sets for privacy impact. No data stored, data needs to be retrieved from Case TF. Mirrored to https://git.cdc.gov/srrg/case_privacy",
-            "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/case_privacy",
+            "organization": "Centers for Disease Control and Prevention",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/case_privacy",
             "downloadURL": null,
             "vcs": "git",
@@ -355,11 +413,22 @@
             "languages": [
                 "HTML"
             ],
-            "tags": [],
+            "tags": [
+                "ocio",
+                "eoc",
+                "covid-19",
+                "privacy",
+                "sdc",
+                "case",
+                "governance",
+                "r",
+                "tableau",
+                "srrg"
+            ],
             "date": {
                 "created": "2020-06-05T14:52:24+00:00",
                 "lastModified": "2024-06-21T18:16:39+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "exemptNonCode",
@@ -371,18 +440,20 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 269672664,
-            "api_url": "https://api.github.com/repos/cdcent/case_privacy",
-            "tags_url": "https://api.github.com/repos/cdcent/case_privacy/tags",
             "readme_url": "https://github.com/cdcent/case_privacy/blob/master/readme.md",
-            "privateID": "PG6FX5"
+            "privateID": "JLQ3E4"
         },
         {
             "name": "ProxyFixChromeExtension",
             "description": "This is a Chrome extension for users of CDC web services like Jira and SharePoint. These services are on network and can traditionally only be accessed by logging onto the CDC network with a smart card.",
             "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/ProxyFixChromeExtension",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/ProxyFixChromeExtension",
             "downloadURL": null,
             "vcs": "git",
@@ -393,15 +464,18 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [],
+            "tags": [
+                "oadc",
+                "browser-extension"
+            ],
             "date": {
                 "created": "2020-06-12T17:08:28+00:00",
                 "lastModified": "2024-07-18T15:18:36+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "exemptByAgencySystem",
-                "exemptionText": "AI Suggestion: The extension facilitates access to internal CDC systems (Jira and SharePoint) that are typically only accessible via the CDC network and smart card, indicating an internal-only system.",
+                "exemptionText": "AI Suggestion: The extension facilitates access to internal CDC systems (Jira and SharePoint) that are normally only accessible via the CDC network and smart card, indicating an internal-only system.",
                 "licenses": [
                     {
                         "name": "Apache License 2.0",
@@ -409,10 +483,12 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 271850732,
-            "api_url": "https://api.github.com/repos/cdcent/ProxyFixChromeExtension",
-            "tags_url": "https://api.github.com/repos/cdcent/ProxyFixChromeExtension/tags",
             "readme_url": "https://github.com/cdcent/ProxyFixChromeExtension/blob/master/README.md",
             "privateID": "EVMD88"
         },
@@ -420,7 +496,7 @@
             "name": "COVID-County-Map-All",
             "description": "Angular project for displaying a full US map with county lines",
             "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/COVID-County-Map-All",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/COVID-County-Map-All",
             "downloadURL": null,
             "vcs": "git",
@@ -431,11 +507,15 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [],
+            "tags": [
+                "oadc",
+                "maps",
+                "covid-19"
+            ],
             "date": {
                 "created": "2020-06-15T11:23:56+00:00",
                 "lastModified": "2020-09-09T17:49:36+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -447,10 +527,12 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 272419629,
-            "api_url": "https://api.github.com/repos/cdcent/COVID-County-Map-All",
-            "tags_url": "https://api.github.com/repos/cdcent/COVID-County-Map-All/tags",
             "readme_url": "https://github.com/cdcent/COVID-County-Map-All/blob/master/README.md",
             "privateID": "AP7MRS"
         },
@@ -458,7 +540,7 @@
             "name": "COVID-County-Map-Individual",
             "description": "Angular project for displaying a individual state maps with county lines that show COVID case and death data",
             "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/COVID-County-Map-Individual",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/COVID-County-Map-Individual",
             "downloadURL": null,
             "vcs": "git",
@@ -469,11 +551,15 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [],
+            "tags": [
+                "oadc",
+                "maps",
+                "covid-19"
+            ],
             "date": {
                 "created": "2020-06-15T11:24:40+00:00",
                 "lastModified": "2020-09-09T17:49:14+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "exemptByMissionSystem",
@@ -485,10 +571,12 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 272419736,
-            "api_url": "https://api.github.com/repos/cdcent/COVID-County-Map-Individual",
-            "tags_url": "https://api.github.com/repos/cdcent/COVID-County-Map-Individual/tags",
             "readme_url": "https://github.com/cdcent/COVID-County-Map-Individual/blob/master/README.md",
             "privateID": "A5HMKR"
         },
@@ -496,22 +584,24 @@
             "name": "pageinfo-app",
             "description": "AngularJS Project for Page Info Tab",
             "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/pageinfo-app",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/pageinfo-app",
             "downloadURL": null,
             "vcs": "git",
             "repositoryVisibility": "private",
-            "status": "development",
+            "status": "archived",
             "version": "N/A",
             "laborHours": 0,
             "languages": [
                 "TypeScript"
             ],
-            "tags": [],
+            "tags": [
+                "oadc"
+            ],
             "date": {
                 "created": "2020-06-16T17:57:43+00:00",
                 "lastModified": "2023-11-27T19:57:45+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -523,10 +613,12 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 272777016,
-            "api_url": "https://api.github.com/repos/cdcent/pageinfo-app",
-            "tags_url": "https://api.github.com/repos/cdcent/pageinfo-app/tags",
             "readme_url": "https://github.com/cdcent/pageinfo-app/blob/master/README.md",
             "privateID": "LFVBYW"
         },
@@ -534,7 +626,7 @@
             "name": "OADCLighthouse",
             "description": "Extensions to Lighthouse for use at CDC -- https://developers.google.com/web/tools/lighthouse",
             "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/OADCLighthouse",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/OADCLighthouse",
             "downloadURL": null,
             "vcs": "git",
@@ -545,15 +637,17 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [],
+            "tags": [
+                "oadc"
+            ],
             "date": {
                 "created": "2020-06-17T13:27:31+00:00",
                 "lastModified": "2023-08-29T18:15:05+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "exemptByAgencySystem",
-                "exemptionText": "AI Suggestion: The repository is explicitly for internal use at the CDC, as indicated by its name (\"CDCLighthouse\"), description (\"Extensions to Lighthouse for use at CDC\"), and README's mention of internal organizational units and points of contact.",
+                "exemptionText": "AI Suggestion: The repository is explicitly for internal use at the CDC (\"Extensions to Lighthouse for use at CDC\") and is not publicly facing.",
                 "licenses": [
                     {
                         "name": "Apache License 2.0",
@@ -561,18 +655,20 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 272981099,
-            "api_url": "https://api.github.com/repos/cdcent/OADCLighthouse",
-            "tags_url": "https://api.github.com/repos/cdcent/OADCLighthouse/tags",
             "readme_url": "https://github.com/cdcent/OADCLighthouse/blob/master/README.md",
             "privateID": "BLSLMT"
         },
         {
             "name": "nodehun",
             "description": "The Hunspell binding for nodejs that exposes as much of hunspell as possible and also adds new features. Hunspell is a first class spellcheck library used by Google, Apple, and Mozilla.",
-            "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/nodehun",
+            "organization": "Centers for Disease Control and Prevention",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/nodehun",
             "downloadURL": null,
             "vcs": "git",
@@ -583,11 +679,14 @@
             "languages": [
                 "C++"
             ],
-            "tags": [],
+            "tags": [
+                "oadc",
+                "spellcheck"
+            ],
             "date": {
                 "created": "2020-06-17T13:48:54+00:00",
                 "lastModified": "2020-06-18T15:16:10+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -599,19 +698,21 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 272986124,
-            "api_url": "https://api.github.com/repos/cdcent/nodehun",
-            "tags_url": "https://api.github.com/repos/cdcent/nodehun/tags",
             "readme_url": "https://github.com/cdcent/nodehun/blob/master/README.md",
-            "privateID": "5GK93Z"
+            "privateID": "KC86TT"
         },
         {
             "name": "shortcake",
             "description": "Shortcake makes using WordPress shortcodes a piece of cake.",
             "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/shortcake",
-            "homepageURL": "https://github.com/cdcent/shortcake",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
+            "homepageURL": "https://github.com/wp-shortcake/shortcake",
             "downloadURL": null,
             "vcs": "git",
             "repositoryVisibility": "private",
@@ -621,11 +722,15 @@
             "languages": [
                 "JavaScript"
             ],
-            "tags": [],
+            "tags": [
+                "oadc",
+                "wcms",
+                "wordpress-plugin"
+            ],
             "date": {
                 "created": "2020-06-17T13:54:56+00:00",
                 "lastModified": "2020-06-18T15:15:16+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -637,10 +742,12 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 272987711,
-            "api_url": "https://api.github.com/repos/cdcent/shortcake",
-            "tags_url": "https://api.github.com/repos/cdcent/shortcake/tags",
             "readme_url": "https://github.com/cdcent/shortcake/blob/master/README.md",
             "privateID": "JC7SDS"
         },
@@ -648,7 +755,7 @@
             "name": "google-api-php-client",
             "description": "A PHP client library for accessing Google APIs",
             "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/google-api-php-client",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/google-api-php-client",
             "downloadURL": null,
             "vcs": "git",
@@ -659,11 +766,13 @@
             "languages": [
                 "PHP"
             ],
-            "tags": [],
+            "tags": [
+                "oadc"
+            ],
             "date": {
                 "created": "2020-06-17T13:59:06+00:00",
                 "lastModified": "2020-06-18T15:14:31+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -674,10 +783,12 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 272988738,
-            "api_url": "https://api.github.com/repos/cdcent/google-api-php-client",
-            "tags_url": "https://api.github.com/repos/cdcent/google-api-php-client/tags",
             "readme_url": "https://github.com/cdcent/google-api-php-client/blob/master/README.md",
             "privateID": "7XGCH2"
         },
@@ -685,7 +796,7 @@
             "name": "CDCRapidMessaging",
             "description": "Rapid messaging application for CDC",
             "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/CDCRapidMessaging",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/CDCRapidMessaging",
             "downloadURL": null,
             "vcs": "git",
@@ -696,11 +807,13 @@
             "languages": [
                 "PHP"
             ],
-            "tags": [],
+            "tags": [
+                "oadc"
+            ],
             "date": {
                 "created": "2020-06-17T19:10:24+00:00",
                 "lastModified": "2025-03-06T14:43:15+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "governmentWideReuse",
@@ -712,18 +825,20 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 273058075,
-            "api_url": "https://api.github.com/repos/cdcent/CDCRapidMessaging",
-            "tags_url": "https://api.github.com/repos/cdcent/CDCRapidMessaging/tags",
             "readme_url": "https://github.com/cdcent/CDCRapidMessaging/blob/master/README.md",
             "privateID": "FQTBDZ"
         },
         {
             "name": "ocio-federal-mandates",
             "description": "Identifying federal mandates for federal CIO responsibility. [Intranet link] https://fya1.pages.biotech.cdc.gov/ocio-federal-mandates/",
-            "organization": "cdcent",
-            "repositoryURL": "https://github.com/cdcent/ocio-federal-mandates",
+            "organization": "Centers for Disease Control and Prevention",
+            "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/ocio-federal-mandates",
             "downloadURL": null,
             "vcs": "git",
@@ -734,11 +849,20 @@
             "languages": [
                 "Jupyter Notebook"
             ],
-            "tags": [],
+            "tags": [
+                "ocio",
+                "viz",
+                "python",
+                "d3",
+                "javascript",
+                "graph",
+                "network",
+                "it-policy"
+            ],
             "date": {
                 "created": "2020-06-19T13:46:10+00:00",
                 "lastModified": "2023-06-30T22:18:38+00:00",
-                "metadataLastUpdated": "2025-04-26T17:10:12.235612+00:00"
+                "metadataLastUpdated": "2025-04-26T23:39:34.042923+00:00"
             },
             "permissions": {
                 "usageType": "exemptNonCode",
@@ -750,12 +874,14 @@
                     }
                 ]
             },
+            "contact": {
+                "name": "Centers for Disease Control and Prevention",
+                "email": "shareit@cdc.gov"
+            },
             "contractNumber": null,
             "repo_id": 273504327,
-            "api_url": "https://api.github.com/repos/cdcent/ocio-federal-mandates",
-            "tags_url": "https://api.github.com/repos/cdcent/ocio-federal-mandates/tags",
             "readme_url": "https://github.com/cdcent/ocio-federal-mandates/blob/master/readme.md",
-            "privateID": "JWNHK2"
+            "privateID": "PTK5Q8"
         }
     ]
 }

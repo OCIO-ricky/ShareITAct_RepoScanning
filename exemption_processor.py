@@ -47,6 +47,13 @@ NON_CODE_LANGUAGES = [None, '', 'Markdown', 'Text', 'HTML', 'CSS', 'Jupyter Note
 
 # --- Load Environment Variables ---
 load_dotenv() # Ensure .env is loaded
+# Load MAX_TOKENS from environment (used as MAX_TOKENS in the code)
+AI_MAX_TOKENS = int(os.getenv("MAX_TOKENS", 15000))
+logger.info(f"Using MAX_TOKENS value: {AI_MAX_TOKENS}")
+
+# Load AI_DELAY_ENABLED from environment
+AI_DELAY_ENABLED = float(os.getenv("AI_DELAY_ENABLED", 4.5))
+logger.info(f"Using AI_DELAY_ENABLED value: {AI_DELAY_ENABLED}")
 
 # --- Get Default Emails from Environment Variables ---
 # Use the exact names from the .env file provided
@@ -77,6 +84,105 @@ if AI_ENABLED:
         logger.info(f"AI processing status (API key missing): {AI_ENABLED}") # Log status if key missing
 
 
+def _call_ai_for_organization(repo_data: dict) -> str | None:
+    """Calls the AI model to suggest an organization based on repo details."""
+    if not AI_ENABLED or not genai:
+        logger.debug("AI processing is disabled. Skipping AI call.")
+        return None
+
+    # Use schema-aligned fields
+    readme = repo_data.get('readme_content', '') or ''
+    description = repo_data.get('description', '') or ''
+    repo_name = repo_data.get('name', '') or ''
+    xtags = repo_data.get('tags', '') or ''
+
+    if not readme.strip() and not description.strip():
+        logger.debug(f"No significant text content (README/description) found for AI analysis of '{repo_name}'. Skipping AI call.")
+        return None
+
+    max_input_length = AI_MAX_TOKENS # number of max tokens for the AI model
+    input_text = f"Repository Name: {repo_name}\nDescription: {description}\nTAGS:{xtags}\n\nREADME:\n{readme}"
+    if len(input_text) > max_input_length:
+        input_text = input_text[:max_input_length] + "\n... [Content Truncated]"
+        logger.warning(f"Input text for AI analysis of '{repo_name}' was truncated.")
+
+    prompt = f"""
+Analyze the following repository information (name, description, tags, README content)
+to determine the organizations name that owns the repository. If NO specific organizational name or acronym can be infered based on the text, output ONLY the word "None".
+Here is a list of known CDC organizational acronyms and names as reference. if you find text that matches perhaps an organizational acronym, output the 
+corresponding organization's name. For example, the repo name "csels-datahub" would suggest the organization name is Center for Surveillance, Epidemiology, and Laboratory Services.
+If you find multiple potential matches with acronyms or organizations names, use your best guess and/or output the most prominently shown across and within CDC.
+cdc=Centers for Disease Control and Prevention
+od=Office of the Director
+os=Office of Science
+olss=Office of Laboratory Science and Safety
+ophdst=Office of Public Health Data, Surveillance, and Technology
+orr=Office of Readiness and Response
+oc=Office of Communication
+oppe=Office of Policy, Performance, and Evaluation
+oeeo=Office of Equal Employment Opportunity
+ocio=Office of the Chief Information Officer
+ocoo=Office of the Chief Operating Officer
+ofr=Office of Financial Resources
+osys=Office of Security
+ohr=Office of Human Resources
+ossam=Office of Safety, Security, and Asset Management
+ogc=Office of General Counsel (CDC Legal Support)
+cfa=Center for Forecasting and Outbreak Analytics
+csels=Center for Surveillance, Epidemiology, and Laboratory Services
+cgh=Center for Global Health
+ncezid=National Center for Emerging and Zoonotic Infectious Diseases
+ncird=National Center for Immunization and Respiratory Diseases
+nccdphp=National Center for Chronic Disease Prevention and Health Promotion
+ncipc=National Center for Injury Prevention and Control
+nceh=National Center for Environmental Health
+niosh=National Institute for Occupational Safety and Health
+nchs=National Center for Health Statistics
+
+    Repository Information:
+    ---
+    {input_text}
+    ---
+
+    Analysis Result:
+    """
+    try:
+        logger.debug(f"Calling AI model to infer code owning organization name or acronym for repository '{repo_name}'...")
+        # Ensure the model name is current and available
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(temperature=0.1),
+            # Consider adding safety_settings if needed
+            # safety_settings=[...]
+        )
+        ai_result_text = response.text.strip()
+        logger.debug(f"AI raw response for '{repo_name}': {ai_result_text}")
+
+        if ai_result_text.lower() == "none":
+            logger.info(f"AI analysis for '{repo_name}' determined no specific organization name was inferred.")
+            return None
+
+        organization = ai_result_text.strip()
+        if organization:
+            logger.info(f"AI analysis for '{repo_name}' suggests an organization: {organization}")
+            return organization
+        else:
+            logger.warning(f"AI analysis for '{repo_name}' could not find the organization name. Ignoring.")
+            return None
+
+    except Exception as ai_err:
+        # Log specific AI errors if possible (e.g., API key issues, rate limits)
+        logger.error(f"Error during AI call for repository '{repo_name}': {ai_err}", exc_info=True)
+        return None, None
+    finally:
+        # Consider making delay configurable or using exponential backoff for errors
+        if AI_DELAY_ENABLED:
+            delay_seconds = AI_DELAY_ENABLED 
+            logger.debug(f"Pausing for {delay_seconds} seconds to respect AI rate limit...")
+            time.sleep(delay_seconds)   
+
+
 # --- Helper Function for AI Call ---
 def _call_ai_for_exemption(repo_data: dict) -> tuple[str | None, str | None]:
     """Calls the AI model to suggest an exemption based on repo details."""
@@ -93,7 +199,7 @@ def _call_ai_for_exemption(repo_data: dict) -> tuple[str | None, str | None]:
         logger.debug(f"No significant text content (README/description) found for AI analysis of '{repo_name}'. Skipping AI call.")
         return None, None
 
-    max_input_length = 15000 # Consider making this configurable
+    max_input_length =  AI_MAX_TOKENS # number of max tokens for the AI model
     input_text = f"Repository Name: {repo_name}\nDescription: {description}\n\nREADME:\n{readme}"
     if len(input_text) > max_input_length:
         input_text = input_text[:max_input_length] + "\n... [Content Truncated]"
@@ -282,9 +388,10 @@ def process_repository_exemptions(repo_data: dict) -> dict:
      # Flag to track if an exemption was applied
     exemption_applied = False
 
-    # --- Private Repository Processing (Org, Contract) ---
-    if is_private and readme_content:
-        logger.debug(f"Applying private repo README parsing for Org/Contract: {org_name}/{repo_name}")
+    # --- Private Repository Processing (Organization name, Contract) ---
+    ##if is_private and readme_content:
+    if readme_content:
+        logger.debug(f"Applying repo README parsing for Org/Contract: {org_name}/{repo_name}")
         # Org processing
         org_match = re.search(r"^Org:\s*(.*)", readme_content, re.MULTILINE | re.IGNORECASE)
         if org_match:
@@ -292,6 +399,14 @@ def process_repository_exemptions(repo_data: dict) -> dict:
             if extracted_org and extracted_org != org_name:
                 logger.info(f"Updating organization for '{repo_name}' based on README: '{org_name}' -> '{extracted_org}'")
                 repo_data['organization'] = extracted_org
+        else:
+            logger.debug(f"Repo '{org_name}/{repo_name}' - No organization found. Calling AI analysis.")
+            org_name = _call_ai_for_organization(repo_data)
+            if org_name:
+                repo_data['organization'] = org_name
+                logger.info(f"Repo '{repo_name}' linked to {org_name} via AI analysis.")
+            else:
+                logger.debug(f"Repo '{repo_name}' - AI analysis did not result in an organization name.")
 
         # Contract processing
         contract_match = re.search(r"^Contract#:\s*(.*)", readme_content, re.MULTILINE | re.IGNORECASE)
@@ -301,7 +416,10 @@ def process_repository_exemptions(repo_data: dict) -> dict:
 
 
     # --- Exemption Cascade Logic ---
-    # Step 1: Manual Exemption Check (README)
+    # Step 1: Manual Exemption Check (README.MD)
+    # Check if the exemption is already applied in the readme.md file
+    # Look for a line starting with "Exemption:" followed by a valid exemption code
+    # and a justification line starting with "Exemption justification:"
     if readme_content:
         manual_exempt_match = re.search(r"Exemption:\s*(\S+)", readme_content, re.IGNORECASE | re.MULTILINE)
         justification_match = re.search(r"Exemption justification:\s*(.*)", readme_content, re.IGNORECASE | re.MULTILINE)
@@ -317,6 +435,8 @@ def process_repository_exemptions(repo_data: dict) -> dict:
                 logger.warning(f"Repo '{org_name}/{repo_name}' - Found manual exemption tag 'Exemption: {captured_code}' in README, but the code is not valid. Ignoring manual exemption.")
 
     # Step 2: Non-code Detection (Only if not already exempted)
+    # Check if the repository is likely non-code based on the language heuristic
+    # and apply exemption if applicable
     if not exemption_applied:
         is_likely_non_code = language in NON_CODE_LANGUAGES
         if is_likely_non_code:
@@ -326,6 +446,8 @@ def process_repository_exemptions(repo_data: dict) -> dict:
             logger.info(f"Repo '{org_name}/{repo_name}' - Step 2: Exempted as non-code (Language: {language}).")
 
     # Step 3: Sensitive Keyword Detection (README) (Only if not already exempted)
+    # Check if the repository contains sensitive keywords in the README.MD content
+    # and apply exemption if applicable
     if not exemption_applied and readme_content:
         found_keywords = [kw for kw in SENSITIVE_KEYWORDS if re.search(r'\b' + re.escape(kw) + r'\b', readme_content, re.IGNORECASE)]
         if found_keywords:
@@ -335,6 +457,8 @@ def process_repository_exemptions(repo_data: dict) -> dict:
             logger.info(f"Repo '{org_name}/{repo_name}' - Step 3: Exempted due to sensitive keywords in README ({EXEMPT_BY_LAW}): {found_keywords}.")
 
     # --- Step 4: AI Fallback (Only if not already exempted) ---
+    # If no exemption was applied yet, call the AI to determine the usageType
+    # and exemptionText based on the repository details
     if not exemption_applied:
         logger.debug(f"Repo '{org_name}/{repo_name}' - Step 4: No standard exemption found. Calling AI analysis.")
         ai_usage_type, ai_exemption_text = _call_ai_for_exemption(repo_data)
@@ -345,6 +469,7 @@ def process_repository_exemptions(repo_data: dict) -> dict:
             logger.info(f"Repo '{org_name}/{repo_name}' - Step 4: Exempted via AI analysis ({ai_usage_type}).")
         else:
             logger.debug(f"Repo '{org_name}/{repo_name}' - Step 4: AI analysis did not result in an exemption.")
+
 
     # --- Assign Default usageType if NOT Exempted ---
     if not exemption_applied:
