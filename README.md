@@ -1,20 +1,50 @@
-# CDC Repository Metadata Scanner (code.json Generator)
+## Introduction
 
-This script scans repositories across GitHub, GitLab, and Azure DevOps for a configured organization/group, extracts metadata according to specific rules, applies exemption logic, handles private repositories, and generates a consolidated `code.json` file compliant with the Code.gov schema v2.0.
+This tool was developed in response to the Strengthening Homeland and Organizational Resilience through Empowering Innovative Technologies (SHARE IT) Act, which requires federal agencies to inventory their software assets and make appropriate code available for reuse across government or as open source. 
+
+The SHARE IT Act mandates that federal agencies:
+1. Create and maintain a comprehensive inventory of custom-developed code
+2. Publish this inventory in a standardized code.json format
+3. Release appropriate software projects as open source or for government-wide reuse
+4. Properly document exemptions when code cannot be shared due to security, privacy, or other valid concerns
+
+This application automates the process of scanning repositories across multiple platforms (GitHub, GitLab, Azure DevOps), analyzing their content, determining appropriate sharing status, and generating a compliant code.json file. It uses AI-powered analysis to identify organization ownership, determine appropriate exemption codes when needed, and extract relevant metadata to ensure compliance with federal requirements.
+
+By automating these processes, the tool helps agencies efficiently meet their SHARE IT Act obligations while ensuring sensitive code remains properly protected through appropriate exemption categorization.
 
 ## Features
 
--   Connects to GitHub, GitLab, and Azure DevOps APIs.
--   Extracts metadata like description, license, dates, languages, etc.
--   Parses README files for specific metadata (`Org:`, `Contract#:`, manual exemptions).
--   Applies a cascade of exemption logic (Manual, Non-code, Keywords).
--   Handles private repositories:
-    -   Assigns unique `privateID`.
-    -   Maps organization and contact details based on README.
-    -   Uses specific contact email (`shareit@cdc.gov`) if `Email Requests:` is found.
--   Logs exempted repositories to a CSV file.
--   Manages and persists `privateID` mappings in a CSV file.
--   Generates a single `code.json` file containing metadata for *all* scanned repositories.
+- **Multi-Platform Support**: Scans repositories across GitHub, GitLab, and Azure DevOps platforms
+- **AI-Powered Analysis**: Uses Google's Generative AI to:
+  - Identify organization names from repository content
+  - Determine appropriate exemption codes based on repository content
+  - Provide justifications for exemptions
+- **Automated Exemption Processing**:
+  - Detects non-code repositories and applies appropriate exemptions
+  - Identifies sensitive content through keyword scanning
+  - Applies manual exemptions from README files
+  - Uses AI analysis as a fallback when other methods don't apply
+- **Contact Information Extraction**:
+  - Extracts contact emails from README and CODEOWNERS files
+  - Applies appropriate contact information based on repository visibility
+- **Metadata Enhancement**:
+  - Extracts version information from README content
+  - Parses tags/keywords from repository documentation
+  - Attempts to identify license information
+- **Private Repository Handling**:
+  - Generates secure private IDs for non-public repositories
+  - Applies appropriate default contact information for private repos
+  - Extracts organization and contract information from private repos
+- **Comprehensive Logging**:
+  - Detailed logging of processing steps and decisions
+  - Error handling with informative messages
+- **Configurable Environment**:
+  - Uses environment variables for customization
+  - Supports rate limiting for API calls
+  - Configurable AI processing parameters
+- **Code.json Generation**:
+  - Produces compliant code.json output following federal guidelines
+  - Properly formats repository metadata according to schema requirements
 
 ## Setup
 
@@ -76,41 +106,11 @@ This project includes a `Dockerfile` to allow building and running the applicati
 
 ### Running the Docker Container
 
-Once the image is built, you can run the scanner using the `docker run` command. It's crucial to provide the environment variables from your `.env` file and map the output directory so the generated files (`code.json`, logs, CSVs) persist on your host machine.
+```bash
+docker run --rm --env-file .env -v "$(pwd):/app" cdc-repo-scanner
+```
 
-1.  **Ensure your `.env` file** is present in the project root directory on your host machine.
-2.  **Create an `output` directory** in the project root on your host machine if it doesn't exist. This is where the container will write its results.
-
-    ```bash
-    mkdir output
-    ```
-
-3.  **Run the container:**
-
-    ```bash
-    docker run --rm \
-      --env-file .env \
-      -v "$(pwd)/output:/app/output" \
-      cdc-repo-scanner
-    ```
-
-    **Explanation of options:**
-    *   `--rm`: Automatically removes the container when it exits.
-    *   `--env-file .env`: Loads environment variables from the `.env` file in your current host directory into the container.
-    *   `-v "$(pwd)/output:/app/output"`: Mounts the `output` directory from your current host directory into the `/app/output` directory inside the container. This allows the container to write results back to your host.
-    *   `cdc-repo-scanner`: The name of the image you built.
-
-4.  **(Optional) Overriding Environment Variables:** If you need to override specific variables from the `.env` file or pass variables not included in it (like proxy settings or SSL flags), you can use the `-e` flag:
-
-    ```bash
-    docker run --rm \
-      --env-file .env \
-      -e HTTPS_PROXY=http://your-proxy-server:port \
-      -e HTTP_PROXY=http://your-proxy-server:port \
-      -e GITLAB_SSL_VERIFY=false \
-      -v "$(pwd)/output:/app/output" \
-      cdc-repo-scanner
-    ```
+ 
 
 ### Accessing Results
 

@@ -20,7 +20,7 @@ RUN mkdir -p /usr/local/share/ca-certificates/
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 # Handle certificates
-COPY ./zscaler/CDC-CSPO-PA.crt /usr/local/share/ca-certificates/
+## COPY ./zscaler/CDC-CSPO-PA.crt /usr/local/share/ca-certificates/
 COPY ./zscaler/ZScalerRootCA.crt /usr/local/share/ca-certificates/
 COPY ./zscaler/CloudflareR2.crt /usr/local/share/ca-certificates/
 RUN chmod -R 755 /etc/ssl/certs
