@@ -58,8 +58,7 @@ logger.info(f"Using AI_DELAY_ENABLED value: {AI_DELAY_ENABLED}")
 # --- Get Default Emails from Environment Variables ---
 # Use the exact names from the .env file provided
 PRIVATE_CONTACT_EMAIL_DEFAULT = os.getenv("PRIVATE_REPO_CONTACT_EMAIL", "shareit@cdc.gov")
-# Read DEFAULT_CONTACT_EMAIL for the public default
-PUBLIC_CONTACT_EMAIL_DEFAULT = os.getenv("DEFAULT_CONTACT_EMAIL", "ea@cdc.gov") # Changed variable name and default
+PUBLIC_CONTACT_EMAIL_DEFAULT = os.getenv("DEFAULT_CONTACT_EMAIL", "shareit@cdc.gov") # Changed variable name and default
 logger.info(f"Using Private Repo Contact Email: {PRIVATE_CONTACT_EMAIL_DEFAULT}")
 logger.info(f"Using Default Public Contact Email: {PUBLIC_CONTACT_EMAIL_DEFAULT}") # Log the correct variable
 # --- End Get Default Emails ---

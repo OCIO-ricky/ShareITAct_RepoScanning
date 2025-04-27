@@ -161,13 +161,13 @@ if __name__ == "__main__":
     setup_logging()
     logger = logging.getLogger(__name__)
 
-    # Set this to True to limit processing, False for full run and for when debuging
-    DEBUG_LIMIT_REPOS = True
+    # Set this to True to limit processing repos and for testing or debuging
+    DEBUG_LIMIT_REPOS = False
     DEBUG_REPO_LIMIT = 20
     # --- File Paths ---
-    # Use environment variables with defaults
-    OUTPUT_DIR = "output"
-    CODE_JSON_FILENAME = "code.json"
+    # Use environment variables.  See .env file
+    OUTPUT_DIR = os.getenv("OutputDir", "output") .strip()
+    CODE_JSON_FILENAME = os.getenv("catalogJsonFile", "code.json")
     EXEMPTION_LOG_FILENAME = os.getenv("ExemptedCSVFile", "exempted_log.csv") # Get just filename
     PRIVATE_ID_FILENAME = os.getenv("PrivateIDCSVFile", "privateid_mapping.csv") # Get just filename
     EXEMPTION_FILE_PATH = os.path.join(OUTPUT_DIR, EXEMPTION_LOG_FILENAME)
@@ -187,17 +187,15 @@ if __name__ == "__main__":
     backup_existing_file(output_dir=OUTPUT_DIR, filename=EXEMPTION_LOG_FILENAME)
 
     # --- File Paths and Manager Initialization ---
-    EXEMPTION_FILE = os.getenv("ExemptedCSVFile", "output/exempted_log.csv")
-    PRIVATE_ID_FILE = os.getenv("PrivateIDCSVFile", "output/privateid_mapping.csv")
-    logger.debug(f"Using EXEMPTION_FILE path: '{EXEMPTION_FILE}'")
-    logger.debug(f"Using PRIVATE_ID_FILE path: '{PRIVATE_ID_FILE}'")
+    logger.debug(f"Using EXEMPTION_FILE path: '{EXEMPTION_FILE_PATH}'")
+    logger.debug(f"Using PRIVATE_ID_FILE path: '{PRIVATE_ID_FILE_PATH}'")
     
     # Manager initialization
     try:
         # Ensure output directory exists before initializing managers that write there
         os.makedirs(OUTPUT_DIR, exist_ok=True)
-        exemption_manager = ExemptionLogger(EXEMPTION_FILE)
-        privateid_manager = PrivateIdManager(PRIVATE_ID_FILE)
+        exemption_manager = ExemptionLogger(EXEMPTION_FILE_PATH)
+        privateid_manager = PrivateIdManager(PRIVATE_ID_FILE_PATH)
     except Exception as mgr_err:
         logger.critical(f"Failed to initialize managers: {mgr_err}", exc_info=True)
         exit(1)

@@ -1,11 +1,2 @@
 privateID,repositoryName,usageType,exemptionText,timestamp
-JK8D7J,enterprise_practices,exemptNonCode,Non-code repository (heuristic based on primary language: None),2025-04-26T17:10:12.135123+00:00
-5WR426,cloud,exemptNonCode,Non-code repository (heuristic based on primary language: HTML),2025-04-26T17:10:12.142018+00:00
-4HZWEW,TPJekyll,exemptNonCode,Non-code repository (heuristic based on primary language: HTML),2025-04-26T17:10:12.153437+00:00
-U2XYUE,csels-datahub,exemptNonCode,Non-code repository (heuristic based on primary language: Jupyter Notebook),2025-04-26T17:10:12.160832+00:00
-ZUUNZ6,covid_data_catalog,exemptNonCode,Non-code repository (heuristic based on primary language: None),2025-04-26T17:10:12.171644+00:00
-PG6FX5,case_privacy,exemptNonCode,Non-code repository (heuristic based on primary language: HTML),2025-04-26T17:10:12.180215+00:00
-EVMD88,ProxyFixChromeExtension,exemptByAgencySystem,"AI Suggestion: The extension facilitates access to internal CDC systems (Jira and SharePoint) that are typically only accessible via the CDC network and smart card, indicating an internal-only system.",2025-04-26T17:10:12.188158+00:00
-A5HMKR,COVID-County-Map-Individual,exemptByMissionSystem,"AI Suggestion: The repository displays COVID-19 case and death data, directly supporting public health surveillance and potentially informing outbreak response efforts.",2025-04-26T17:10:12.200998+00:00
-BLSLMT,OADCLighthouse,exemptByAgencySystem,"AI Suggestion: The repository is explicitly for internal use at the CDC, as indicated by its name (""CDCLighthouse""), description (""Extensions to Lighthouse for use at CDC""), and README's mention of internal organizational units and points of contact.",2025-04-26T17:10:12.210682+00:00
-JWNHK2,ocio-federal-mandates,exemptNonCode,Non-code repository (heuristic based on primary language: Jupyter Notebook),2025-04-26T17:10:12.225529+00:00
+9R7KNE,csels-hub,exemptNonCode,Non-code repository (heuristic based on primary language: None),2025-04-27T04:14:30.998943+00:00

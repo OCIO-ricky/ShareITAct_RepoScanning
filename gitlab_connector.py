@@ -108,21 +108,21 @@ def fetch_repositories(token, group_name, processed_counter: list[int], debug_li
         logger.info(f"Fetching projects for GitLab group: {group.full_path} (ID: {group.id})...")
         projects = group.projects.list(all=True, include_subgroups=True, statistics=True, lazy=True)
 
-        for project in projects:
+        for pr in projects:
             if debug_limit is not None and processed_counter[0] >= debug_limit:
                 logger.warning(f"--- DEBUG MODE: Global limit ({debug_limit}) reached during GitLab scan. Stopping GitLab fetch. ---")
                 break
-
+            project = gl.projects.get(pr.id) 
             repo_data = {}
             try:
-                if project.forked_from_project:
+                if hasattr(project, 'forked_from_project') and project.forked_from_project:
                     logger.info(f"Skipping forked repository: {project.path_with_namespace}")
                     continue
-
+                                  
                 logger.debug(f"Fetching data for GitLab project: {project.path_with_namespace}")
 
-                created_at_iso = project.created_at.isoformat() if project.created_at else None
-                last_activity_at_iso = project.last_activity_at.isoformat() if project.last_activity_at else None
+                created_at_iso = str(project.created_at)
+                last_activity_at_iso = str(project.last_activity_at)
                 repo_visibility = "private" if project.visibility == 'private' else "public"
                 repo_language = None
                 try:
@@ -188,7 +188,7 @@ def fetch_repositories(token, group_name, processed_counter: list[int], debug_li
                     "repositoryURL": project.web_url,
                     "homepageURL": project.web_url, # GitLab doesn't have a distinct homepage field easily
                     "downloadURL": None,
-                    "vcs": "git",
+                    "vcs": "gitlab",
                     "repositoryVisibility": repo_visibility,
                     "status": "development", # Placeholder
                     "version": "N/A", # Placeholder
