@@ -3,10 +3,10 @@
 This tool was developed in response to the Strengthening Homeland and Organizational Resilience through Empowering Innovative Technologies (SHARE IT) Act, which requires federal agencies to inventory their software assets and make appropriate code available for reuse across government or as open source. 
 
 The SHARE IT Act mandates that federal agencies:
-1. Create and maintain a comprehensive inventory of custom-developed code
-2. Publish this inventory in a standardized code.json format
-3. Release appropriate software projects as open source or for government-wide reuse
-4. Properly document exemptions when code cannot be shared due to security, privacy, or other valid concerns
+1. Inventory Custom Code: Require federal agencies to create and maintain inventories of their custom-developed software.
+2. Enable Government-Wide Reuse: Require agencies to acquire the necessary rights and make their new custom-developed code available for reuse across other federal agencies, unless a specific exception applies.
+3. Pilot Open Source Release: Establish a requirement for agencies to release at least 20% of their newly developed custom code to the public as Open Source Software (OSS).
+4. Document Exceptions: Require agencies to formally document the justification when custom code cannot be shared for reuse or released as OSS due to specific, predefined exceptions (like security risks, privacy concerns, national security, etc.).
 
 This application automates the process of scanning repositories across multiple platforms (GitHub, GitLab, Azure DevOps), analyzing their content, determining appropriate sharing status, and generating a compliant code.json file. It uses AI-powered analysis to identify organization ownership, determine appropriate exemption codes when needed, and extract relevant metadata to ensure compliance with federal requirements.
 
