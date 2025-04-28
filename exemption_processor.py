@@ -68,7 +68,7 @@ logger.info(f"Using Default Public Contact Email: {PUBLIC_CONTACT_EMAIL_DEFAULT}
 if AI_ENABLED:
     # load_dotenv() # Already loaded above
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-    if GOOGLE_API_KEY:
+    if GOOGLE_API_KEY and GOOGLE_API_KEY != "YOUR_GOOGLE_API_KEY":
         try:
             genai.configure(api_key=GOOGLE_API_KEY)
             logger.info("Google Generative AI configured successfully.")
@@ -545,7 +545,7 @@ def process_repository_exemptions(repo_data: dict) -> dict:
                   if potential_license_url and potential_license_url != readme_url:
                        # We don't KNOW if this URL is valid, but it's a guess
                        repo_data['permissions']['licenses'][0]['URL'] = potential_license_url
-                       logger.info(f"Repo '{org_name}/{repo_name}' - Guessed 'permissions.licenses[0].URL' based on README URL.")
+                       logger.info(f"Repo '{org_name}/{repo_name}' - Guessed licence URL: {potential_license_url} based on README URL.")
 
 
     # --- Final Contact Email Logic for code.json ---

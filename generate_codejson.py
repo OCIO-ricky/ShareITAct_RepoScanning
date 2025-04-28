@@ -251,8 +251,9 @@ if __name__ == "__main__":
     logger = logging.getLogger(__name__)
 
     # Set this to True to limit processing repos and for testing or debuging
-    DEBUG_LIMIT_REPOS = os.getenv("isLimitingRepos", False)
-    DEBUG_REPO_LIMIT = os.getenv("LimitNumberOfRepos", 10)
+    bLimit = os.getenv("isLimitingRepos", False)
+    DEBUG_LIMIT_REPOS = (bLimit == "True")
+    DEBUG_REPO_LIMIT = int(os.getenv("LimitNumberOfRepos", 10))
     # --- File Paths ---
     # Use environment variables.  See .env file
     OUTPUT_DIR = os.getenv("OutputDir", "output").strip()
