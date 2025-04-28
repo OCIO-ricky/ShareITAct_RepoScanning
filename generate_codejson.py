@@ -16,6 +16,12 @@ import azure_devops_connector
 # Import utils
 from utils import ExemptionLogger, PrivateIdManager
 
+# --- Constants ---
+# Define inactivity threshold in years
+INACTIVITY_THRESHOLD_YEARS = 2
+# Define valid status values expected from README parsing
+VALID_README_STATUSES = {'maintained', 'deprecated', 'experimental', 'active', 'inactive'}
+
 # --- setup_logging() function remains the same ---
 def setup_logging():
     """Configures logging for the application."""
@@ -113,46 +119,129 @@ def infer_tags(repo_data):
 def parse_semver(tag_name):
     """Attempts to parse a semantic version string, handling common prefixes."""
     if not tag_name or not isinstance(tag_name, str): return None
-    cleaned_tag = re.sub(r'^(v|release-|Release-|jenkins-\S+-)', '', tag_name.strip()) # More prefixes
-    try: return packaging_version.parse(cleaned_tag)
-    except packaging_version.InvalidVersion: return None
+    # Remove common prefixes
+    cleaned_tag = re.sub(r'^(v|release-|Release-|jenkins-\S+-)', '', tag_name.strip())
+    if PACKAGING_AVAILABLE:
+        try:
+            # Use packaging library if available
+            return packaging_version.parse(cleaned_tag)
+        except packaging_version.InvalidVersion:
+            logger.debug(f"Could not parse tag '{tag_name}' (cleaned: '{cleaned_tag}') using packaging lib.")
+            return None
+    else:
+        # Basic fallback if packaging is not installed (less reliable)
+        if re.match(r'^\d+\.\d+(\.\d+)?($|[.-])', cleaned_tag):
+             logger.debug(f"Potential basic semver match for tag '{tag_name}' (cleaned: '{cleaned_tag}')")
+             return cleaned_tag # Return the string for basic comparison later if needed
+        return None
 
 def infer_version(repo_data):
     """Infers the latest semantic version from API tags stored in _api_tags."""
-    # Use the temporary field where connectors stored actual Git tags
     api_tags = repo_data.get('_api_tags', [])
     if not api_tags: return "N/A"
 
     parsed_versions = []
+    parsed_prereleases = []
+
     for tag_name in api_tags:
         parsed = parse_semver(tag_name)
-        if parsed and not parsed.is_prerelease: # Prioritize stable releases
-            parsed_versions.append(parsed)
+        if parsed:
+            if PACKAGING_AVAILABLE:
+                # If using packaging library
+                if not parsed.is_prerelease:
+                    parsed_versions.append(parsed)
+                else:
+                    parsed_prereleases.append(parsed)
+            else:
+                # Basic handling if packaging is not available
+                # Assume anything matching basic pattern is a potential version
+                # This won't differentiate pre-releases well without more complex regex
+                 parsed_versions.append(parsed) # Add the string version
 
     if parsed_versions:
-        parsed_versions.sort()
-        return str(parsed_versions[-1]) # Latest stable version
+        # Sort versions (works correctly with packaging.version objects,
+        # attempts string sort otherwise which might be imperfect for complex versions)
+        try:
+            parsed_versions.sort()
+            return str(parsed_versions[-1])
+        except TypeError: # Handle potential comparison errors if mixing types or complex strings
+             logger.warning(f"Could not reliably sort versions for repo {repo_data.get('name')}. Returning first found.")
+             return str(parsed_versions[0])
 
-    # Fallback: If no stable versions, check for pre-releases
-    parsed_prereleases = []
-    for tag_name in api_tags:
-        parsed = parse_semver(tag_name)
-        if parsed and parsed.is_prerelease:
-             parsed_prereleases.append(parsed)
-    if parsed_prereleases:
-         parsed_prereleases.sort()
-         return str(parsed_prereleases[-1]) # Latest pre-release
 
+    if parsed_prereleases: # Only relevant if PACKAGING_AVAILABLE
+        try:
+            parsed_prereleases.sort()
+            return str(parsed_prereleases[-1])
+        except TypeError:
+             logger.warning(f"Could not reliably sort pre-release versions for repo {repo_data.get('name')}. Returning first found.")
+             return str(parsed_prereleases[0])
+
+
+    # Fallback if only basic parsing was done and nothing matched well
+    if not PACKAGING_AVAILABLE and parsed_versions:
+         # Simple attempt: return the last tag alphabetically if no proper sort worked
+         return str(sorted(parsed_versions)[-1])
+
+
+    logger.debug(f"No suitable semantic version found in tags for repo {repo_data.get('name')}")
     return "N/A" # No parsable versions found
 
 def infer_status(repo_data):
-    """Infers status based on archived flag and potentially README/activity later."""
-    # Use the 'archived' field passed from connectors
+    """
+    Infers status based on archived flag, README keyword, or inactivity.
+    Order of precedence:
+    1. Archived flag
+    2. Status keyword found in README (_status_from_readme)
+    3. Inactivity based on lastModified date
+    4. Default: 'development'
+    """
+    logger = logging.getLogger(__name__)
+    repo_name_for_log = f"{repo_data.get('organization', '?')}/{repo_data.get('name', '?')}"
+
+    # 1. Check Archived status (highest priority)
     if repo_data.get('archived', False):
-         return "archived"
-    # TODO: Add README keyword search (e.g., "Status: Maintained", "Status: Deprecated")
-    # TODO: Add check based on lastModified date for inactivity
-    return "development" # Default fallback
+        logger.debug(f"Status for {repo_name_for_log}: 'archived' (from API flag)")
+        return "archived"
+
+    # 2. Check for status explicitly set in README
+    status_from_readme = repo_data.get('_status_from_readme')
+    if status_from_readme and status_from_readme in VALID_README_STATUSES:
+        logger.debug(f"Status for {repo_name_for_log}: '{status_from_readme}' (from README)")
+        # Map 'active' to 'maintained' if that's the desired schema value
+        # if status_from_readme == 'active':
+        #     return 'maintained'
+        return status_from_readme
+
+    # 3. Check for inactivity based on lastModified date
+    last_modified_str = repo_data.get('date', {}).get('lastModified')
+    if last_modified_str:
+        try:
+            # Attempt to parse the ISO 8601 string
+            # Ensure timezone awareness - fromisoformat handles Z and +HH:MM
+            last_modified_dt = datetime.fromisoformat(last_modified_str.replace('Z', '+00:00'))
+
+            # Ensure it's offset-aware for comparison
+            if last_modified_dt.tzinfo is None:
+                 # If somehow it's naive, assume UTC (though connectors should provide tz)
+                 last_modified_dt = last_modified_dt.replace(tzinfo=timezone.utc)
+                 logger.warning(f"lastModified date for {repo_name_for_log} was naive, assuming UTC.")
+
+            now_utc = datetime.now(timezone.utc)
+            inactivity_delta = timedelta(days=INACTIVITY_THRESHOLD_YEARS * 365.25) # Approx years
+
+            if (now_utc - last_modified_dt) > inactivity_delta:
+                logger.debug(f"Status for {repo_name_for_log}: 'inactive' (due to inactivity > {INACTIVITY_THRESHOLD_YEARS} years)")
+                return "inactive" # Or 'deprecated' if preferred for inactive repos
+
+        except ValueError:
+            logger.warning(f"Could not parse lastModified date '{last_modified_str}' for {repo_name_for_log}. Skipping inactivity check.")
+        except Exception as date_err:
+             logger.error(f"Unexpected error during date comparison for {repo_name_for_log}: {date_err}", exc_info=True)
+
+    # 4. Default status
+    logger.debug(f"Status for {repo_name_for_log}: 'development' (default)")
+    return "development"
 
 
 # --- Main Execution ---
@@ -162,11 +251,11 @@ if __name__ == "__main__":
     logger = logging.getLogger(__name__)
 
     # Set this to True to limit processing repos and for testing or debuging
-    DEBUG_LIMIT_REPOS = False
-    DEBUG_REPO_LIMIT = 20
+    DEBUG_LIMIT_REPOS = os.getenv("isLimitingRepos", False)
+    DEBUG_REPO_LIMIT = os.getenv("LimitNumberOfRepos", 10)
     # --- File Paths ---
     # Use environment variables.  See .env file
-    OUTPUT_DIR = os.getenv("OutputDir", "output") .strip()
+    OUTPUT_DIR = os.getenv("OutputDir", "output").strip()
     CODE_JSON_FILENAME = os.getenv("catalogJsonFile", "code.json")
     EXEMPTION_LOG_FILENAME = os.getenv("ExemptedCSVFile", "exempted_log.csv") # Get just filename
     PRIVATE_ID_FILENAME = os.getenv("PrivateIDCSVFile", "privateid_mapping.csv") # Get just filename
@@ -336,8 +425,9 @@ if __name__ == "__main__":
                     log_id = private_id if is_private else f"PublicRepo-{org_name}-{repo_name}"
                     exemption_manager.log_exemption(log_id, repo_name, usage_type, exemption_text)
 
-               # --- Apply Final Inference ---
+                 # Status inference now uses README status and inactivity
                 repo_data['status'] = infer_status(repo_data)
+                # Version inference uses API tags
                 repo_data['version'] = infer_version(repo_data)
                 # 'tags' field is already populated by connectors using topics/tag_list
 
@@ -350,6 +440,7 @@ if __name__ == "__main__":
                 repo_data.pop('_private_contact_emails', None)
                 repo_data.pop('_api_tags', None) # Remove the temp field for Git tags
                 repo_data.pop('archived', None) # Remove the temp field for archived status
+                repo_data.pop('_status_from_readme', None)
 
                 # --- Clean up None values before adding to list ---
                 # Create a new dict to avoid modifying the original while iterating
@@ -368,7 +459,8 @@ if __name__ == "__main__":
                 # if 'permissions' not in cleaned_repo_data: cleaned_repo_data['permissions'] = {}
                 # if 'contact' not in cleaned_repo_data: cleaned_repo_data['contact'] = {}
 
-                final_output_list.append(repo_data)
+  #              final_output_list.append(repo_data)
+                final_output_list.append(cleaned_repo_data) # Append the cleaned data
 
             except Exception as final_proc_err:
                 logger.error(f"Error during final processing (ID gen/logging) for {org_name}/{repo_name}: {final_proc_err}", exc_info=True)

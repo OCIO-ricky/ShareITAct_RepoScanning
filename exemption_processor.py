@@ -280,6 +280,11 @@ def _call_ai_for_exemption(repo_data: dict) -> tuple[str | None, str | None]:
 VERSION_REGEX = re.compile(r"^(?:Version|Current Version):\s*([a-zA-Z0-9v.-]{3,})", re.MULTILINE | re.IGNORECASE)
 KEYWORDS_REGEX = re.compile(r"^(?:Keywords|Tags|Topics):\s*(.*)", re.MULTILINE | re.IGNORECASE)
 
+# Looks for lines like "Status: Maintained", "Project Status: Deprecated", etc.
+# Captures the status word (e.g., Maintained, Deprecated, Experimental, Active, Inactive)
+STATUS_REGEX = re.compile(r"^(?:Project Status|Status):\s*(Maintained|Deprecated|Experimental|Active|Inactive)\b", re.MULTILINE | re.IGNORECASE)
+
+
 # --- Add Email Extraction Helpers ---
 EMAIL_PATTERN = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
 EMAIL_FILTER_DOMAINS = ('.example.com', '.example.org') # Add more if needed
@@ -339,6 +344,19 @@ def _parse_readme_for_tags(readme_content: str | None) -> list[str]:
     # Add badge parsing here if desired
     return tags
 
+def _parse_readme_for_status(readme_content: str | None) -> str | None:
+    """Attempts to extract a status string (maintained, deprecated, etc.) from README."""
+    if not readme_content:
+        return None
+    match = STATUS_REGEX.search(readme_content)
+    if match:
+        status_str = match.group(1).strip().lower() # Normalize to lowercase
+        logger.debug(f"Found potential status in README via regex: '{status_str}'")
+        # Map 'active' to 'maintained' for consistency if desired, or keep as 'active'
+        if status_str == 'active':
+            return 'maintained'
+        return status_str # Return lowercase status (e.g., 'maintained', 'deprecated')
+    return None
 
 def process_repository_exemptions(repo_data: dict) -> dict:
     """
@@ -498,6 +516,11 @@ def process_repository_exemptions(repo_data: dict) -> dict:
             if parsed_tags:
                 repo_data["tags"] = parsed_tags
                 logger.info(f"Repo '{org_name}/{repo_name}' - Updated 'tags' from README fallback.")
+
+        parsed_status = _parse_readme_for_status(readme_content)
+        if parsed_status:
+            repo_data["_status_from_readme"] = parsed_status # Store in temporary field
+            logger.info(f"Repo '{org_name}/{repo_name}' - Found status '{parsed_status}' from README.")
 
         # Fallback for License URL (if license exists, URL is missing, AND it's not the default)
         license_list_in_perms = repo_data.get('permissions', {}).get('licenses')

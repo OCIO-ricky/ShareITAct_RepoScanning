@@ -25,28 +25,60 @@ def _get_codeowners_content(repo) -> Optional[str]:
         "docs/CODEOWNERS",
         "CODEOWNERS"
     ]
+    repo_full_name = getattr(repo, 'full_name', 'UnknownRepo') # Get repo name safely for logging
+
     for path in common_paths:
         try:
             # Use the PyGithub object's get_contents method
+            logger.debug(f"Attempting to fetch CODEOWNERS at path: '{path}' for repo: {repo_full_name}")
             content_file = repo.get_contents(path)
             content_bytes = base64.b64decode(content_file.content)
             try:
+                # Try decoding as UTF-8 first
                 return content_bytes.decode('utf-8')
             except UnicodeDecodeError:
-                logger.warning(f"Could not decode CODEOWNERS at {path} as UTF-8 for {repo.name}. Trying latin-1.")
+                # If UTF-8 fails, try latin-1 as a fallback
+                logger.warning(f"Could not decode CODEOWNERS at {path} as UTF-8 for {repo_full_name}. Trying latin-1.")
                 try:
                     return content_bytes.decode('latin-1')
-                except Exception:
-                     logger.error(f"Failed to decode CODEOWNERS at {path} for {repo.name} even with latin-1.")
-                     return None # Give up if decode fails
+                except Exception as decode_err:
+                     # If latin-1 also fails, log error and return None for this path
+                     logger.error(f"Failed to decode CODEOWNERS at {path} for {repo_full_name} even with latin-1: {decode_err}")
+                     # Returning None here means we might find it at another path, which is okay.
+                     # If this was the last path, the function will return None overall.
+                     return None
         except UnknownObjectException:
-            continue # Try next path
+            # This means the file was not found at this specific path (404)
+            logger.debug(f"CODEOWNERS file not found at path: '{path}' for repo: {repo_full_name}")
+            continue # Try the next common path
+
+        # --- MODIFIED: Catch specific PyGithub API errors ---
+        except GithubException as ge:
+            # Catches API errors like rate limits (403), server errors (5xx), etc.
+            status = getattr(ge, 'status', 'N/A')
+            message = getattr(ge, 'data', {}).get('message', str(ge)) # Try to get specific message
+            logger.error(f"GitHub API error (Status: {status}) fetching CODEOWNERS at '{path}' for {repo_full_name}: {message}", exc_info=False) # Log concise error
+            # Optional: Log full traceback only in DEBUG level if needed
+            # logger.debug(f"Full traceback for GithubException fetching {path} in {repo_full_name}:", exc_info=True)
+
+            # If it's a rate limit (403) or server error (5xx), it's unlikely subsequent paths will work for this repo now.
+            # Stop trying to find CODEOWNERS for this specific repository to avoid further errors/rate limit issues.
+            if status == 403 or status >= 500:
+                 logger.warning(f"Stopping CODEOWNERS check for {repo_full_name} due to API error status {status}.")
+                 return None # Give up on finding CODEOWNERS for this repo entirely
+
+            # For other GithubExceptions (e.g., maybe a specific permission issue on this path),
+            # continue to the next path just in case.
+            continue
+
         except Exception as e:
-            # Log other errors like potential permission issues or API errors
-            logger.error(f"Error fetching CODEOWNERS at {path} for {repo.name}: {e}", exc_info=True)
-            # Don't stop processing the repo, just skip CODEOWNERS
-    logger.debug(f"No CODEOWNERS file found in standard locations for {repo.name}")
-    return None
+            # Catch any other unexpected errors during the process for this specific path
+            logger.error(f"Unexpected error fetching/processing CODEOWNERS at path '{path}' for {repo_full_name}: {e}", exc_info=True)
+            # Continue to the next path, as the error might be specific to this attempt/path
+            continue # Try next path
+
+    # If the loop completes without finding the file or returning early due to error
+    logger.debug(f"No CODEOWNERS file found in standard locations for {repo_full_name}")
 # --- END Helper ---
 
 # --- REMOVED _fetch_paginated_data and _fetch_tags_pygithub as api_tags are no longer needed ---
