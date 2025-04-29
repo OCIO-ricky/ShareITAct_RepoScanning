@@ -47,7 +47,7 @@
         },
         {
             "name": "cloud",
-            "description": "Initial repo for CTF Cloud Ecosystem ",
+            "description": "Initial repo for CTF Cloud Ecosystem",
             "organization": "Centers for Disease Control and Prevention",
             "repositoryURL": "https://github.com/your-org/your-public-repo/blob/main/instructions.pdf ",
             "homepageURL": "https://github.com/cdcent/cloud",
