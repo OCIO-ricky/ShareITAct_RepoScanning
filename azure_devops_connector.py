@@ -126,7 +126,7 @@ def fetch_repositories(token, org_name, project_name, processed_counter: list[in
                             continue
 
                         logger.debug(f"Fetching data for ADO repo: {project.name}/{repo.name}")
-
+                        all_languages_list = []
                         default_branch = repo.default_branch.replace('refs/heads/', '') if repo.default_branch else None
                         repo_visibility = "private" if project.visibility != core_models.ProjectVisibility.PUBLIC else "public"
                         created_at_iso = None # Not easily available
@@ -208,7 +208,7 @@ def fetch_repositories(token, org_name, project_name, processed_counter: list[in
                             "status": "development", # Placeholder
                             "version": "N/A", # Placeholder
                             "laborHours": 0,
-                            "languages": [], # ADO doesn't provide easily
+                            "languages": all_languages_list, # Populate with empty list
                             "tags": repo_topics, # Empty list for ADO
 
                             # === Nested Schema Fields ===
@@ -221,7 +221,7 @@ def fetch_repositories(token, org_name, project_name, processed_counter: list[in
                             "readme_content": readme_content_str,
                             "_codeowners_content": codeowners_content_str, # Will be None
                             "_is_private_flag": repo_visibility == 'private',
-                            "_language_heuristic": repo_language, # Will be None
+                            "_all_languages": all_languages_list,
 
                             # === Additional Fields ===
                             "repo_id": repo.id,
@@ -234,7 +234,7 @@ def fetch_repositories(token, org_name, project_name, processed_counter: list[in
 
                         # --- Clean up temporary fields ---
                         processed_data.pop('_is_private_flag', None)
-                        processed_data.pop('_language_heuristic', None)
+                        processed_data.pop('_all_languages', None)
                         processed_data.pop('_api_tags', None)
                         processed_data.pop('archived', None)
 

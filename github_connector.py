@@ -145,7 +145,18 @@ def fetch_repositories(token, org_name, processed_counter: list[int], debug_limi
                 created_at_iso = repo.created_at.isoformat() if repo.created_at else None
                 pushed_at_iso = repo.pushed_at.isoformat() if repo.pushed_at else None
                 repo_visibility = "private" if repo.private else "public"
-                repo_language = repo.language
+                # repo_language = repo.language # Keep primary if needed elsewhere, but fetch all
+                # --- Fetch ALL Languages ---
+                all_languages_list = []
+                try:
+                    languages_dict = repo.get_languages() # Returns dict like {'Python': 123, 'HTML': 45}
+                    if languages_dict:
+                        all_languages_list = list(languages_dict.keys())
+                        logger.debug(f"Fetched languages for {repo.full_name}: {all_languages_list}")
+                    else:
+                        logger.debug(f"No languages detected by API for {repo.full_name}")
+                except Exception as lang_err:
+                    logger.error(f"Error fetching languages for {repo.full_name}: {lang_err}", exc_info=True)
 
                 # Prepare license structure
                 licenses_list = []
@@ -200,7 +211,8 @@ def fetch_repositories(token, org_name, processed_counter: list[int], debug_limi
                     "status": "development", # Placeholder - exemption_processor might update based on README
                     "version": "N/A", # Placeholder - exemption_processor might update based on README
                     "laborHours": 0, # Placeholder
-                    "languages": [repo_language] if repo_language else [],
+                  #  "languages": [repo_language] if repo_language else [],
+                    "languages": all_languages_list, # Populate with the full list
                     "tags": repo_topics, # Use fetched topics directly for the 'tags' field
 
                     # === Nested Schema Fields ===
@@ -223,7 +235,7 @@ def fetch_repositories(token, org_name, processed_counter: list[int], debug_limi
                     "readme_content": readme_content_str,
                     "_codeowners_content": codeowners_content_str,
                     "_is_private_flag": repo.private,
-                    "_language_heuristic": repo_language,
+                    "_all_languages": all_languages_list, # Pass the full list
 
                     # === Additional Fields (Useful for Inference/Debugging) ===
                     "repo_id": repo.id,
@@ -238,7 +250,8 @@ def fetch_repositories(token, org_name, processed_counter: list[int], debug_limi
                 # --- Clean up temporary/processed fields ---
                 # Processor now handles removing readme_content and _codeowners_content
                 processed_data.pop('_is_private_flag', None)
-                processed_data.pop('_language_heuristic', None)
+                #processed_data.pop('_language_heuristic', None)
+                processed_data.pop('_all_languages', None) 
                 # Keep 'archived' if needed by generate_codejson.py inference functions
                 # processed_data.pop('archived', None)
 

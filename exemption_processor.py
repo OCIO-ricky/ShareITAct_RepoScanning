@@ -43,7 +43,8 @@ VALID_AI_EXEMPTION_CODES = [
 
 # Define sensitive keywords and non-code languages centrally
 SENSITIVE_KEYWORDS = ["HIPAA", "PHI", "CUI","PII","Internal use only", "Patient data"]
-NON_CODE_LANGUAGES = [None, '', 'Markdown', 'Text', 'HTML', 'CSS', 'Jupyter Notebook']
+# Ensure NON_CODE_LANGUAGES includes common non-code types and None/empty string
+NON_CODE_LANGUAGES = [None, '', 'Markdown', 'Text', 'HTML', 'CSS', 'XML', 'YAML', 'JSON', 'Shell', 'Batchfile', 'PowerShell', 'Dockerfile', 'Makefile', 'CMake', 'TeX', 'Roff', 'CSV', 'TSV'] # Expanded list
 
 # --- Load Environment Variables ---
 load_dotenv() # Ensure .env is loaded
@@ -373,7 +374,7 @@ def process_repository_exemptions(repo_data: dict) -> dict:
     """
     # --- Get data using new field names ---
     readme_content = repo_data.get('readme_content')
-    language = repo_data.get('_language_heuristic') # Use temp field
+    all_languages = repo_data.get('_all_languages', [])
     is_private = repo_data.get('_is_private_flag', False) # Use temp field
     repo_name = repo_data.get('name', 'UnknownRepo') # Use schema field 'name'
     org_name = repo_data.get('organization', 'UnknownOrg') # Use schema field 'organization'
@@ -455,12 +456,33 @@ def process_repository_exemptions(repo_data: dict) -> dict:
     # Check if the repository is likely non-code based on the language heuristic
     # and apply exemption if applicable
     if not exemption_applied:
-        is_likely_non_code = language in NON_CODE_LANGUAGES
-        if is_likely_non_code:
+        is_purely_non_code = False # Assume it contains code unless proven otherwise
+
+        if not all_languages:
+            # If API returns no languages, treat as non-code 
+            is_purely_non_code = True
+            logger.debug(f"Repo '{org_name}/{repo_name}' - No languages detected by API, considering as non-code for exemption.")
+        else:
+            contains_code_language = False
+            for lang_name in all_languages:
+                # Check if the current language is NOT considered non-code
+                # Perform case-insensitive comparison for robustness
+                if lang_name and lang_name.strip() not in NON_CODE_LANGUAGES:
+                    contains_code_language = True
+                    logger.debug(f"Repo '{org_name}/{repo_name}' - Found code language: '{lang_name}'. Not applying non-code exemption.")
+                    break # No need to check further
+
+            # If the loop finished without finding any code language
+            if not contains_code_language:
+                is_purely_non_code = True
+
+        if is_purely_non_code:
             repo_data['permissions']['usageType'] = EXEMPT_NON_CODE
-            repo_data['permissions']['exemptionText'] = f"Non-code repository (heuristic based on primary language: {language})"
+            # Improve justification text
+            languages_str = ', '.join(filter(None, all_languages)) if all_languages else 'None detected' # Filter out None before joining
+            repo_data['permissions']['exemptionText'] = f"Non-code repository (detected languages considered non-code: [{languages_str}])"
             exemption_applied = True
-            logger.info(f"Repo '{org_name}/{repo_name}' - Step 2: Exempted as non-code (Language: {language}).")
+            logger.info(f"Repo '{org_name}/{repo_name}' - Step 2: Exempted as non-code (Languages: [{languages_str}]).")
 
     # Step 3: Sensitive Keyword Detection (README) (Only if not already exempted)
     # Check if the repository contains sensitive keywords in the README.MD content

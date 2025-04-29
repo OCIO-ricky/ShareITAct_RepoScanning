@@ -124,11 +124,18 @@ def fetch_repositories(token, group_name, processed_counter: list[int], debug_li
                 created_at_iso = str(project.created_at)
                 last_activity_at_iso = str(project.last_activity_at)
                 repo_visibility = "private" if project.visibility == 'private' else "public"
-                repo_language = None
+              #  repo_language = None
+                # --- Fetch ALL Languages ---
+                all_languages_list = []
                 try:
-                    languages_dict = project.languages()
-                    if languages_dict: repo_language = max(languages_dict, key=languages_dict.get)
-                except Exception as lang_err: logger.error(f"Error fetching languages for {project.path_with_namespace}: {lang_err}", exc_info=True)
+                    languages_dict = project.languages() # Returns dict like {'Python': 60.8, 'HTML': 39.2}
+                    if languages_dict:
+                        all_languages_list = list(languages_dict.keys())
+                        logger.debug(f"Fetched languages for {project.path_with_namespace}: {all_languages_list}")
+                    else:
+                        logger.debug(f"No languages detected by API for {project.path_with_namespace}")
+                except Exception as lang_err:
+                    logger.error(f"Error fetching languages for {project.path_with_namespace}: {lang_err}", exc_info=True)
 
                 licenses_list = []
                 # GitLab's project object has a 'license' attribute if detected
@@ -193,7 +200,7 @@ def fetch_repositories(token, group_name, processed_counter: list[int], debug_li
                     "status": "development", # Placeholder
                     "version": "N/A", # Placeholder
                     "laborHours": 0,
-                    "languages": [repo_language] if repo_language else [],
+                    "languages": all_languages_list, # Populate with the full list
                     "tags": repo_topics, # Use GitLab's tag_list as topics
 
                     # === Nested Schema Fields ===
@@ -206,7 +213,7 @@ def fetch_repositories(token, group_name, processed_counter: list[int], debug_li
                     "readme_content": readme_content_str,
                     "_codeowners_content": codeowners_content_str,
                     "_is_private_flag": repo_visibility == 'private',
-                    "_language_heuristic": repo_language,
+                    "_all_languages": all_languages_list, 
 
                     # === Additional Fields ===
                     "repo_id": project.id,
@@ -220,7 +227,7 @@ def fetch_repositories(token, group_name, processed_counter: list[int], debug_li
                 # --- Clean up temporary fields ---
                 # Processor removes readme_content, _codeowners_content
                 processed_data.pop('_is_private_flag', None)
-                processed_data.pop('_language_heuristic', None)
+                processed_data.pop('_all_languages', None) 
                 # Remove fields only needed for inference later
                 processed_data.pop('_api_tags', None)
                 processed_data.pop('archived', None) # Remove unless needed downstream
