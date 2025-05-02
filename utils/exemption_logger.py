@@ -1,4 +1,13 @@
 # utils/exemption_logger.py
+"""
+Manages the logging of repository exemptions to a dedicated CSV file.
+
+This module provides the `ExemptionLogger` class, which handles the creation,
+loading, and appending of exemption records. Its primary goal is to maintain
+a persistent log of repositories identified as exempt, along with the reason
+and timestamp.
+
+"""
 import csv
 import os
 from datetime import datetime, timezone # Added timezone

@@ -1,4 +1,33 @@
 # generate_codejson.py
+"""
+Main script for the Share IT Act Repository Scanning Tool.
+
+This script orchestrates the process of scanning repositories across multiple
+platforms (GitHub, GitLab, Azure DevOps), processing the collected metadata,
+and generating a `code.json` file compliant with the code.gov schema v2.0.
+
+Key functionalities include:
+- Loading configuration and credentials from environment variables (.env file).
+- Setting up console and rotating file logging.
+- Utilizing platform-specific connectors (`clients/` directory) to fetch
+  repository details via APIs.
+- Processing repository data to:
+    - Infer project status (e.g., 'maintained', 'inactive', 'archived') based
+      on API flags, README content, and last activity date.
+    - Determine the latest semantic version from repository tags.
+    - Extract relevant tags/topics.
+    - Identify and log potential code-sharing exemptions using AI/heuristics
+      (via `utils.exemption_processor` called within connectors).
+    - Generate and manage unique, anonymized IDs for private repositories
+      (`utils.PrivateIdManager`) and log associated contact emails separately.
+    - Log exemption details (`utils.ExemptionLogger`).
+    - Replace private repository URLs with a standard instruction URL.
+- Formatting the processed data into the final `code.json` structure.
+- Writing output files (`code.json`, `exempted_log.csv`,
+  `privateid_mapping.csv`) to the specified output directory, backing up
+  previous versions.
+- Providing options to limit the number of repositories processed for debugging.
+"""
 
 import os
 import json
@@ -12,11 +41,22 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
 # Import connectors
-import github_connector
-import gitlab_connector
-import azure_devops_connector
+import clients.github_connector
+import clients.gitlab_connector
+import clients.azure_devops_connector
 # Import utils
 from utils import ExemptionLogger, PrivateIdManager
+
+# --- Check for packaging library for version parsing ---
+PACKAGING_AVAILABLE = False
+try:
+    import packaging.version as packaging_version
+    PACKAGING_AVAILABLE = True
+    logging.info("Using 'packaging' library for version parsing.")
+except ImportError:
+    logging.warning("Optional library 'packaging' not found. Version parsing will use basic regex (less reliable). Install with: pip install packaging")
+# --- End packaging check ---
+
 
 # --- Constants ---
 # Define inactivity threshold in years
@@ -247,47 +287,45 @@ def infer_status(repo_data):
 
 
 # --- Main Execution ---
-if __name__ == "__main__":
+def main():
     load_dotenv()
     setup_logging()
     logger = logging.getLogger(__name__)
 
     # Set this to True to limit processing repos and for testing or debuging
-    bLimit = os.getenv("isLimitingRepos", False)
-    DEBUG_LIMIT_REPOS = (bLimit == "True")
+    bLimit = os.getenv("isLimitingRepos", "False") # Default to string "False"
+    DEBUG_LIMIT_REPOS = (bLimit.lower() == "true") # Case-insensitive check
     DEBUG_REPO_LIMIT = int(os.getenv("LimitNumberOfRepos", 10))
+
     # --- File Paths ---
-    # Use environment variables.  See .env file
+    # Use environment variables. See .env file
     OUTPUT_DIR = os.getenv("OutputDir", "output").strip()
     CODE_JSON_FILENAME = os.getenv("catalogJsonFile", "code.json")
     EXEMPTION_LOG_FILENAME = os.getenv("ExemptedCSVFile", "exempted_log.csv") # Get just filename
     PRIVATE_ID_FILENAME = os.getenv("PrivateIDCSVFile", "privateid_mapping.csv") # Get just filename
-    EXEMPTION_FILE_PATH = os.path.join(OUTPUT_DIR, EXEMPTION_LOG_FILENAME)
-    PRIVATE_ID_FILE_PATH = os.path.join(OUTPUT_DIR, PRIVATE_ID_FILENAME)
-
-    # Note: Import processor (can be done here or globally)
-    # but is already imported by each connector
-
+    EXEMPTION_LOG_FILEPATH = os.path.join(OUTPUT_DIR, EXEMPTION_LOG_FILENAME)
+    PRIVATE_ID_FILEPATH = os.path.join(OUTPUT_DIR, PRIVATE_ID_FILENAME)
 
     # --- Read Instructions PDF URL from Environment ---
     INSTRUCTIONS_URL = os.getenv("INSTRUCTIONS_PDF_URL")
     if not INSTRUCTIONS_URL:
         logger.warning("INSTRUCTIONS_PDF_URL environment variable not set. Private repository URLs will not be replaced.")
-    
-    # --- Backup existing CSV files ---
-    backup_existing_file(output_dir=OUTPUT_DIR, filename=CODE_JSON_FILENAME)
-    backup_existing_file(output_dir=OUTPUT_DIR, filename=EXEMPTION_LOG_FILENAME)
+
+    # --- Read Generic Private Contact Email ---
+    PRIVATE_REPO_CONTACT_EMAIL = os.getenv("PRIVATE_REPO_CONTACT_EMAIL", "shareit@cdc.gov")
+    logger.info(f"Using generic contact email for private repos: {PRIVATE_REPO_CONTACT_EMAIL}")
 
     # --- File Paths and Manager Initialization ---
-    logger.debug(f"Using EXEMPTION_FILE path: '{EXEMPTION_FILE_PATH}'")
-    logger.debug(f"Using PRIVATE_ID_FILE path: '{PRIVATE_ID_FILE_PATH}'")
-    
+    logger.debug(f"Using EXEMPTION_FILE path: '{EXEMPTION_LOG_FILEPATH}'")
+    logger.debug(f"Using PRIVATE_ID_FILE path: '{PRIVATE_ID_FILEPATH}'")
+
     # Manager initialization
+    # Ensure output directory exists for managers
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     try:
-        # Ensure output directory exists before initializing managers that write there
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-        exemption_manager = ExemptionLogger(EXEMPTION_FILE_PATH)
-        privateid_manager = PrivateIdManager(PRIVATE_ID_FILE_PATH)
+        # Initialize managers (they might create empty files with headers if needed)
+        exemption_manager = ExemptionLogger(EXEMPTION_LOG_FILEPATH)
+        privateid_manager = PrivateIdManager(PRIVATE_ID_FILEPATH)
     except Exception as mgr_err:
         logger.critical(f"Failed to initialize managers: {mgr_err}", exc_info=True)
         exit(1)
@@ -316,7 +354,7 @@ if __name__ == "__main__":
         logger.info(f"Attempting GitHub scan...")
         try:
             # Pass counter and limit to the connector
-            github_repos = github_connector.fetch_repositories(
+            github_repos = clients.github_connector.fetch_repositories(
                 GITHUB_TOKEN,
                 GITHUB_ORG,
                 processed_counter=global_processed_count, # Pass the mutable list
@@ -325,7 +363,7 @@ if __name__ == "__main__":
             all_processed_repos.extend(github_repos)
             if github_repos: logger.info(f"Received {len(github_repos)} processed repositories from GitHub. Total processed so far: {global_processed_count[0]}")
         except Exception as e:
-            logger.error(f"Critical error during GitHub fetch/process: {e}", exc_info=True)
+            logger.error(f"Critical error during GitHub fetch/process:  {str(e)}")
     else:
         logger.warning("--- DEBUG MODE: Global limit reached. Skipping GitHub scan. ---")
 
@@ -337,7 +375,7 @@ if __name__ == "__main__":
         logger.info(f"Attempting GitLab scan...")
         try:
             # Pass counter and limit to the connector
-            gitlab_repos = gitlab_connector.fetch_repositories(
+            gitlab_repos = clients.gitlab_connector.fetch_repositories(
                 GITLAB_TOKEN,
                 GITLAB_GROUP,
                 processed_counter=global_processed_count, # Pass the mutable list
@@ -346,7 +384,7 @@ if __name__ == "__main__":
             all_processed_repos.extend(gitlab_repos)
             if gitlab_repos: logger.info(f"Received {len(gitlab_repos)} processed repositories from GitLab. Total processed so far: {global_processed_count[0]}")
         except Exception as e:
-            logger.error(f"Critical error during GitLab fetch/process: {e}", exc_info=True)
+            logger.error(f"Critical error during GitLab fetch/process:  {str(e)}")
     else:
         logger.warning("--- DEBUG MODE: Global limit reached. Skipping GitLab scan. ---")
 
@@ -359,7 +397,7 @@ if __name__ == "__main__":
         logger.info(f"Attempting Azure DevOps scan...")
         try:
             # Pass counter and limit to the connector
-            azure_repos = azure_devops_connector.fetch_repositories(
+            azure_repos = clients.azure_devops_connector.fetch_repositories(
                 AZURE_DEVOPS_TOKEN,
                 AZURE_DEVOPS_ORG,
                 AZURE_DEVOPS_PROJECT,
@@ -369,10 +407,10 @@ if __name__ == "__main__":
             all_processed_repos.extend(azure_repos)
             if azure_repos: logger.info(f"Received {len(azure_repos)} processed repositories from Azure DevOps. Total processed so far: {global_processed_count[0]}")
         except Exception as e:
-            logger.error(f"Critical error during Azure DevOps fetch/process: {e}", exc_info=True)
+            logger.error(f"Critical error during Azure DevOps fetch/process:  {str(e)}")
     else:
         logger.warning("--- DEBUG MODE: Global limit reached. Skipping Azure DevOps scan. ---")
-        
+
 
     # --- Final Processing Loop (ID Generation and Exemption Logging) ---
     logger.info(f"Total processed repositories received from connectors: {len(all_processed_repos)}")
@@ -380,7 +418,14 @@ if __name__ == "__main__":
     total_received = len(all_processed_repos) # This is now the limited number
 
     if all_processed_repos:
-        logger.info("Generating Private IDs and logging exemptions...")
+        # --- Backup existing output files HERE ---
+        logger.info("Repositories found. Backing up existing output files...")
+        backup_existing_file(output_dir=OUTPUT_DIR, filename=CODE_JSON_FILENAME)
+        backup_existing_file(output_dir=OUTPUT_DIR, filename=EXEMPTION_LOG_FILENAME)
+        # Backup private ID mapping only if we are going to process/potentially save
+        backup_existing_file(output_dir=OUTPUT_DIR, filename=PRIVATE_ID_FILENAME)
+
+        logger.info("Starting final processing loop (generating IDs, logging exemptions)...")
         # The loop counter 'i' is fine here, no separate debug counter needed now
         for i, repo_data in enumerate(all_processed_repos):
             count = i + 1 # Original counter for logging progress
@@ -400,21 +445,22 @@ if __name__ == "__main__":
                      "processing_error": repo_data['processing_error']
                  })
                  continue # Skip to next repo
-             
+
             try:
                 # This field is populated by exemption_processor now
                 private_emails_list = repo_data.get('_private_contact_emails', [])
 
                 # --- Get/Generate Private ID (stores actual emails in CSV) ---
-                private_id = privateid_manager.get_or_generate_id(
-                    repo_name=repo_name,
-                    organization=org_name,
-                    contact_emails=private_emails_list # Pass actual emails
-                )
+                private_id = None # Initialize to None
                 if is_private:
+                    private_id = privateid_manager.get_or_generate_id(
+                        repo_name=repo_name,
+                        organization=org_name,
+                        contact_emails=private_emails_list # Pass actual emails
+                    )
                     repo_data['privateID'] = private_id
                 else:
-                    repo_data.pop('privateID', None)
+                    repo_data.pop('privateID', None) # Ensure no privateID for public repos
 
                 # --- UPDATE repositoryURL for private repos ---
                 if is_private and INSTRUCTIONS_URL:
@@ -425,6 +471,7 @@ if __name__ == "__main__":
                 usage_type = repo_data.get('permissions', {}).get('usageType')
                 if usage_type and usage_type.lower().startswith('exempt'):
                     exemption_text = repo_data.get('permissions', {}).get('exemptionText', '')
+                    # Use private_id if available, otherwise construct a unique-ish public ID for logging
                     log_id = private_id if is_private else f"PublicRepo-{org_name}-{repo_name}"
                     exemption_manager.log_exemption(log_id, repo_name, usage_type, exemption_text)
 
@@ -462,7 +509,6 @@ if __name__ == "__main__":
                 # if 'permissions' not in cleaned_repo_data: cleaned_repo_data['permissions'] = {}
                 # if 'contact' not in cleaned_repo_data: cleaned_repo_data['contact'] = {}
 
-  #              final_output_list.append(repo_data)
                 final_output_list.append(cleaned_repo_data) # Append the cleaned data
 
             except Exception as final_proc_err:
@@ -475,51 +521,66 @@ if __name__ == "__main__":
 
 
         logger.info(f"Finished final processing loop for {len(final_output_list)} repositories.")
+
+        # --- Prepare final JSON structure ---
+        final_code_json_structure = {
+            "version": "2.0",
+            "agency": "CDC",
+            "measurementType": { "method": "projects" },
+            "projects": final_output_list
+        }
+
+        # --- Add metadataLastUpdated timestamp ---
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for project in final_code_json_structure["projects"]:
+            # Ensure 'date' exists and is a dict before adding the timestamp
+            if "date" not in project or not isinstance(project.get("date"), dict):
+                 # Avoid adding date if there was a processing error earlier
+                 if "processing_error" in project: continue
+                 project["date"] = {}
+            project["date"]["metadataLastUpdated"] = now_iso
+
+         # --- Write final output (CODE.JSON) ---
+        logger.info(f"Writing final data for {len(final_output_list)} repositories to {CODE_JSON_FILENAME}...")
+        write_output_files(final_code_json_structure, filename=CODE_JSON_FILENAME)
+
+        # --- Save Private IDs to CSV (only if repos were processed) ---
+        try:
+            logger.info("Saving private ID mappings...")
+            privateid_manager.save_all_mappings()
+        except Exception as save_err:
+            logger.error(f"Error occurred during final save of private IDs: {save_err}", exc_info=True)
+
+        # --- Log Summary specific to processed data ---
+        logging.info("--- Run Summary (Processed Data) ---")
+        # Use the global counter for total received before limit
+        logging.info(f"Total repositories processed by connectors (before limit): {global_processed_count[0]}")
+        processed_in_final_loop = len(final_output_list) # Count items actually in the final list
+        logging.info(f"Total repositories processed in final loop: {processed_in_final_loop}")
+        logging.info(f"Total repositories in final output: {len(final_output_list)}")
+        new_ids = privateid_manager.get_new_id_count() # Count IDs generated *since last save*
+        new_exemptions = exemption_manager.get_new_exemption_count()
+        logging.info(f"New private IDs generated (this run): {new_ids}")
+        logging.info(f"New exemptions logged (this run): {new_exemptions}")
+        logging.info("------------------------------------")
+
     else:
-        logger.info("No processed repositories received from connectors.")
+        # --- Log message if no repos were processed ---
+        logger.info("No repositories were processed. Skipping backup and writing of code.json, exempted_log.csv, and privateid_mapping.csv.")
+        # Note: The managers might have created empty files with headers on init,
+        # but they won't be overwritten with data or backed up.
 
-    # --- Prepare final JSON structure ---
-    final_code_json_structure = {
-        "version": "2.0",
-        "agency": "CDC",
-        "measurementType": { "method": "projects" },
-        "projects": final_output_list
-    }
 
-    # --- Add metadataLastUpdated timestamp ---
-    now_iso = datetime.now(timezone.utc).isoformat()
-    for project in final_code_json_structure["projects"]:
-        if "date" not in project or not isinstance(project.get("date"), dict):
-            if "processing_error" in project: continue
-            project["date"] = {}
-        project["date"]["metadataLastUpdated"] = now_iso
-
-     # --- Write final output (CODE.JSON) ---
-    logger.info(f"Writing final data for {len(final_output_list)} repositories to {CODE_JSON_FILENAME}...")
-    write_output_files(final_code_json_structure, filename=CODE_JSON_FILENAME)
-
-    # --- Save Private IDs to CSV ---
-    try:
-        # Change save_new_mappings to save_all_mappings
-        privateid_manager.save_all_mappings()
-    except Exception as save_err:
-        logger.error(f"Error occurred during final save of private IDs: {save_err}", exc_info=True)
-
-    # --- Log Summary ---
-    logging.info("--- Run Summary ---")
-    # Use the global counter for total received before limit
-    logging.info(f"Total repositories processed by connectors (before limit): {global_processed_count[0]}")
-    processed_in_final_loop = len(final_output_list) # Count items actually in the final list
-    logging.info(f"Total repositories processed in final loop: {processed_in_final_loop}")
-    logging.info(f"Total repositories in final output: {len(final_output_list)}")
-    new_ids = privateid_manager.get_new_id_count() # Count IDs generated *since last save*
-    new_exemptions = exemption_manager.get_new_exemption_count()
-    logging.info(f"New private IDs generated (this run): {new_ids}")
-    logging.info(f"New exemptions logged (this run): {new_exemptions}")
-    logging.info("-------------------")
+    # --- Overall Summary ---
+    logging.info("--- Overall Run Summary ---")
+    logging.info(f"Total repositories attempted by connectors (before limit): {global_processed_count[0]}")
+    if not all_processed_repos:
+         logging.info("No repositories were included in the final output files.")
+    logging.info("-------------------------")
 
     logging.info("Pausing briefly before exit...")
     time.sleep(3)
     logging.info("Script finished.")
 
-
+if __name__ == "__main__":
+    main()

@@ -1,4 +1,36 @@
 ## exemption_processor.py
+"""
+Handles the core logic for processing repository metadata to determine
+code-sharing exemptions, infer missing information, and prepare data for
+the final code.json schema.
+
+This module applies a cascade of rules and heuristics:
+- Loads configuration (AI settings, default emails) from environment variables.
+- Optionally initializes and utilizes a Generative AI model (Google Gemini)
+  if configured and available.
+- Defines standard exemption codes and non-code language identifiers.
+- Extracts contact emails from README and CODEOWNERS content.
+- Parses README content for specific markers (manual exemptions, version,
+  tags, status, organization, contract number).
+- Implements an exemption determination logic:
+    1. Checks for manually specified exemptions in the README.
+    2. Identifies repositories likely containing only non-code content based
+       on detected languages.
+    3. Scans README content for sensitive keywords indicating potential
+       exemption needs (e.g., EXEMPT_BY_LAW).
+    4. (If AI enabled) Uses AI as a fallback to suggest an exemption code and
+       justification based on repository name, description, and README.
+    5. (If AI enabled) Uses AI to suggest an owning organization name if not
+       explicitly found.
+- Assigns default usage types (`openSource` or `governmentWideReuse`) if no
+  exemption is applied.
+- Uses parsed README information as a fallback for missing schema fields like
+  'version', 'tags', and potentially 'organization' or 'contractNumber'.
+- Determines the final 'contact.email' field based on repository visibility
+  (private vs. public), extracted emails, and configured defaults.
+- Cleans up temporary processing fields before returning the updated repository
+  data dictionary.
+"""
 
 import re
 import logging

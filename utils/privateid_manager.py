@@ -1,4 +1,32 @@
 # utils/privateid_manager.py
+"""
+Manages the mapping between private repositories and unique, anonymized IDs.
+
+This module provides the `PrivateIdManager` class, responsible for generating,
+storing, and retrieving persistent unique identifiers (PrivateIDs) for private
+repositories. This mechanism is crucial for avoiding the exposure of potentially
+sensitive repository names or URLs and direct contact emails in the public
+`code.json` file.
+
+The manager maintains a separate, non-public mapping file
+(`output/privateid_mapping.csv` by default). This CSV file serves as the
+authoritative link between a generated `PrivateID`, the original repository
+details (name, organization), and the actual contact email addresses extracted
+during the scan.
+
+Workflow for Private Repositories:
+1.  When a private repository is processed, this manager assigns it a unique `PrivateID`.
+2.  The `PrivateID`, repository details, and any found contact emails are stored
+    in the `privateid_mapping.csv` file.
+3.  The public `code.json` file will list the `PrivateID` for the repository and
+    use a generic contact email address (e.g., shareit@cdc.gov) obtained from
+    environment variables, instead of the actual developer emails.
+4.  External entities requesting access to a private repository's code will send
+    their request to the generic email address listed in `code.json`.
+5.  Internally, CDC can use the `privateid_mapping.csv` file to look up the
+    `PrivateID` mentioned in the request and automatically redirect the inquiry
+    to the correct internal contacts associated with that repository.
+"""
 import csv
 import os
 import uuid # Keep if using as fallback

@@ -8,6 +8,8 @@ import base64
 from typing import List, Optional, Dict, Any # Added typing
 import requests # Need requests for _fetch_paginated_data if using direct calls
 from urllib.parse import urlparse, urlunparse # For pagination helper
+# --- Import the processor ---
+import utils.exemption_processor
 
 logger = logging.getLogger(__name__)
 
@@ -94,13 +96,6 @@ def fetch_repositories(token, org_name, processed_counter: list[int], debug_limi
         processed_counter: A mutable list containing the current global count of processed repos.
         debug_limit: The maximum number of repos to process globally (or None).
     """
-    # --- Import the processor ---
-    # Import locally to avoid potential circular dependencies if exemption_processor imports connectors
-    try:
-        import exemption_processor
-    except ImportError:
-        logger.critical("Failed to import exemption_processor. Cannot proceed.")
-        return []
 
 
     if is_placeholder_token(token):

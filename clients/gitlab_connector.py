@@ -6,14 +6,8 @@ from gitlab.exceptions import GitlabAuthenticationError, GitlabGetError, GitlabL
 from datetime import datetime, timezone # Added timezone
 import base64
 from typing import List, Optional, Dict, Any # Added typing
-
 # --- Import the processor ---
-try:
-    import exemption_processor
-except ImportError:
-    logging.critical("Failed to import exemption_processor. Cannot proceed.")
-    # Optionally raise the error or handle it appropriately
-    raise
+import utils.exemption_processor
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +90,17 @@ def fetch_repositories(token, group_name, processed_counter: list[int], debug_li
     try:
         logger.info(f"Attempting to connect to GitLab instance at {gitlab_url}...")
         gl = gitlab.Gitlab(gitlab_url, private_token=token, timeout=30)
-        gl.auth()
+        # --- Authentication Check ---
+        try:
+            gl.auth() # Check if authentication is successful
+            logger.info("GitLab SDK initialized and authenticated.")
+        except GitlabAuthenticationError as e:
+            raise # Re-raise the exception to stop execution
+        except Exception as e:
+            # Log any other unexpected error during auth and raise it
+            logger.error(f"Unexpected error during GitLab authentication: {e}. Aborting GitLab scan.")
+            raise # Re-raise the exception to stop execution
+        
         logger.info("GitLab SDK initialized and authenticated.")
 
         logger.info(f"Fetching group: {group_name}")
@@ -222,7 +226,7 @@ def fetch_repositories(token, group_name, processed_counter: list[int], debug_li
                     "archived": repo_archived, # Store archived status
                 }
 
-                processed_data = exemption_processor.process_repository_exemptions(repo_data)
+                processed_data = utils.exemption_processor.process_repository_exemptions(repo_data)
 
                 # --- Clean up temporary fields ---
                 # Processor removes readme_content, _codeowners_content
@@ -247,7 +251,7 @@ def fetch_repositories(token, group_name, processed_counter: list[int], debug_li
         logger.info(f"Finished GitLab scan. Processed {len(processed_repo_list)} projects. Global count: {processed_counter[0]}")
 
     # --- Exception Handling ---
-    except GitlabAuthenticationError: logger.error(f"GitLab authentication failed. Check GITLAB_TOKEN/URL ({gitlab_url}). Skipping.", exc_info=True); return []
+    except GitlabAuthenticationError: logger.error(f"GitLab authentication failed. Check GITLAB_TOKEN/URL ({gitlab_url}). Skipping."); return []
     except GitlabGetError as e:
          if e.response_code == 404: logger.error(f"GitLab group '{group_name}' not found (404). Check GITLAB_GROUP. Skipping.")
          else: logger.error(f"GitLab API error fetching group '{group_name}': {e}. Skipping.", exc_info=True)
