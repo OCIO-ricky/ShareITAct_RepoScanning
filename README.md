@@ -118,6 +118,20 @@ Published endpoint:
 https://www.cdc.gov/code.json
 ```
 
+## Providing Optional Metadata via README.md
+
+Developers can enhance the metadata collected by this scanner by adding specific markers anywhere within their repository's existing README.md file. Adding these is completely optional, but recommended for accuracy where applicable. The scanner looks for lines starting with the following (case-insensitive). Here is an example:
+
+***Version:*** <span style="color:darkgray">2.1.0</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray">(Specifies the current official release version of the software.)</span><br>
+***Status:*** <span style="color:darkgray">Maintained</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray">(Indicates the project's lifecycle stage (e.g., Maintained, Deprecated, Experimental)).</span><br>
+***Keywords:*** <span style="color:darkgray">data analysis, python, visualization</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray">(Lists relevant terms (tags) describing the project's domain or technology.</span><br>
+***Labor Hours:*** <span style="color:darkgray">2500</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray">(Provides a numeric estimate of total person-hours invested across all versions.)</span><br>
+***Organization:*** <span style="color:darkgray">National Center for Chronic Disease Prevention and Health Promotion (NCCDPHP)</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray">(owning CDC's Organization)</span><br>
+***Contract#:*** <span style="color:darkgray">75D30123C12345</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray">(Lists the relevant government contract number, if applicable.)</span><br>
+***Exemption:*** <span style="color:darkgray">exemptByLaw</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray">(Declares a specific code-sharing exemption reason (requires justification)).</span><br>
+***Exemption justification:*** <span style="color:darkgray">This specific module interfaces with classified national security systems...)</span>&nbsp;&nbsp;<span style="color:gray">(Provides the mandatory explanation for the chosen Exemption.)</span><br>
+
+
 ## 🛠 Maintainers
 - CDC / Enteprise Data Services Office (EDSO) 
 - CDC / [Ricky F](https://github.com/OCIO-ricky)

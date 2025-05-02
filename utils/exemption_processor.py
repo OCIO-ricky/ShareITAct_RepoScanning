@@ -317,6 +317,12 @@ KEYWORDS_REGEX = re.compile(r"^(?:Keywords|Tags|Topics):\s*(.*)", re.MULTILINE |
 # Captures the status word (e.g., Maintained, Deprecated, Experimental, Active, Inactive)
 STATUS_REGEX = re.compile(r"^(?:Project Status|Status):\s*(Maintained|Deprecated|Experimental|Active|Inactive)\b", re.MULTILINE | re.IGNORECASE)
 
+# Regex to find "Labor Hours: 1234" or "Estimated Labor Hours: 1234"
+LABOR_HOURS_REGEX = re.compile(r"^(?:Estimated Labor Hours|Labor Hours):\s*(\d+)\b", re.MULTILINE | re.IGNORECASE)
+
+# Regex to find lines starting with "Contact:" or "Contacts:"
+CONTACT_LINE_REGEX = re.compile(r"^(?:Contact|Contacts):\s*(.*)", re.MULTILINE | re.IGNORECASE)
+
 
 # --- Add Email Extraction Helpers ---
 EMAIL_PATTERN = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
@@ -332,17 +338,54 @@ def _extract_emails_from_content(content: Optional[str], source_name: str) -> Li
     return valid_emails
 
 def _get_combined_contact_emails(repo_data: Dict[str, Any]) -> List[str]:
-    """Extracts emails from README and CODEOWNERS content within repo_data."""
+    """
+    Extracts contact email addresses from repository data, prioritizing specific sources.
+
+    Priority Order:
+    1. Emails found on lines starting with "Contact:" or "Contacts:" in the README.md content.
+    2. If no emails are found via step 1, it scans CODEOWNERS file content (if available)
+    3. It no emails found in step 1 or 2, it scans the *entire* README.md content for any email patterns. (desperate?)
+    Returns a sorted list of unique, lowercase email addresses found through these methods.
+    """
+    all_emails = []
     readme_content = repo_data.get('readme_content')
-    # --- Assume CODEOWNERS content is passed in repo_data ---
-    codeowners_content = repo_data.get('_codeowners_content') # Use a temporary key
+    codeowners_content = repo_data.get('_codeowners_content') 
 
-    readme_emails = _extract_emails_from_content(readme_content, "README")
-    codeowners_emails = _extract_emails_from_content(codeowners_content, "CODEOWNERS")
+    repo_name_for_log = repo_data.get('name', 'N/A')
 
-    all_emails = readme_emails + codeowners_emails
+    # --- Priority 1: Look for "Contact:" or "Contacts:" keyword lines in README ---
+    found_contact_line = False
+    if readme_content:
+        contact_line_matches = CONTACT_LINE_REGEX.finditer(readme_content)
+        contact_line_emails = []
+        for match in contact_line_matches:
+            line_content = match.group(1) # Get the content after the keyword
+            if line_content:
+                emails_on_line = _extract_emails_from_content(line_content, f"README 'Contact:' line for {repo_name_for_log}")
+                contact_line_emails.extend(emails_on_line)
+
+        if contact_line_emails:
+            logger.info(f"Prioritizing emails found on 'Contact:' line(s) in README for {repo_name_for_log}.")
+            all_emails = contact_line_emails
+            found_contact_line = True
+
+   # --- Priority 2: Fallback to full scan if no specific contact line found ---
+   # --- Sub-Priority 2a: Check CODEOWNERS first ---
+    if not found_contact_line:
+        codeowners_emails = _extract_emails_from_content(codeowners_content, f"CODEOWNERS for {repo_name_for_log}")
+        if codeowners_emails:
+            logger.info(f"Prioritizing emails found in CODEOWNERS for {repo_name_for_log} (no 'Contact:' line in README).")
+            all_emails = codeowners_emails
+        else:
+            # --- Sub-Priority 2b: Scan full README if CODEOWNERS is empty or missing ---
+            logger.debug(f"No specific 'Contact:' line in README and no emails in CODEOWNERS for {repo_name_for_log}. Scanning full README.")
+            readme_emails = _extract_emails_from_content(readme_content, f"full README for {repo_name_for_log}")
+            if readme_emails:
+                 logger.info(f"Using emails found in full README scan for {repo_name_for_log} (no 'Contact:' line, no CODEOWNERS emails).")
+                 all_emails = readme_emails
+
     unique_sorted_emails = sorted(list(set(email.lower() for email in all_emails)))
-    logger.info(f"Combined unique contact emails for {repo_data.get('name', 'N/A')}: {unique_sorted_emails}")
+    logger.info(f"Final unique contact emails for {repo_name_for_log}: {unique_sorted_emails}")
     return unique_sorted_emails
 # --- End Email Extraction Helpers ---
 
@@ -389,6 +432,21 @@ def _parse_readme_for_status(readme_content: str | None) -> str | None:
         if status_str == 'active':
             return 'maintained'
         return status_str # Return lowercase status (e.g., 'maintained', 'deprecated')
+    return None
+
+def _parse_readme_for_labor_hours(readme_content: str | None) -> int | None:
+    """Attempts to extract estimated labor hours from README."""
+    if not readme_content:
+        return None
+    match = LABOR_HOURS_REGEX.search(readme_content)
+    if match:
+        try:
+            hours_str = match.group(1).strip()
+            hours_int = int(hours_str)
+            logger.debug(f"Found potential labor hours in README via regex: {hours_int}")
+            return hours_int
+        except (ValueError, IndexError):
+            logger.warning(f"Found labor hours pattern in README but failed to parse number: '{match.group(1)}'")
     return None
 
 def process_repository_exemptions(repo_data: dict) -> dict:
@@ -570,6 +628,13 @@ def process_repository_exemptions(repo_data: dict) -> dict:
             if parsed_tags:
                 repo_data["tags"] = parsed_tags
                 logger.info(f"Repo '{org_name}/{repo_name}' - Updated 'tags' from README fallback.")
+
+        # Fallback for Labor Hours (if still 0)
+        if repo_data.get("laborHours") == 0:
+            parsed_hours = _parse_readme_for_labor_hours(readme_content)
+            if parsed_hours is not None and parsed_hours > 0:
+                repo_data["laborHours"] = parsed_hours
+                logger.info(f"Repo '{org_name}/{repo_name}' - Updated 'laborHours' ({parsed_hours}) from README fallback.")
 
         parsed_status = _parse_readme_for_status(readme_content)
         if parsed_status:
