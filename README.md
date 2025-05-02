@@ -86,10 +86,14 @@ AI_API_KEY=your_openai_or_other_api_token
 
 ## 🧪 Test Individual Connectors
 
+You can run each connector script directly to test its connection and basic data fetching capabilities for a specific platform.
+
+*(Note: Running connectors directly is primarily for testing the connection and data retrieval logic. It will **not** perform the full processing pipeline or generate the final `code.json`, `exempted_log.csv`, or `privateid_mapping.csv` files. The output will typically be printed to the console.)*
+
 ```bash
-python github_connector.py
-python gitlab_connector.py
-python azure_devops_connector.py
+python clients/github_connector.py
+python clients/gitlab_connector.py
+python clients/azure_devops_connector.py
 ```
 
 ## 📤 Output
@@ -115,3 +119,5 @@ https://www.cdc.gov/code.json
 ```
 
 ## 🛠 Maintainers
+- CDC / Enteprise Data Services Office (EDSO) 
+- CDC / [Ricky F](https://github.com/OCIO-ricky)

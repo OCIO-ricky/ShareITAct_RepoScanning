@@ -2,10 +2,15 @@
 import os
 import logging
 import gitlab
+import json
+from dotenv import load_dotenv 
 from gitlab.exceptions import GitlabAuthenticationError, GitlabGetError, GitlabListError
-from datetime import datetime, timezone # Added timezone
+from datetime import datetime, timezone 
 import base64
-from typing import List, Optional, Dict, Any # Added typing
+from typing import List, Optional, Dict, Any 
+import requests # Need requests for _fetch_paginated_data if using direct calls
+from urllib.parse import urlparse, urlunparse # For pagination helper
+
 # --- Import the processor ---
 import utils.exemption_processor
 
@@ -101,8 +106,6 @@ def fetch_repositories(token, group_name, processed_counter: list[int], debug_li
             logger.error(f"Unexpected error during GitLab authentication: {e}. Aborting GitLab scan.")
             raise # Re-raise the exception to stop execution
         
-        logger.info("GitLab SDK initialized and authenticated.")
-
         logger.info(f"Fetching group: {group_name}")
         groups = gl.groups.list(search=group_name, all=True)
         group = next((g for g in groups if g.full_path.lower() == group_name.lower()), None)
@@ -260,3 +263,53 @@ def fetch_repositories(token, group_name, processed_counter: list[int], debug_li
     except Exception as e: logger.error(f"Unexpected error during GitLab fetch for group '{group_name}': {e}. Skipping.", exc_info=True); return []
 
     return processed_repo_list
+
+
+if __name__ == "__main__":
+    # --- Added Setup Code ---
+    # Load .env file for standalone execution
+    load_dotenv()
+
+    # Basic logging setup for direct execution
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__) # Use the connector's logger
+
+    logger.info("Running GitLab connector directly for testing...")
+
+    # Get necessary config from environment
+    gitlab_token = os.getenv("GITLAB_TOKEN")
+    gitlab_org = os.getenv("GITLAB_ORG")
+    # --- End Added Setup Code ---
+
+    if not gitlab_token or not gitlab_org:
+        logger.error("GITLAB_TOKEN and GITLAB_ORG must be set in .env file for direct execution.")
+    else:
+        try:
+            # --- Set a specific limit for direct testing ---
+            test_counter = [0]
+            # Set a small limit, e.g., 5 repositories
+            test_limit = 5
+            # --- End limit setting ---
+
+            logger.info(f"Fetching repositories for org: {gitlab_org} (Limit: {test_limit})") # Log the limit
+
+            repositories = fetch_repositories(
+                token=gitlab_token,
+                org_name=gitlab_org,
+                processed_counter=test_counter,
+                debug_limit=test_limit # Pass the limit here
+            )
+
+            logger.info(f"Direct execution finished. Found {len(repositories)} repositories (up to limit).")
+
+            # Print the results nicely formatted as JSON
+            print("\n--- Fetched Repositories (JSON Output) ---")
+            # Use default=str to handle potential non-serializable types like datetime
+            print(json.dumps(repositories, indent=2, default=str))
+            print("--- End of Output ---")
+
+        except Exception as e:
+            logger.error(f"An error occurred during direct execution: {e}", exc_info=True)
+
+    logger.info("Direct execution script finished.")
+# --- End of block ---

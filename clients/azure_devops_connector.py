@@ -1,6 +1,8 @@
 # azure_devops_connector.py
 import logging
 import os
+import json
+from dotenv import load_dotenv 
 from azure.devops.connection import Connection
 from msrest.authentication import BasicAuthentication
 from azure.devops.exceptions import AzureDevOpsClientRequestError, AzureDevOpsServiceError
@@ -8,17 +10,14 @@ from azure.devops.v7_0.core import CoreClient
 from azure.devops.v7_0.core import models as core_models
 from azure.devops.v7_0.git import GitClient
 from azure.devops.v7_0.git import models as git_models
+from dotenv import load_dotenv 
 from requests.exceptions import RequestException
-from datetime import datetime, timezone # Added timezone
+from datetime import datetime, timezone 
 import base64
-from typing import List, Optional, Dict, Any # Added typing
-
-# --- Import the processor ---
-try:
-    import utils.exemption_processor
-except ImportError:
-    logging.critical("Failed to import exemption_processor. Cannot proceed.")
-    raise
+from typing import List, Optional, Dict, Any 
+import requests # Need requests for _fetch_paginated_data if using direct calls
+from urllib.parse import urlparse, urlunparse # For pagination helper
+import utils.exemption_processor
 
 # Placeholders
 PLACEHOLDER_AZURE_TOKEN = "YOUR_AZURE_DEVOPS_PAT"
@@ -268,3 +267,56 @@ def fetch_repositories(token, org_name, project_name, processed_counter: list[in
 
     return processed_repo_list
 
+
+if __name__ == "__main__":
+    # --- Added Setup Code ---
+    load_dotenv()
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
+
+    # --- Corrected Log Message ---
+    logger.info("Running Azure DevOps connector directly for testing...")
+
+    # Get necessary config from environment
+    azure_token = os.getenv("AZURE_DEVOPS_TOKEN")
+    azure_org = os.getenv("AZURE_DEVOPS_ORG")
+    # --- Add Project Name Retrieval ---
+    azure_project = os.getenv("AZURE_DEVOPS_PROJECT") # Can be None or placeholder
+    # --- End Add ---
+
+    # --- Updated Check ---
+    if not azure_token or azure_token == PLACEHOLDER_AZURE_TOKEN or \
+       not azure_org or azure_org == PLACEHOLDER_AZURE_ORG:
+        logger.error("AZURE_DEVOPS_TOKEN and AZURE_DEVOPS_ORG must be set correctly in .env file for direct execution.")
+    # --- End Update ---
+    else:
+        try:
+            test_counter = [0]
+            test_limit = 5
+
+            # --- Pass Project Name to Log ---
+            project_to_log = azure_project if azure_project and azure_project != PLACEHOLDER_AZURE_PROJECT else "All Projects"
+            logger.info(f"Fetching repositories for org: {azure_org}, project: {project_to_log} (Limit: {test_limit})")
+            # --- End Pass ---
+
+            repositories = fetch_repositories(
+                token=azure_token,
+                org_name=azure_org,
+                # --- Pass Project Name Argument ---
+                project_name=azure_project,
+                # --- End Pass ---
+                processed_counter=test_counter,
+                debug_limit=test_limit
+            )
+
+            logger.info(f"Direct execution finished. Found {len(repositories)} repositories (up to limit).")
+
+            print("\n--- Fetched Repositories (JSON Output) ---")
+            print(json.dumps(repositories, indent=2, default=str))
+            print("--- End of Output ---")
+
+        except Exception as e:
+            logger.error(f"An error occurred during direct execution: {e}", exc_info=True)
+
+    logger.info("Direct execution script finished.")
+# --- End of block ---

@@ -1,11 +1,13 @@
 # github_connector.py
 import os
 import logging
-from datetime import datetime, timezone # Added timezone import
+import json 
+from dotenv import load_dotenv 
+from datetime import datetime, timezone 
 from github import Github, BadCredentialsException, UnknownObjectException, GithubException
 from requests.exceptions import RequestException # Keep requests for potential direct API calls if needed
 import base64
-from typing import List, Optional, Dict, Any # Added typing
+from typing import List, Optional, Dict, Any 
 import requests # Need requests for _fetch_paginated_data if using direct calls
 from urllib.parse import urlparse, urlunparse # For pagination helper
 # --- Import the processor ---
@@ -288,3 +290,54 @@ def fetch_repositories(token, org_name, processed_counter: list[int], debug_limi
         return []
 
     return processed_repo_list
+
+
+
+if __name__ == "__main__":
+    # --- Added Setup Code ---
+    # Load .env file for standalone execution
+    load_dotenv()
+
+    # Basic logging setup for direct execution
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__) # Use the connector's logger
+
+    logger.info("Running GitHub connector directly for testing...")
+
+    # Get necessary config from environment
+    github_token = os.getenv("GITHUB_TOKEN")
+    github_org = os.getenv("GITHUB_ORG")
+    # --- End Added Setup Code ---
+
+    if not github_token or not github_org:
+        logger.error("GITHUB_TOKEN and GITHUB_ORG must be set in .env file for direct execution.")
+    else:
+        try:
+            # --- Set a specific limit for direct testing ---
+            test_counter = [0]
+            # Set a small limit, e.g., 5 repositories
+            test_limit = 5
+            # --- End limit setting ---
+
+            logger.info(f"Fetching repositories for org: {github_org} (Limit: {test_limit})") # Log the limit
+
+            repositories = fetch_repositories(
+                token=github_token,
+                org_name=github_org,
+                processed_counter=test_counter,
+                debug_limit=test_limit # Pass the limit here
+            )
+
+            logger.info(f"Direct execution finished. Found {len(repositories)} repositories (up to limit).")
+
+            # Print the results nicely formatted as JSON
+            print("\n--- Fetched Repositories (JSON Output) ---")
+            # Use default=str to handle potential non-serializable types like datetime
+            print(json.dumps(repositories, indent=2, default=str))
+            print("--- End of Output ---")
+
+        except Exception as e:
+            logger.error(f"An error occurred during direct execution: {e}", exc_info=True)
+
+    logger.info("Direct execution script finished.")
+# --- End of block ---
