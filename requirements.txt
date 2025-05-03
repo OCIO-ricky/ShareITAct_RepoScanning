@@ -6,3 +6,4 @@ google-generativeai
 PyGithub
 python-gitlab
 azure-devops
+filelock>=3.0.0

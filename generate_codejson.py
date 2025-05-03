@@ -478,8 +478,11 @@ def main():
                  # Status inference now uses README status and inactivity
                 repo_data['status'] = infer_status(repo_data)
                 # Version inference uses API tags
-                repo_data['version'] = infer_version(repo_data)
-                # 'tags' field is already populated by connectors using topics/tag_list
+#                repo_data['version'] = infer_version(repo_data)
+                # Version inference: Use API tags ONLY if version wasn't already set by README fallback
+                if repo_data.get('version', 'N/A') == 'N/A':
+                    logger.debug(f"Version for {org_name}/{repo_name} not found via README, attempting API tag inference...")
+                    repo_data['version'] = infer_version(repo_data)
 
                 # --- Ensure Datetime Conversion ---
                 if 'date' in repo_data and isinstance(repo_data['date'], dict):

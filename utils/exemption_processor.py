@@ -33,6 +33,7 @@ This module applies a cascade of rules and heuristics:
 """
 
 import re
+import html
 import logging
 import os
 from dotenv import load_dotenv
@@ -310,7 +311,7 @@ def _call_ai_for_exemption(repo_data: dict) -> tuple[str | None, str | None]:
         time.sleep(delay_seconds)
 
 # --- Add Helper Regex Patterns ---
-VERSION_REGEX = re.compile(r"^(?:Version|Current Version):\s*([a-zA-Z0-9v.-]{3,})", re.MULTILINE | re.IGNORECASE)
+VERSION_REGEX = re.compile(r"^\s*(?:\*\*?)?(?:Version|Current Version)(?:\*\*?)?:\s*(.+)$", re.MULTILINE | re.IGNORECASE)
 KEYWORDS_REGEX = re.compile(r"^(?:Keywords|Tags|Topics):\s*(.*)", re.MULTILINE | re.IGNORECASE)
 
 # Looks for lines like "Status: Maintained", "Project Status: Deprecated", etc.
@@ -322,6 +323,10 @@ LABOR_HOURS_REGEX = re.compile(r"^(?:Estimated Labor Hours|Labor Hours):\s*(\d+)
 
 # Regex to find lines starting with "Contact:" or "Contacts:"
 CONTACT_LINE_REGEX = re.compile(r"^(?:Contact|Contacts):\s*(.*)", re.MULTILINE | re.IGNORECASE)
+# Regex to strip HTML tags
+HTML_TAG_REGEX = re.compile(r'<[^>]+>')
+# Regex to find "Keywords: python, data" or "Tags: python data"
+TAGS_REGEX = re.compile(r"^(?:Keywords|Tags|Topics):\s*(.+)", re.MULTILINE | re.IGNORECASE)
 
 
 # --- Add Email Extraction Helpers ---
@@ -389,21 +394,44 @@ def _get_combined_contact_emails(repo_data: Dict[str, Any]) -> List[str]:
     return unique_sorted_emails
 # --- End Email Extraction Helpers ---
 
+def _strip_html_tags(text: str) -> str:
+    """Removes HTML tags from a string."""
+    if not text:
+        return ""
+    return HTML_TAG_REGEX.sub('', text).strip()
+
 def _parse_readme_for_version(readme_content: str | None) -> str | None:
-    """Attempts to extract a version string from README."""
+    """Extracts a version string (e.g., 'Version: 1.2.3') from README content, stripping HTML."""
     if not readme_content:
+        logger.debug("_parse_readme_for_version: No README content provided.")
         return None
     match = VERSION_REGEX.search(readme_content)
     if match:
-        version_str = match.group(1).strip()
-        logger.debug(f"Found potential version in README via regex: '{version_str}'")
-        # Basic validation (e.g., avoid excessively long strings)
-        if 3 <= len(version_str) <= 30:
-             # Remove leading 'v' if present for consistency, although schema allows it
-             return version_str.lstrip('v')
-        else:
-             logger.warning(f"Ignoring potential README version '{version_str}' due to unlikely length.")
-    # Add more sophisticated regex/badge parsing here if desired
+       # Extract the raw value after the colon
+       raw_version_str = match.group(1).strip()
+       logger.debug(f"_parse_readme_for_version: Regex matched. Raw value: '{raw_version_str}'")
+       # Basic cleanup: remove leading 'v' if present and strip HTML/Markdown
+       decoded_version_str = html.unescape(raw_version_str) # Decode HTML entities like &lt;br&gt;
+       logger.debug(f"_parse_readme_for_version: After html.unescape: '{decoded_version_str}'")
+       stripped_version_str = _strip_html_tags(decoded_version_str) # Remove tags like <br>
+       logger.debug(f"_parse_readme_for_version: After _strip_html_tags: '{stripped_version_str}'")
+       version_str = stripped_version_str.strip('*_`') # Remove potential markdown emphasis
+       logger.debug(f"_parse_readme_for_version: After stripping markdown emphasis: '{version_str}'")
+
+       if version_str.lower().startswith('v'):
+           version_str = version_str[1:].strip()
+       logger.debug(f"_parse_readme_for_version: After stripping leading 'v': '{version_str}'")
+
+#       logger.debug(f"Found potential version in README via regex: {version_str}")
+       # Add more validation/cleanup if needed
+       if version_str: # Ensure it's not empty after stripping
+            logger.debug(f"_parse_readme_for_version: Returning cleaned version: '{version_str}'")
+            return version_str
+       else:
+            logger.debug("_parse_readme_for_version: Version string became empty after cleaning.")
+    else:
+        logger.debug("Version regex did not find a match in README.")
+        logger.debug("_parse_readme_for_version: Version regex did not find a match in README.")
     return None
 
 def _parse_readme_for_tags(readme_content: str | None) -> list[str]:
@@ -413,11 +441,17 @@ def _parse_readme_for_tags(readme_content: str | None) -> list[str]:
         return tags
     match = KEYWORDS_REGEX.search(readme_content)
     if match:
-        keywords_line = match.group(1).strip()
-        # Split by comma or space, remove empty strings
-        tags = [tag.strip() for tag in re.split(r'[,\s]+', keywords_line) if tag.strip()]
-        logger.debug(f"Found potential tags/keywords in README via regex: {tags}")
-    # Add badge parsing here if desired
+      tags_line = match.group(1).strip()
+      # Strip HTML tags first
+      # Note: The provided code calls _strip_html_tags but doesn't seem to handle html.unescape like the version function.
+      # Assuming consistency is desired, let's add unescape here too.
+      decoded_tags_line = html.unescape(tags_line)
+      tags_line = _strip_html_tags(decoded_tags_line)
+       # Split by comma, remove empty strings, strip whitespace from each tag
+      potential_tags = tags_line.split(',') # Now only splitting by comma
+      # Strip markdown from individual tags
+      tags = [tag.strip().strip('*_`') for tag in potential_tags if tag.strip()]
+      logger.debug(f"Found potential tags in README via regex: {tags}")
     return tags
 
 def _parse_readme_for_status(readme_content: str | None) -> str | None:
@@ -620,6 +654,7 @@ def process_repository_exemptions(repo_data: dict) -> dict:
             if parsed_version:
                 repo_data["version"] = parsed_version
                 logger.info(f"Repo '{org_name}/{repo_name}' - Updated 'version' from README fallback.")
+                logger.debug(f"process_repository_exemptions: repo_data['version'] set to '{repo_data['version']}'") # <-- Add this debug log
 
         # Fallback for Tags (if still [])
         # Check if 'tags' key exists and is empty list
