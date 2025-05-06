@@ -133,5 +133,5 @@ Developers can enhance the metadata collected by this scanner by adding specific
 
 
 ## 🛠 Maintainers
-- CDC / Enteprise Data Services Office (EDSO) 
+- CDC / Enterprise DevSecOps (EDSO) - [Boris Ning](tpz7@cdc.gov)
 - CDC / [Ricky F](https://github.com/OCIO-ricky)
