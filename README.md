@@ -118,7 +118,7 @@ Published endpoint:
 https://www.cdc.gov/code.json
 ```
 
-## Providing Optional Metadata via README.md
+## Override Metadata via README.md
 
 Developers can enhance the metadata collected by this scanner by adding specific markers anywhere within their repository's existing README.md file. Adding these is completely optional, but recommended for accuracy where applicable. The scanner looks for lines starting with the following (case-insensitive). Here is an example:
 
