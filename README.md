@@ -133,5 +133,5 @@ Developers can enhance the metadata collected by this scanner by adding specific
 
 
 ## 🛠 Maintainers
-- CDC / Enterprise DevSecOps (EDSO) - [Boris Ning](tpz7@cdc.gov)
+- CDC / Enterprise DevSecOps (EDSO) - [Boris Ning](href="mailto:john.doe@example.com?subject=Question on theShareITAct_RepoScanning&body=Let's discuss...")
 - CDC / [Ricky F](https://github.com/OCIO-ricky)
