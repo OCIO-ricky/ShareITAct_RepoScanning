@@ -574,7 +574,8 @@ def process_repository_exemptions(repo_data: dict, default_org_identifiers: list
 
     # --- Final Contact Email Logic ---
     final_json_email = PUBLIC_CONTACT_EMAIL_DEFAULT # Default for public
-    if repo_data.get('repositoryVisibility') == 'private':
+    is_private_or_internal = repo_data.get('repositoryVisibility', '').lower() in ['private', 'internal']
+    if is_private_or_internal:
         final_json_email = PRIVATE_CONTACT_EMAIL_DEFAULT
     elif actual_contact_emails: # Use extracted if public and available
         final_json_email = actual_contact_emails[0]
