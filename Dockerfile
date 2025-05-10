@@ -1,8 +1,16 @@
-# Dockerfile
+# Dockerfile:
+# This Dockerfile is used to build a Docker image for the CDC Repo Scanner application.
+# You can run the whole thing in a container, which is useful for testing and deployment.
 #
+# $> docker-compose up --build -d
+#
+# That does it !! 
+#
+# You can also run the container directly using Docker commands:
 # $> docker build -t cdc-repo-scanner .
-# $> docker run --rm --env-file .env -v "$(pwd):/app" cdc-repo-scanner
-# $> docker run --rm --env-file .env -e GITLAB_SSL_VERIFY=false -v "$(pwd):/app" cdc-repo-scanner
+# $> docker run --rm --env-file .env -v "$(pwd)/output:/app/output" -v "$(pwd)/logs:/app/logs" cdc-repo-scanner
+# or
+# $> docker run --rm --env-file .env -e GITLAB_SSL_VERIFY=false -v "$(pwd)/output:/app/output" -v "$(pwd)/logs:/app/logs" cdc-repo-scanner
 ##
 # 1. Base Image
 FROM python:3.11-slim
@@ -38,4 +46,5 @@ RUN pip install --no-cache-dir --trusted-host pypi.python.org --trusted-host pyp
 COPY . .
 
 # 6. Command to Run
-CMD ["python", "generate_codejson.py"]
+# CMD ["python", "generate_codejson.py"]
+CMD ["bash"]   

@@ -1,5 +1,4 @@
 # utils/exemption_logger.py
-# d:\src\OCIO-Ricky\ShareITAct_RepoScanning\utils\exemption_logger.py
 """
 Manages the logging of repository exemptions to a dedicated CSV file.
 
@@ -162,6 +161,14 @@ class ExemptionLogger:
         """Returns the count of new exemptions logged during this run."""
         return self.new_exemptions_logged_count
 
+    def save_all_exemptions(self):
+        """
+        Ensures all logged exemptions are persisted.
+        In the current implementation, logging happens immediately, so this method
+        primarily serves as a confirmation or for future batching capabilities.
+        """
+        logger.info(f"ExemptionLogger: 'save_all_exemptions' called. All {self.new_exemptions_logged_count} new exemptions (if any) were logged immediately during the run to {self.log_file_path}.")
+ 
 # Example usage (if needed for testing, otherwise remove)
 # if __name__ == '__main__':
 #     logging.basicConfig(level=logging.DEBUG)

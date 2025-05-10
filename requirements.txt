@@ -6,4 +6,6 @@ google-generativeai
 PyGithub
 python-gitlab
 azure-devops
+azure-identity
+msrest==0.6.21
 filelock>=3.0.0

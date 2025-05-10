@@ -1,315 +1,353 @@
-# gitlab_connector.py
+# clients/gitlab_connector.py
+"""
+GitLab Connector for Share IT Act Repository Scanning Tool.
+
+This module is responsible for fetching repository data from a GitLab instance,
+including metadata, README content, CODEOWNERS files (if found), topics (tags),
+and Git tags. It interacts with the GitLab API via the python-gitlab library.
+"""
+
 import os
 import logging
-import gitlab
-import json
-from dotenv import load_dotenv 
-from gitlab.exceptions import GitlabAuthenticationError, GitlabGetError, GitlabListError
-from datetime import datetime, timezone 
 import base64
-from typing import List, Optional, Dict, Any 
-import requests # Need requests for _fetch_paginated_data if using direct calls
-from urllib.parse import urlparse, urlunparse # For pagination helper
+from typing import List, Optional, Dict, Any
+from datetime import timezone, datetime 
+# Removed: from dotenv import load_dotenv - No longer needed here for auth
 
-# --- Import the processor ---
-import utils.exemption_processor
+import gitlab # python-gitlab library
+from gitlab.exceptions import GitlabAuthenticationError, GitlabGetError, GitlabListError
 
+# Attempt to import the exemption processor
+try:
+    from utils import exemption_processor
+except ImportError:
+    # Provide a mock if not found, so the connector can still be outlined
+    logging.getLogger(__name__).error(
+        "Failed to import exemption_processor from utils. "
+        "Exemption processing will be skipped by the GitLab connector (using mock)."
+    )
+    class MockExemptionProcessor:
+        def process_repository_exemptions(self, repo_data: Dict[str, Any], default_org_identifiers: Optional[List[str]] = None) -> Dict[str, Any]:
+            # This mock modifies repo_data in place and returns it,
+            # ensuring it has expected keys if exemption_processor would add them.
+            repo_data.setdefault('_status_from_readme', None)
+            repo_data.setdefault('_private_contact_emails', [])
+            repo_data.setdefault('contact', {})
+            repo_data.setdefault('permissions', {"usageType": "openSource"}) # Default
+            # Mock processor also removes these if the real one does
+            repo_data.pop('readme_content', None)
+            repo_data.pop('_codeowners_content', None)
+            return repo_data
+    exemption_processor = MockExemptionProcessor()
+
+# load_dotenv() # No longer loading .env directly for auth in this connector
 logger = logging.getLogger(__name__)
 
-# Placeholder check helper
-def is_placeholder_token(token):
-    """Checks if the token is missing or likely a placeholder."""
-    return not token or token == "YOUR_GITLAB_PAT"
+PLACEHOLDER_GITLAB_TOKEN = "YOUR_GITLAB_PAT" # Common placeholder for GitLab PAT
 
-# --- Helper to fetch CODEOWNERS for GitLab ---
-def _get_codeowners_content_gitlab(project) -> Optional[str]:
+def is_placeholder_token(token: Optional[str]) -> bool:
+    """Checks if the GitLab token is missing or a known placeholder."""
+    return not token or token == PLACEHOLDER_GITLAB_TOKEN
+
+
+def _get_readme_content_gitlab(project_obj) -> tuple[Optional[str], Optional[str]]:
+    """
+    Fetches and decodes the README content for a given GitLab project object.
+    Tries common README filenames. Returns content and URL.
+    """
+    common_readme_names = ["README.md", "README.txt", "README", "readme.md"]
+    if not project_obj.default_branch:
+        logger.warning(f"Cannot fetch README for {project_obj.path_with_namespace}: No default branch set.")
+        return None, None
+
+    for readme_name in common_readme_names:
+        try:
+            readme_file = project_obj.files.get(file_path=readme_name, ref=project_obj.default_branch)
+            readme_content_bytes = base64.b64decode(readme_file.content)
+            readme_content_str = readme_content_bytes.decode('utf-8', errors='replace')
+            readme_url = f"{project_obj.web_url}/-/blob/{project_obj.default_branch}/{readme_name.lstrip('/')}"
+            logger.debug(f"Successfully fetched README '{readme_name}' for {project_obj.path_with_namespace}")
+            return readme_content_str, readme_url
+        except GitlabGetError as e:
+            if e.response_code == 404:
+                logger.debug(f"README '{readme_name}' not found in {project_obj.path_with_namespace}")
+                continue
+            else:
+                logger.error(f"GitLab API error fetching README '{readme_name}' for {project_obj.path_with_namespace}: {e}", exc_info=False)
+                return None, None 
+        except Exception as e:
+            logger.error(f"Unexpected error decoding README '{readme_name}' for {project_obj.path_with_namespace}: {e}", exc_info=True)
+            return None, None
+    logger.debug(f"No common README file found for {project_obj.path_with_namespace}")
+    return None, None
+
+
+def _get_codeowners_content_gitlab(project_obj) -> Optional[str]:
     """Fetches CODEOWNERS content from standard locations in a GitLab project."""
-    # GitLab typically looks in root, .gitlab/, or docs/
     common_paths = ["CODEOWNERS", ".gitlab/CODEOWNERS", "docs/CODEOWNERS"]
-    if not project.default_branch:
-        logger.warning(f"Cannot fetch CODEOWNERS for {project.path_with_namespace}: No default branch set.")
+    if not project_obj.default_branch:
+        logger.warning(f"Cannot fetch CODEOWNERS for {project_obj.path_with_namespace}: No default branch set.")
         return None
 
     for path in common_paths:
         try:
-            # Use the python-gitlab object's files.get method
-            content_file = project.files.get(file_path=path, ref=project.default_branch)
+            content_file = project_obj.files.get(file_path=path.lstrip('/'), ref=project_obj.default_branch)
             content_bytes = base64.b64decode(content_file.content)
-            try:
-                return content_bytes.decode('utf-8')
-            except UnicodeDecodeError:
-                logger.warning(f"Could not decode CODEOWNERS at {path} as UTF-8 for {project.path_with_namespace}. Trying latin-1.")
-                try:
-                    return content_bytes.decode('latin-1')
-                except Exception:
-                     logger.error(f"Failed to decode CODEOWNERS at {path} for {project.path_with_namespace} even with latin-1.")
-                     return None
+            content_str = content_bytes.decode('utf-8', errors='replace')
+            logger.debug(f"Successfully fetched CODEOWNERS from '{path}' for {project_obj.path_with_namespace}")
+            return content_str
         except GitlabGetError as e:
             if e.response_code == 404:
-                continue # File not found, try next path
+                continue
             else:
-                # Log other API errors
-                logger.error(f"GitLab API error fetching CODEOWNERS at {path} for {project.path_with_namespace}: {e}", exc_info=True)
-                return None # Stop trying on non-404 errors
+                logger.error(f"GitLab API error fetching CODEOWNERS at {path} for {project_obj.path_with_namespace}: {e}", exc_info=False)
+                return None
         except Exception as e:
-            logger.error(f"Unexpected error fetching CODEOWNERS at {path} for {project.path_with_namespace}: {e}", exc_info=True)
-            return None # Stop trying on unexpected errors
-    logger.debug(f"No CODEOWNERS file found in standard locations for {project.path_with_namespace}")
+            logger.error(f"Unexpected error fetching CODEOWNERS at {path} for {project_obj.path_with_namespace}: {e}", exc_info=True)
+            return None
+    logger.debug(f"No CODEOWNERS file found in standard locations for {project_obj.path_with_namespace}")
     return None
-# --- END Helper ---
 
-# --- Helper to fetch Tags using python-gitlab ---
-def _fetch_tags_gitlab(project) -> List[str]:
-    """Fetches tag names using the python-gitlab project object."""
+
+def _fetch_tags_gitlab(project_obj) -> List[str]:
+    """Fetches Git tag names using the python-gitlab project object."""
     tag_names = []
     try:
-        logger.debug(f"Fetching tags for project: {project.path_with_namespace}")
-        # project.tags.list() returns a list (handles pagination via all=True)
-        tags = project.tags.list(all=True)
+        logger.debug(f"Fetching Git tags for project: {project_obj.path_with_namespace}")
+        tags = project_obj.tags.list(all=True) 
         tag_names = [tag.name for tag in tags if tag.name]
-        logger.debug(f"Found {len(tag_names)} tags for {project.path_with_namespace}")
+        logger.debug(f"Found {len(tag_names)} Git tags for {project_obj.path_with_namespace}")
     except GitlabListError as e:
-         logger.error(f"GitLab API error listing tags for {project.path_with_namespace}: {e}", exc_info=True)
+         logger.error(f"GitLab API error listing Git tags for {project_obj.path_with_namespace}: {e}", exc_info=False)
     except Exception as e:
-        logger.error(f"Unexpected error fetching tags for {project.path_with_namespace}: {e}", exc_info=True)
+        logger.error(f"Unexpected error fetching Git tags for {project_obj.path_with_namespace}: {e}", exc_info=True)
     return tag_names
-# --- END Helper ---
 
 
-def fetch_repositories(token, group_name, processed_counter: list[int], debug_limit: int | None) -> list[dict]:
+def fetch_repositories(
+    token: Optional[str], 
+    group_path: str, 
+    processed_counter: List[int], 
+    debug_limit: Optional[int], 
+    gitlab_instance_url: Optional[str] # Changed from str to Optional[str]
+) -> List[Dict[str, Any]]:
     """
-    Fetches repository details from GitLab, processes exemptions,
-    respecting a global limit, and returns a list of processed repository data dictionaries.
+    Fetches repository (project) details from a specific GitLab group.
+
+    Args:
+        token: The GitLab Personal Access Token.
+        group_path: The full path of the GitLab group (e.g., 'my-org/my-subgroup').
+        processed_counter: Mutable list to track processed repositories for debug limit.
+        debug_limit: Optional global limit for repositories to process.
+        gitlab_instance_url: The base URL of the GitLab instance. Defaults to https://gitlab.com if None.
+
+
+    Returns:
+        A list of dictionaries, each containing processed metadata for a repository.
     """
-    if is_placeholder_token(token):
-        logger.info("GitLab token is missing or appears to be a placeholder. Skipping GitLab scan.")
+    # Use a default GitLab URL if none is provided or if it's an empty string
+    effective_gitlab_url = gitlab_instance_url
+    if not effective_gitlab_url: # Handles both None and empty string
+        effective_gitlab_url = "https://gitlab.com"
+        logger.warning(f"No GitLab instance URL provided or it was empty. Using default: {effective_gitlab_url}")
+    
+    logger.info(f"Attempting to fetch repositories for GitLab group: {group_path} on {effective_gitlab_url}")
+
+    if is_placeholder_token(token): # is_placeholder_token now takes token as arg
+        logger.error("GitLab token is a placeholder or missing. Cannot fetch repositories.")
         return []
-    if not group_name:
-        logger.warning("GitLab group name not provided. Skipping GitLab scan.")
+    if not group_path:
+        logger.warning("GitLab group path not provided. Skipping GitLab scan.")
         return []
 
-    processed_repo_list = []
-    gitlab_url = os.getenv("GITLAB_URL", "https://gitlab.com")
-    gl = None
+    processed_repo_list: List[Dict[str, Any]] = []
 
     try:
-        logger.info(f"Attempting to connect to GitLab instance at {gitlab_url}...")
-        gl = gitlab.Gitlab(gitlab_url, private_token=token, timeout=30)
-        # --- Authentication Check ---
-        try:
-            gl.auth() # Check if authentication is successful
-            logger.info("GitLab SDK initialized and authenticated.")
-        except GitlabAuthenticationError as e:
-            raise # Re-raise the exception to stop execution
-        except Exception as e:
-            # Log any other unexpected error during auth and raise it
-            logger.error(f"Unexpected error during GitLab authentication: {e}. Aborting GitLab scan.")
-            raise # Re-raise the exception to stop execution
-        
-        logger.info(f"Fetching group: {group_name}")
-        groups = gl.groups.list(search=group_name, all=True)
-        group = next((g for g in groups if g.full_path.lower() == group_name.lower()), None)
-        if not group:
-             raise GitlabGetError(error_message=f"Group '{group_name}' not found by full path.", response_code=404)
+        gl = gitlab.Gitlab(effective_gitlab_url.strip('/'), private_token=token, timeout=30)
+        gl.auth() 
+        logger.info(f"Successfully connected and authenticated to GitLab instance: {effective_gitlab_url}")
 
-        logger.info(f"Fetching projects for GitLab group: {group.full_path} (ID: {group.id})...")
-        projects = group.projects.list(all=True, include_subgroups=True, statistics=True, lazy=True)
+        group = gl.groups.get(group_path, lazy=False)
+        logger.info(f"Successfully found GitLab group: {group.full_path} (ID: {group.id})")
 
-        for pr in projects:
+        projects_iterator = group.projects.list(all=True, include_subgroups=True, statistics=True, lazy=True)
+        project_count_for_group = 0
+
+        for proj_stub in projects_iterator:
             if debug_limit is not None and processed_counter[0] >= debug_limit:
-                logger.warning(f"--- DEBUG MODE: Global limit ({debug_limit}) reached during GitLab scan. Stopping GitLab fetch. ---")
+                logger.info(f"Global debug limit ({debug_limit}) reached. Stopping repository fetching for {group_path}.")
                 break
-            project = gl.projects.get(pr.id) 
-            repo_data = {}
+            
+            repo_data: Dict[str, Any] = {} 
             try:
+                # Get full project object
+                project = gl.projects.get(proj_stub.id, lazy=False, statistics=True)
+                repo_full_name = project.path_with_namespace
+                logger.info(f"Processing repository: {repo_full_name}")
+                project_count_for_group += 1
+                
                 if hasattr(project, 'forked_from_project') and project.forked_from_project:
-                    logger.info(f"Skipping forked repository: {project.path_with_namespace}")
+                    logger.info(f"Skipping forked repository: {repo_full_name}")
                     continue
-                                  
-                logger.debug(f"Fetching data for GitLab project: {project.path_with_namespace}")
+                
+                repo_description = project.description if project.description else ""
+                
+                visibility_status = project.visibility
+                if visibility_status not in ["public", "private", "internal"]:
+                    logger.warning(f"Unknown visibility '{visibility_status}' for {repo_full_name}. Defaulting to 'private'.")
+                    visibility_status = "private"
 
-                created_at_iso = str(project.created_at)
-                last_activity_at_iso = str(project.last_activity_at)
-                repo_visibility = "private" if project.visibility == 'private' else "public"
-              #  repo_language = None
-                # --- Fetch ALL Languages ---
+                created_at_dt: Optional[datetime] = None
+                if project.created_at:
+                    try:
+                        created_at_dt = datetime.fromisoformat(project.created_at.replace('Z', '+00:00')).replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        logger.warning(f"Could not parse created_at date string '{project.created_at}' for {repo_full_name}")
+
+                last_activity_at_dt: Optional[datetime] = None
+                if project.last_activity_at:
+                    try:
+                        last_activity_at_dt = datetime.fromisoformat(project.last_activity_at.replace('Z', '+00:00')).replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        logger.warning(f"Could not parse last_activity_at date string '{project.last_activity_at}' for {repo_full_name}")
+                
                 all_languages_list = []
                 try:
-                    languages_dict = project.languages() # Returns dict like {'Python': 60.8, 'HTML': 39.2}
+                    languages_dict = project.languages() # This is a method call
                     if languages_dict:
                         all_languages_list = list(languages_dict.keys())
-                        logger.debug(f"Fetched languages for {project.path_with_namespace}: {all_languages_list}")
-                    else:
-                        logger.debug(f"No languages detected by API for {project.path_with_namespace}")
                 except Exception as lang_err:
-                    logger.error(f"Error fetching languages for {project.path_with_namespace}: {lang_err}", exc_info=True)
+                    logger.warning(f"Could not fetch languages for {repo_full_name}: {lang_err}", exc_info=False)
+
+                readme_content, readme_html_url = _get_readme_content_gitlab(project)
+                codeowners_content = _get_codeowners_content_gitlab(project)
+                repo_topics = project.tag_list if hasattr(project, 'tag_list') else [] # GitLab calls them 'tag_list' for topics
+                repo_git_tags = _fetch_tags_gitlab(project) # Actual Git tags
 
                 licenses_list = []
-                # GitLab's project object has a 'license' attribute if detected
-                if hasattr(project, 'license') and project.license:
-                     licenses_list.append({
-                         "name": project.license.get('name', project.license.get('key')), # Prefer name, fallback to key
-                         # "URL": project.license.get('url') # GitLab API might provide this
-                     })
-                if not licenses_list:
-                    logger.debug(f"No license found via API for {project.path_with_namespace}. Applying default: Apache License 2.0")
-                    licenses_list.append({"name": "Apache License 2.0", "URL": "https://www.apache.org/licenses/LICENSE-2.0"})
+                if hasattr(project, 'license') and project.license and isinstance(project.license, dict):
+                    license_name = project.license.get('name')
+                    spdx_id = project.license.get('key') 
+                    license_url = project.license.get('html_url') 
 
-                # --- Fetch README Content ---
-                readme_content_str: Optional[str] = None
-                readme_url: Optional[str] = None
-                if project.default_branch:
-                    try:
-                        readme_found = False
-                        for readme_name in ["README.md", "README.txt", "README"]:
-                            try:
-                                readme_file = project.files.get(file_path=readme_name, ref=project.default_branch)
-                                readme_content_bytes = base64.b64decode(readme_file.content)
-                                try: readme_content_str = readme_content_bytes.decode('utf-8')
-                                except UnicodeDecodeError:
-                                    try: readme_content_str = readme_content_bytes.decode('latin-1')
-                                    except Exception: readme_content_str = readme_content_bytes.decode('utf-8', errors='ignore')
-                                readme_url = f"{project.web_url}/-/blob/{project.default_branch}/{readme_name}"
-                                logger.debug(f"Fetched README '{readme_name}' for {project.path_with_namespace}")
-                                readme_found = True
-                                break
-                            except GitlabGetError as e:
-                                if e.response_code == 404: continue
-                                else: raise
-                        if not readme_found: logger.debug(f"No common README file found for project: {project.path_with_namespace}")
-                    except Exception as readme_err: logger.error(f"Error fetching/decoding README for {project.path_with_namespace}: {readme_err}", exc_info=True)
-                else: logger.debug(f"Skipping README fetch for {project.path_with_namespace} - no default branch.")
-
-                # --- Fetch CODEOWNERS Content ---
-                codeowners_content_str = _get_codeowners_content_gitlab(project)
-
-                # --- Fetch Tags (Topics) ---
-                # Use project.tag_list for GitLab's equivalent of topics
-                repo_topics = project.tag_list
-
-                # --- Fetch Git Tags ---
-                repo_tags = _fetch_tags_gitlab(project)
-
-                # --- Get Archived Status ---
-                # GitLab uses 'archived' boolean attribute on the project object
-                repo_archived = project.archived
+                    license_entry = {}
+                    if spdx_id:
+                        license_entry["spdxID"] = spdx_id
+                    if license_name: 
+                        license_entry["name"] = license_name
+                    if license_url: # This is often the URL to the license file in the repo on GitLab
+                        license_entry["URL"] = license_url
+                    
+                    if license_entry: 
+                        licenses_list.append(license_entry)
 
                 repo_data = {
-                    # === Core Schema Fields ===
-                    "name": project.path,
-                    "description": project.description or '',
-                    "organization": group.full_path,
-                    "repositoryURL": project.web_url,
-                    "homepageURL": project.web_url, # GitLab doesn't have a distinct homepage field easily
+                    "name": project.path, # Name of the project within its namespace
+                    "organization": group.full_path, # Full path of the parent group
+                    "description": repo_description,
+                    "repositoryURL": project.web_url, 
+                    "homepageURL": project.web_url, 
                     "downloadURL": None,
-                    "vcs": "gitlab",
-                    "repositoryVisibility": repo_visibility,
-                    "status": "development", # Placeholder
-                    "version": "N/A", # Placeholder
-                    "laborHours": 0,
-                    "languages": all_languages_list, # Populate with the full list
-                    "tags": repo_topics, # Use GitLab's tag_list as topics
-
-                    # === Nested Schema Fields ===
-                    "date": {"created": created_at_iso, "lastModified": last_activity_at_iso},
-                    "permissions": {"usageType": None, "exemptionText": None, "licenses": licenses_list},
-                    "contact": {"name": "Centers for Disease Control and Prevention", "email": None},
-                    "contractNumber": None,
-
-                    # === Fields needed for processing ===
-                    "readme_content": readme_content_str,
-                    "_codeowners_content": codeowners_content_str,
-                    "_is_private_flag": repo_visibility == 'private',
-                    "_all_languages": all_languages_list, 
-
-                    # === Additional Fields ===
-                    "repo_id": project.id,
-                    "readme_url": readme_url,
-                    "_api_tags": repo_tags, # Store actual Git tags for version inference
-                    "archived": repo_archived, # Store archived status
+                    "vcs": "git",
+                    "repositoryVisibility": visibility_status,
+                    "status": "development", 
+                    "version": "N/A",      
+                    "laborHours": 0,       
+                    "languages": all_languages_list,
+                    "tags": repo_topics,
+                    "date": {
+                        "created": created_at_dt.isoformat() if created_at_dt else None,
+                        "lastModified": last_activity_at_dt.isoformat() if last_activity_at_dt else None,
+                    },
+                    "permissions": {
+                        "usageType": "openSource", 
+                        "exemptionText": None,
+                        "licenses": licenses_list
+                    },
+                    "contact": {}, 
+                    "contractNumber": None, 
+                    "readme_content": readme_content,
+                    "_codeowners_content": codeowners_content,
+                    "repo_id": project.id, 
+                    "readme_url": readme_html_url, 
+                    "_api_tags": repo_git_tags, 
+                    "archived": project.archived,  
                 }
-
-                processed_data = utils.exemption_processor.process_repository_exemptions(repo_data)
-
-                # --- Clean up temporary fields ---
-                # Processor removes readme_content, _codeowners_content
-                processed_data.pop('_is_private_flag', None)
-                processed_data.pop('_all_languages', None) 
-                # Remove fields only needed for inference later
-                processed_data.pop('_api_tags', None)
-                processed_data.pop('archived', None) # Remove unless needed downstream
-
-                processed_repo_list.append(processed_data)
+                
+                # Pass default identifiers for organization context to exemption_processor
+                repo_data = exemption_processor.process_repository_exemptions(repo_data, default_org_identifiers=[group.full_path])
+                
+                processed_repo_list.append(repo_data)
                 processed_counter[0] += 1
 
-            except Exception as proj_err:
-                logger.error(f"Error processing GitLab project '{project.path_with_namespace}': {proj_err}", exc_info=True)
-                processed_repo_list.append({
-                    'name': project.path,
-                    'organization': group.full_path,
-                    'processing_error': f"Connector stage: {proj_err}"
-                 })
-                processed_counter[0] += 1
+            except GitlabGetError as p_get_err: # Error fetching full project details
+                logger.error(f"GitLab API error getting full details for project stub {proj_stub.id} ({proj_stub.path_with_namespace}): {p_get_err}. Skipping.", exc_info=False)
+                processed_repo_list.append({"name": proj_stub.path, "organization": group.full_path, "processing_error": f"GitLab API Error getting details: {p_get_err.error_message}"})
+            except Exception as e_proj:
+                logger.error(f"Unexpected error processing project stub {proj_stub.id} ({proj_stub.path_with_namespace}): {e_proj}. Skipping.", exc_info=True)
+                processed_repo_list.append({"name": proj_stub.path, "organization": group.full_path, "processing_error": f"Unexpected Error: {e_proj}"})
+        
+        logger.info(f"Fetched and initiated processing for {project_count_for_group} projects from GitLab group: {group_path}")
 
-        logger.info(f"Finished GitLab scan. Processed {len(processed_repo_list)} projects. Global count: {processed_counter[0]}")
-
-    # --- Exception Handling ---
-    except GitlabAuthenticationError: logger.error(f"GitLab authentication failed. Check GITLAB_TOKEN/URL ({gitlab_url}). Skipping."); return []
-    except GitlabGetError as e:
-         if e.response_code == 404: logger.error(f"GitLab group '{group_name}' not found (404). Check GITLAB_GROUP. Skipping.")
-         else: logger.error(f"GitLab API error fetching group '{group_name}': {e}. Skipping.", exc_info=True)
-         return []
-    except GitlabListError as e: logger.error(f"GitLab API error listing projects for group '{group_name}': {e}. Skipping.", exc_info=True); return []
-    except Exception as e: logger.error(f"Unexpected error during GitLab fetch for group '{group_name}': {e}. Skipping.", exc_info=True); return []
+    except GitlabAuthenticationError:
+        logger.critical(f"GitLab authentication failed for URL {effective_gitlab_url}. Check token. Skipping GitLab scan for {group_path}.")
+        # No need to append to processed_repo_list here, just return what we have or empty
+    except GitlabGetError as e: # Error getting the initial group
+        logger.critical(f"GitLab API error: Could not find group '{group_path}' on {effective_gitlab_url} or other API issue: {e.error_message} (Status: {e.response_code}). Skipping GitLab scan.", exc_info=False)
+    except GitlabListError as e: # Error listing projects in the group
+        logger.critical(f"GitLab API error listing projects for group '{group_path}' on {effective_gitlab_url}: {e.error_message}. Skipping GitLab scan.", exc_info=False)
+    except Exception as e: # Catch-all for other unexpected errors during setup or group iteration
+        logger.critical(f"An unexpected error occurred during GitLab connection or group processing for '{group_path}' on {effective_gitlab_url}: {e}", exc_info=True)
 
     return processed_repo_list
 
 
-if __name__ == "__main__":
-    # --- Added Setup Code ---
-    # Load .env file for standalone execution
-    load_dotenv()
+if __name__ == '__main__':
+    # This basic test block will use environment variables for token, URL, and group
+    # This is for direct testing of the connector, not via generate_codejson.py
+    from dotenv import load_dotenv as load_dotenv_for_test # Alias to avoid conflict
+    load_dotenv_for_test() # Load .env for test execution
 
-    # Basic logging setup for direct execution
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger(__name__) # Use the connector's logger
 
-    logger.info("Running GitLab connector directly for testing...")
+    # For testing, get these from .env
+    test_gl_token = os.getenv("GITLAB_TOKEN") 
+    test_gl_url_env = os.getenv("GITLAB_URL", "https://gitlab.com")
+    test_group_paths_str = os.getenv("GITLAB_GROUPS", "")
+    test_group_path = test_group_paths_str.split(',')[0].strip() if test_group_paths_str else None
 
-    # Get necessary config from environment
-    gitlab_token = os.getenv("GITLAB_TOKEN")
-    gitlab_org = os.getenv("GITLAB_ORG")
-    # --- End Added Setup Code ---
-
-    if not gitlab_token or not gitlab_org:
-        logger.error("GITLAB_TOKEN and GITLAB_ORG must be set in .env file for direct execution.")
+    if not test_gl_token or is_placeholder_token(test_gl_token): # Use the function with the token
+        logger.error("Test GitLab token (GITLAB_TOKEN) not found or is a placeholder in .env.")
+    elif not test_group_path:
+        logger.error("No GitLab group found in GITLAB_GROUPS in .env for testing.")
     else:
-        try:
-            # --- Set a specific limit for direct testing ---
-            test_counter = [0]
-            # Set a small limit, e.g., 5 repositories
-            test_limit = 5
-            # --- End limit setting ---
+        logger.info(f"--- Testing GitLab Connector for group: {test_group_path} on {test_gl_url_env} ---")
+        counter = [0]
+        repositories = fetch_repositories(
+            token=test_gl_token, 
+            group_path=test_group_path, 
+            processed_counter=counter, 
+            debug_limit=None, 
+            gitlab_instance_url=test_gl_url_env
+        )
 
-            logger.info(f"Fetching repositories for org: {gitlab_org} (Limit: {test_limit})") # Log the limit
-
-            repositories = fetch_repositories(
-                token=gitlab_token,
-                org_name=gitlab_org,
-                processed_counter=test_counter,
-                debug_limit=test_limit # Pass the limit here
-            )
-
-            logger.info(f"Direct execution finished. Found {len(repositories)} repositories (up to limit).")
-
-            # Print the results nicely formatted as JSON
-            print("\n--- Fetched Repositories (JSON Output) ---")
-            # Use default=str to handle potential non-serializable types like datetime
-            print(json.dumps(repositories, indent=2, default=str))
-            print("--- End of Output ---")
-
-        except Exception as e:
-            logger.error(f"An error occurred during direct execution: {e}", exc_info=True)
-
-    logger.info("Direct execution script finished.")
-# --- End of block ---
+        if repositories:
+            logger.info(f"Successfully fetched {len(repositories)} repositories.")
+            for i, repo_info in enumerate(repositories[:3]):
+                logger.info(f"--- Repository {i+1} ({repo_info.get('name')}) ---")
+                logger.info(f"  Repo ID: {repo_info.get('repo_id')}")
+                logger.info(f"  Name: {repo_info.get('name')}")
+                logger.info(f"  Org: {repo_info.get('organization')}")
+                logger.info(f"  Description: {repo_info.get('description')}")
+                logger.info(f"  Visibility: {repo_info.get('repositoryVisibility')}")
+                logger.info(f"  Archived (temp): {repo_info.get('archived')}")
+                logger.info(f"  API Tags (temp): {repo_info.get('_api_tags')}")
+                logger.info(f"  Permissions: {repo_info.get('permissions')}")
+                logger.info(f"  Contact: {repo_info.get('contact')}")
+                if "processing_error" in repo_info:
+                    logger.error(f"  Processing Error: {repo_info['processing_error']}")
+            if len(repositories) > 3:
+                logger.info(f"... and {len(repositories)-3} more repositories.")
+        else:
+            logger.warning("No repositories fetched or an error occurred.")
+        logger.info(f"Total repositories processed according to counter: {counter[0]}")

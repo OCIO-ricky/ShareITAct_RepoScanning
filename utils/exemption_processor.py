@@ -1,4 +1,4 @@
-## exemption_processor.py
+# utils\exemption_processor.py
 """
 Handles the core logic for processing repository metadata to determine
 code-sharing exemptions, infer missing information, and prepare data for
@@ -38,20 +38,18 @@ import logging
 import os
 from dotenv import load_dotenv
 import time
-from typing import List, Optional, Dict, Any # Added typing
+from typing import List, Optional, Dict, Any
 
 # --- Try importing the AI library ---
 try:
     import google.generativeai as genai
-    AI_ENABLED = True
+    AI_LIBRARY_IMPORTED = True # Indicates the library itself is available
 except ImportError:
-    AI_ENABLED = False
-    genai = None
+    AI_LIBRARY_IMPORTED = False
+    genai = None # Ensure genai is defined even if import fails
 
 logger = logging.getLogger(__name__)
-
-# --- Log the initial AI_ENABLED status ---
-logger.info(f"Initial AI processing status (based on library import): {AI_ENABLED}")
+logger.info(f"Initial AI library import status (google.generativeai): {AI_LIBRARY_IMPORTED}")
 
 # --- Define Exemption Codes as Constants ---
 EXEMPT_BY_LAW = "exemptByLaw"
@@ -60,183 +58,223 @@ EXEMPT_BY_NATIONAL_SECURITY = "exemptByNationalSecurity"
 EXEMPT_BY_AGENCY_SYSTEM = "exemptByAgencySystem"
 EXEMPT_BY_MISSION_SYSTEM = "exemptByMissionSystem"
 EXEMPT_BY_CIO = "exemptByCIO"
-# --- Define Default Usage Types ---
 USAGE_OPEN_SOURCE = "openSource"
 USAGE_GOVERNMENT_WIDE_REUSE = "governmentWideReuse"
-# --- End Constants ---
 
-# List of valid exemption codes the AI can return
 VALID_AI_EXEMPTION_CODES = [
-    EXEMPT_BY_LAW,
-    EXEMPT_BY_NATIONAL_SECURITY,
-    EXEMPT_BY_AGENCY_SYSTEM,
-    EXEMPT_BY_MISSION_SYSTEM,
-    EXEMPT_BY_CIO,
+    EXEMPT_BY_LAW, EXEMPT_BY_NATIONAL_SECURITY, EXEMPT_BY_AGENCY_SYSTEM,
+    EXEMPT_BY_MISSION_SYSTEM, EXEMPT_BY_CIO,
+]
+SENSITIVE_KEYWORDS = ["HIPAA", "PHI", "CUI", "PII", "Internal use only", "Patient data"]
+NON_CODE_LANGUAGES = [
+    None, '', 'Markdown', 'Text', 'HTML', 'CSS', 'XML', 'YAML', 'JSON',
+    'Shell', 'Batchfile', 'PowerShell', 'Dockerfile', 'Makefile', 'CMake',
+    'TeX', 'Roff', 'CSV', 'TSV'
 ]
 
-# Define sensitive keywords and non-code languages centrally
-SENSITIVE_KEYWORDS = ["HIPAA", "PHI", "CUI","PII","Internal use only", "Patient data"]
-# Ensure NON_CODE_LANGUAGES includes common non-code types and None/empty string
-NON_CODE_LANGUAGES = [None, '', 'Markdown', 'Text', 'HTML', 'CSS', 'XML', 'YAML', 'JSON', 'Shell', 'Batchfile', 'PowerShell', 'Dockerfile', 'Makefile', 'CMake', 'TeX', 'Roff', 'CSV', 'TSV'] # Expanded list
+load_dotenv()
+AI_MAX_TOKENS = int(os.getenv('AI_MAX_TOKENS', 8000))
+AI_RETRY_LIMIT = int(os.getenv('AI_RETRY_LIMIT', 3))
+AI_RETRY_DELAY = int(os.getenv('AI_RETRY_DELAY', 5))
 
-# --- Load Environment Variables ---
-load_dotenv() # Ensure .env is loaded
-# Load MAX_TOKENS from environment (used as MAX_TOKENS in the code)
-AI_MAX_TOKENS = int(os.getenv("MAX_TOKENS", 15000))
-logger.info(f"Using MAX_TOKENS value: {AI_MAX_TOKENS}")
+KNOWN_CDC_ORGANIZATIONS = {
+    "cdc": "Centers for Disease Control and Prevention", "od": "Office of the Director",
+    "om": "Office of Mission Support", "ocoo": "Office of the Chief Operating Officer",
+    "oadc": "Office of the Associate Directory of Communications",
+    "ocio": "Office of the Chief Information Officer",
+    "oed": "Office of Equal Employment Opportunity and Workplace Equity",
+    "oga": "Office of Global Affairs", "ohs": "Office of Health Equity",
+    "opa": "Office of Policy, Performance, and Evaluation",
+    "ostlts": "Office of State, Tribal, Local and Territorial Support",
+    "owcd": "Office of Women’s Health and Health Equity",
+    "cSELS": "Center for Surveillance, Epidemiology, and Laboratory Services",
+    "csels": "Center for Surveillance, Epidemiology, and Laboratory Services",
+    "ddphss": "Deputy Director for Public Health Science and Surveillance",
+    "cgH": "Center for Global Health", "cgh": "Center for Global Health",
+    "cid": "Center for Preparedness and Response", "cpr": "Center for Preparedness and Response",
+    "ncezid": "National Center for Emerging and Zoonotic Infectious Diseases",
+    "ncird": "National Center for Immunization and Respiratory Diseases",
+    "nchhstp": "National Center for HIV, Viral Hepatitis, STD, and TB Prevention",
+    "nccdphp": "National Center for Chronic Disease Prevention and Health Promotion",
+    "nceh": "National Center for Environmental Health",
+    "atsdr": "Agency for Toxic Substances and Disease Registry",
+    "ncipc": "National Center for Injury Prevention and Control",
+    "ncbddd": "National Center on Birth Defects and Developmental Disabilities",
+    "nchs": "National Center for Health Statistics",
+    "niosh": "National Institute for Occupational Safety and Health",
+    "ddid": "Deputy Director for Infectious Diseases",
+    "ddnidd": "Deputy Director for Non-Infectious Diseases",
+    "cfa": "Center for Forecasting and Outbreak Analytics",
+    "ophdst": "Office of Public Health Data, Surveillance, and Technology",
+    "amd": "Office of Advanced Molecular Detection", "oamd": "Office of Advanced Molecular Detection",
+}
 
-# Load AI_DELAY_ENABLED from environment
-AI_DELAY_ENABLED = float(os.getenv("AI_DELAY_ENABLED", 4.5))
+AI_DELAY_ENABLED = float(os.getenv("AI_DELAY_ENABLED", 0.0))
 logger.info(f"Using AI_DELAY_ENABLED value: {AI_DELAY_ENABLED}")
 
-# --- Get Default Emails from Environment Variables ---
-# Use the exact names from the .env file provided
-PRIVATE_CONTACT_EMAIL_DEFAULT = os.getenv("PRIVATE_REPO_CONTACT_EMAIL", "shareit@cdc.gov")
-PUBLIC_CONTACT_EMAIL_DEFAULT = os.getenv("DEFAULT_CONTACT_EMAIL", "shareit@cdc.gov") # Changed variable name and default
-logger.info(f"Using Private Repo Contact Email: {PRIVATE_CONTACT_EMAIL_DEFAULT}")
-logger.info(f"Using Default Public Contact Email: {PUBLIC_CONTACT_EMAIL_DEFAULT}") # Log the correct variable
-# --- End Get Default Emails ---
+AI_ORGANIZATION_ENABLED = os.getenv("AI_ORGANIZATION_ENABLED", "False").lower() == "true"
+logger.info(f"AI Organization Inference Enabled: {AI_ORGANIZATION_ENABLED}")
 
+PRIVATE_CONTACT_EMAIL_DEFAULT = os.getenv("PRIVATE_REPO_CONTACT_EMAIL", "shareit@cdc.gov")
+PUBLIC_CONTACT_EMAIL_DEFAULT = os.getenv("DEFAULT_CONTACT_EMAIL", "shareit@cdc.gov")
+logger.info(f"Using Private Repo Contact Email: {PRIVATE_CONTACT_EMAIL_DEFAULT}")
+logger.info(f"Using Default Public Contact Email: {PUBLIC_CONTACT_EMAIL_DEFAULT}")
 
 # --- AI Configuration ---
-if AI_ENABLED:
-    # load_dotenv() # Already loaded above
-    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-    if GOOGLE_API_KEY and GOOGLE_API_KEY != "YOUR_GOOGLE_API_KEY":
-        try:
-            genai.configure(api_key=GOOGLE_API_KEY)
-            logger.info("Google Generative AI configured successfully.")
-            logger.info(f"AI processing status after configuration: {AI_ENABLED}") # Log status after config
-        except Exception as ai_config_err:
-            logger.error(f"Failed to configure Google Generative AI: {ai_config_err}", exc_info=True)
-            AI_ENABLED = False
-            logger.warning(f"AI processing status after configuration failure: {AI_ENABLED}") # Log status after failure
-    else:
-        logger.warning("GOOGLE_API_KEY environment variable not found. AI processing will be disabled.")
-        AI_ENABLED = False
-        logger.info(f"AI processing status (API key missing): {AI_ENABLED}") # Log status if key missing
+AI_ENABLED = False # Default to False, enable only if key is valid and library imported
+PLACEHOLDER_GOOGLE_API_KEY = "YOUR_GOOLE_API_KEY" # As requested
 
+if AI_LIBRARY_IMPORTED: # Only proceed if the google.generativeai library was successfully imported
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+    if not GOOGLE_API_KEY:
+        logger.warning("GOOGLE_API_KEY environment variable not found. AI processing will be disabled for this module.")
+        # AI_ENABLED remains False
+    elif GOOGLE_API_KEY == PLACEHOLDER_GOOGLE_API_KEY:
+        logger.warning(f"GOOGLE_API_KEY is set to a placeholder value ('{PLACEHOLDER_GOOGLE_API_KEY}'). AI processing will be disabled for this module.")
+        # AI_ENABLED remains False
+    else:
+        try:
+            if genai: # Ensure genai is not None (it wouldn't be if AI_LIBRARY_IMPORTED is True)
+                genai.configure(api_key=GOOGLE_API_KEY)
+                logger.info("Google Generative AI configured successfully with the provided API key.")
+                AI_ENABLED = True # AI is now fully enabled for use
+            else: # Should not happen if AI_LIBRARY_IMPORTED is True
+                logger.error("Google Generative AI library was marked as imported, but 'genai' module is None. AI processing disabled.")
+                # AI_ENABLED remains False
+        except Exception as ai_config_err:
+            logger.error(f"Failed to configure Google Generative AI with the provided API key: {ai_config_err}", exc_info=True)
+            # AI_ENABLED remains False (explicitly, though it was already False)
+else:
+    logger.info("Google Generative AI library not imported. AI processing will be disabled for this module.")
+    # AI_ENABLED remains False
+
+logger.info(f"Final AI processing status for exemption_processor: {AI_ENABLED}")
+
+
+# --- Marker Regular Expressions ---
+VERSION_MARKER = re.compile(r"^\s*Version:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+KEYWORDS_MARKER = re.compile(r"^\s*Keywords:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+ORGANIZATION_MARKER = re.compile(r"^\s*Organization:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+STATUS_REGEX = re.compile(r"^(?:Project Status|Status):\s*(Maintained|Deprecated|Experimental|Active|Inactive)\b", re.MULTILINE | re.IGNORECASE)
+LABOR_HOURS_REGEX = re.compile(r"^(?:Estimated Labor Hours|Labor Hours):\s*(\d+)\b", re.MULTILINE | re.IGNORECASE)
+CONTACT_LINE_REGEX = re.compile(r"^(?:Contact|Contacts):\s*(.*)", re.MULTILINE | re.IGNORECASE)
+HTML_TAG_REGEX = re.compile(r'<[^>]+>')
+TAGS_REGEX = re.compile(r"^(?:Keywords|Tags|Topics):\s*(.+)", re.MULTILINE | re.IGNORECASE)
+EMAIL_PATTERN = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+EMAIL_FILTER_DOMAINS = ('.example.com', '.example.org')
+
+
+def _programmatic_org_from_repo_name(repo_name: str, current_org: str, default_org_identifiers: list[str]) -> str | None:
+    if not repo_name:
+        return None
+    can_override = any(current_org.lower() == default_id.lower() for default_id in default_org_identifiers)
+    if not can_override and current_org and current_org.lower() != "unknownorg":
+        return None
+
+    repo_name_lower = repo_name.lower()
+    sorted_known_orgs = sorted(KNOWN_CDC_ORGANIZATIONS.items(), key=lambda item: len(item[0]), reverse=True)
+
+    for acronym, full_name in sorted_known_orgs:
+        acronym_lower = acronym.lower()
+        pattern = rf"(?:^|[^a-z0-9]){re.escape(acronym_lower)}(?:[^a-z0-9]|$)"
+        if re.search(pattern, repo_name_lower):
+            logger.info(f"Programmatically identified organization '{full_name}' from repo name '{repo_name}' (acronym: '{acronym}'). Current org: '{current_org}'.")
+            return full_name
+    return None
 
 def _call_ai_for_organization(repo_data: dict) -> str | None:
-    """Calls the AI model to suggest an organization based on repo details."""
-    if not AI_ENABLED or not genai:
-        logger.debug("AI processing is disabled. Skipping AI call.")
+    if not AI_ENABLED or not genai or not AI_ORGANIZATION_ENABLED: # Check AI_ORGANIZATION_ENABLED flag
+        logger.debug("AI processing or AI organization inference is disabled. Skipping AI organization call.")
         return None
 
-    # Use schema-aligned fields
-    readme = repo_data.get('readme_content', '') or ''
-    description = repo_data.get('description', '') or ''
-    repo_name = repo_data.get('name', '') or ''
-    xtags = repo_data.get('tags', '') or ''
+    repo_name_for_ai = repo_data.get('name', '')
+    description_for_ai = repo_data.get('description', '')
+    tags_list = repo_data.get('tags', [])
+    tags_for_ai = ', '.join(tags_list) if tags_list else ''
+    readme_content_for_ai = repo_data.get('readme_content', '') or '' # Already handled by exemption_processor
+    
+    max_readme_length_for_ai = AI_MAX_TOKENS - 1500
+    if len(readme_content_for_ai) > max_readme_length_for_ai:
+        readme_content_for_ai = readme_content_for_ai[:max_readme_length_for_ai] + "\n... [README Content Truncated]"
+        logger.warning(f"README content for AI organization analysis of '{repo_name_for_ai}' was truncated.")
 
-    if not readme.strip() and not description.strip():
-        logger.debug(f"No significant text content (README/description) found for AI analysis of '{repo_name}'. Skipping AI call.")
+    if not readme_content_for_ai.strip() and not description_for_ai.strip() and not repo_name_for_ai.strip():
+        logger.debug(f"No significant text content (README/description/name) found for AI analysis of '{repo_name_for_ai}'. Skipping AI organization call.")
         return None
 
-    max_input_length = AI_MAX_TOKENS # number of max tokens for the AI model
-    input_text = f"Repository Name: {repo_name}\nDescription: {description}\nTAGS:{xtags}\n\nREADME:\n{readme}"
-    if len(input_text) > max_input_length:
-        input_text = input_text[:max_input_length] + "\n... [Content Truncated]"
-        logger.warning(f"Input text for AI analysis of '{repo_name}' was truncated.")
-
+    org_list_for_prompt = "\n".join([f"{acronym} = {name}" for acronym, name in KNOWN_CDC_ORGANIZATIONS.items()])
     prompt = f"""
-Analyze the following repository information (name, description, tags, README content)
-to determine the organizations name that owns the repository. If NO specific organizational name or acronym can be infered based on the text, output ONLY the word "None".
-Here is a list of known CDC organizational acronyms and names as reference. if you find text that matches perhaps an organizational acronym, output the 
-corresponding organization's name. For example, the repo name "csels-datahub" would suggest the organization name is Center for Surveillance, Epidemiology, and Laboratory Services.
-If you find multiple potential matches with acronyms or organizations names, use your best guess and/or output the most prominently shown across and within CDC.
-cdc=Centers for Disease Control and Prevention
-od=Office of the Director
-os=Office of Science
-olss=Office of Laboratory Science and Safety
-ophdst=Office of Public Health Data, Surveillance, and Technology
-orr=Office of Readiness and Response
-oc=Office of Communication
-oppe=Office of Policy, Performance, and Evaluation
-oeeo=Office of Equal Employment Opportunity
-ocio=Office of the Chief Information Officer
-ocoo=Office of the Chief Operating Officer
-ofr=Office of Financial Resources
-osys=Office of Security
-ohr=Office of Human Resources
-ossam=Office of Safety, Security, and Asset Management
-ogc=Office of General Counsel (CDC Legal Support)
-cfa=Center for Forecasting and Outbreak Analytics
-csels=Center for Surveillance, Epidemiology, and Laboratory Services
-cgh=Center for Global Health
-ncezid=National Center for Emerging and Zoonotic Infectious Diseases
-ncird=National Center for Immunization and Respiratory Diseases
-nccdphp=National Center for Chronic Disease Prevention and Health Promotion
-ncipc=National Center for Injury Prevention and Control
-nceh=National Center for Environmental Health
-niosh=National Institute for Occupational Safety and Health
-nchs=National Center for Health Statistics
+Your task is to identify the official CDC organizational unit mentioned in the repository text.
+You will be given repository information (name, description, tags, README) and a list of known CDC organizations with their acronyms.
+Your primary goal is to match this information to one of the known CDC organizations.
 
-    Repository Information:
-    ---
-    {input_text}
-    ---
+Key Instructions:
+1.  **Prioritize Acronyms in Repository Name:** If the 'Repository Name' (e.g., "csels-hub", "ocio-project") contains an acronym that clearly matches an entry in the 'Known CDC Organizations' list, this is a strong indicator. You should confidently use this match to determine the organization, especially if the description and README are generic or do not provide conflicting specific organizational information. For example, if 'Repository Name' is "csels-datahub", the organization is "Center for Surveillance, Epidemiology, and Laboratory Services".
+2.  **Handle Misspellings:** Be alert to minor misspellings in any text when comparing against the known list. For example, "enter for Surveillance, Epidemiology, and Laboratory Services" should be matched to "Center for Surveillance, Epidemiology, and Laboratory Services".
+3.  **Use Full Context:** If the repository name is not definitive or lacks a clear acronym, analyze the description, tags, and README content for mentions of organizational units or related keywords.
+4.  **Output Format:**
+    *   If a confident match to an organization in the 'Known CDC Organizations' list is found (based on name, acronym, or other text, including corrected misspellings), output the *full official name* from the list.
+    *   If, after careful analysis of all provided information, no reasonable match can be made to any organization in the list, output ONLY the word "None".
 
-    Analysis Result:
+Known CDC Organizations (Acronym = Full Name):
+{org_list_for_prompt}
+
+Repository Information:
+Repository Name: {repo_name_for_ai}
+Repository Description: {description_for_ai}
+Repository Tags: {tags_for_ai}
+README Content (excerpt):
+---
+{readme_content_for_ai}
+---
+Determine the organization based on the rules above.
     """
     try:
-        logger.debug(f"Calling AI model to infer code owning organization name or acronym for repository '{repo_name}'...")
-        # Ensure the model name is current and available
+        logger.info(f"Calling AI model to infer organization for repository '{repo_name_for_ai}'...")
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
         response = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(temperature=0.1),
-            # Consider adding safety_settings if needed
-            # safety_settings=[...]
         )
         ai_result_text = response.text.strip()
-        logger.debug(f"AI raw response for '{repo_name}': {ai_result_text}")
+        logger.debug(f"AI raw response for '{repo_name_for_ai}': {ai_result_text}")
 
         if ai_result_text.lower() == "none":
-            logger.info(f"AI analysis for '{repo_name}' determined no specific organization name was inferred.")
+            logger.info(f"AI analysis for '{repo_name_for_ai}' determined no specific organization name was inferred.")
             return None
-
         organization = ai_result_text.strip()
         if organization:
-            logger.info(f"AI analysis for '{repo_name}' suggests an organization: {organization}")
+            logger.info(f"AI analysis for '{repo_name_for_ai}' suggests an organization: {organization}")
             return organization
         else:
-            logger.warning(f"AI analysis for '{repo_name}' could not find the organization name. Ignoring.")
+            logger.warning(f"AI analysis for '{repo_name_for_ai}' could not find the organization name. Ignoring.")
             return None
-
     except Exception as ai_err:
-        # Log specific AI errors if possible (e.g., API key issues, rate limits)
-        logger.error(f"Error during AI call for repository '{repo_name}': {ai_err}", exc_info=True)
-        return None, None
+        logger.error(f"Error during AI call for repository '{repo_name_for_ai}': {ai_err}", exc_info=True)
+        return None
     finally:
-        # Consider making delay configurable or using exponential backoff for errors
-        if AI_DELAY_ENABLED:
-            delay_seconds = AI_DELAY_ENABLED 
-            logger.debug(f"Pausing for {delay_seconds} seconds to respect AI rate limit...")
-            time.sleep(delay_seconds)   
+        if AI_ENABLED and AI_DELAY_ENABLED > 0:
+            logger.debug(f"Pausing for {AI_DELAY_ENABLED} seconds to respect AI rate limit...")
+            time.sleep(AI_DELAY_ENABLED)
 
-
-# --- Helper Function for AI Call ---
 def _call_ai_for_exemption(repo_data: dict) -> tuple[str | None, str | None]:
-    """Calls the AI model to suggest an exemption based on repo details."""
     if not AI_ENABLED or not genai:
-        logger.debug("AI processing is disabled. Skipping AI call.")
+        logger.debug("AI processing is disabled. Skipping AI exemption call.")
         return None, None
 
-    # Use schema-aligned fields
-    readme = repo_data.get('readme_content', '') or ''
+    readme = repo_data.get('readme_content', '') or '' # readme_content is passed to exemption_processor
     description = repo_data.get('description', '') or ''
-    repo_name = repo_data.get('name', '') # Use 'name' field
+    repo_name = repo_data.get('name', '')
 
     if not readme.strip() and not description.strip():
-        logger.debug(f"No significant text content (README/description) found for AI analysis of '{repo_name}'. Skipping AI call.")
+        logger.debug(f"No significant text content (README/description) found for AI exemption analysis of '{repo_name}'. Skipping AI call.")
         return None, None
 
-    max_input_length =  AI_MAX_TOKENS # number of max tokens for the AI model
+    max_input_length =  AI_MAX_TOKENS
     input_text = f"Repository Name: {repo_name}\nDescription: {description}\n\nREADME:\n{readme}"
     if len(input_text) > max_input_length:
         input_text = input_text[:max_input_length] + "\n... [Content Truncated]"
-        logger.warning(f"Input text for AI analysis of '{repo_name}' was truncated.")
+        logger.warning(f"Input text for AI exemption analysis of '{repo_name}' was truncated.")
 
     prompt = f"""
     Analyze the following repository information (name, description, README content)
@@ -269,120 +307,67 @@ def _call_ai_for_exemption(repo_data: dict) -> tuple[str | None, str | None]:
     Analysis Result:
     """
     try:
-        logger.debug(f"Calling AI model for repository '{repo_name}'...")
-        # Ensure the model name is current and available
+        logger.debug(f"Calling AI model for exemption analysis for repository '{repo_name}'...")
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
         response = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(temperature=0.1),
-            # Consider adding safety_settings if needed
-            # safety_settings=[...]
         )
         ai_result_text = response.text.strip()
-        logger.debug(f"AI raw response for '{repo_name}': {ai_result_text}")
+        logger.debug(f"AI raw response for exemption for '{repo_name}': {ai_result_text}")
 
         if ai_result_text.lower() == "none":
-            logger.info(f"AI analysis for '{repo_name}' determined no specific exemption applies.")
+            logger.info(f"AI exemption analysis for '{repo_name}' determined no specific exemption applies.")
             return None, None
-
         if '|' in ai_result_text:
             parts = ai_result_text.split('|', 1)
             potential_code = parts[0].strip()
             justification = parts[1].strip()
-
             if potential_code in VALID_AI_EXEMPTION_CODES:
-                logger.info(f"AI analysis for '{repo_name}' suggests exemption: {potential_code}. Justification: {justification}")
+                logger.info(f"AI exemption analysis for '{repo_name}' suggests exemption: {potential_code}. Justification: {justification}")
                 return potential_code, f"AI Suggestion: {justification}"
             else:
-                logger.warning(f"AI analysis for '{repo_name}' returned an invalid exemption code: '{potential_code}'. Ignoring.")
+                logger.warning(f"AI exemption analysis for '{repo_name}' returned an invalid exemption code: '{potential_code}'. Ignoring.")
                 return None, None
         else:
-            logger.warning(f"AI analysis for '{repo_name}' returned an unexpected format: '{ai_result_text}'. Ignoring.")
+            logger.warning(f"AI exemption analysis for '{repo_name}' returned an unexpected format: '{ai_result_text}'. Ignoring.")
             return None, None
-
     except Exception as ai_err:
-        # Log specific AI errors if possible (e.g., API key issues, rate limits)
-        logger.error(f"Error during AI call for repository '{repo_name}': {ai_err}", exc_info=True)
+        logger.error(f"Error during AI exemption call for repository '{repo_name}': {ai_err}", exc_info=True)
         return None, None
     finally:
-        # Consider making delay configurable or using exponential backoff for errors
-        delay_seconds = 4.5 # Reduced delay slightly
-        logger.debug(f"Pausing for {delay_seconds} seconds to respect AI rate limit...")
-        time.sleep(delay_seconds)
-
-# --- Add Helper Regex Patterns ---
-VERSION_REGEX = re.compile(r"^\s*(?:\*\*?)?(?:Version|Current Version)(?:\*\*?)?:\s*(.+)$", re.MULTILINE | re.IGNORECASE)
-KEYWORDS_REGEX = re.compile(r"^(?:Keywords|Tags|Topics):\s*(.*)", re.MULTILINE | re.IGNORECASE)
-
-# Looks for lines like "Status: Maintained", "Project Status: Deprecated", etc.
-# Captures the status word (e.g., Maintained, Deprecated, Experimental, Active, Inactive)
-STATUS_REGEX = re.compile(r"^(?:Project Status|Status):\s*(Maintained|Deprecated|Experimental|Active|Inactive)\b", re.MULTILINE | re.IGNORECASE)
-
-# Regex to find "Labor Hours: 1234" or "Estimated Labor Hours: 1234"
-LABOR_HOURS_REGEX = re.compile(r"^(?:Estimated Labor Hours|Labor Hours):\s*(\d+)\b", re.MULTILINE | re.IGNORECASE)
-
-# Regex to find lines starting with "Contact:" or "Contacts:"
-CONTACT_LINE_REGEX = re.compile(r"^(?:Contact|Contacts):\s*(.*)", re.MULTILINE | re.IGNORECASE)
-# Regex to strip HTML tags
-HTML_TAG_REGEX = re.compile(r'<[^>]+>')
-# Regex to find "Keywords: python, data" or "Tags: python data"
-TAGS_REGEX = re.compile(r"^(?:Keywords|Tags|Topics):\s*(.+)", re.MULTILINE | re.IGNORECASE)
-
-
-# --- Add Email Extraction Helpers ---
-EMAIL_PATTERN = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-EMAIL_FILTER_DOMAINS = ('.example.com', '.example.org') # Add more if needed
+        if AI_ENABLED and AI_DELAY_ENABLED > 0:
+            logger.debug(f"Pausing for {AI_DELAY_ENABLED} seconds to respect AI rate limit...")
+            time.sleep(AI_DELAY_ENABLED)
 
 def _extract_emails_from_content(content: Optional[str], source_name: str) -> List[str]:
-    """Generic email extraction from string content."""
-    if not content:
-        return []
+    if not content: return []
     emails = re.findall(EMAIL_PATTERN, content)
     valid_emails = [email for email in emails if not email.lower().endswith(EMAIL_FILTER_DOMAINS)]
     logger.debug(f"Extracted emails from {source_name}: {valid_emails}")
     return valid_emails
 
 def _get_combined_contact_emails(repo_data: Dict[str, Any]) -> List[str]:
-    """
-    Extracts contact email addresses from repository data, prioritizing specific sources.
-
-    Priority Order:
-    1. Emails found on lines starting with "Contact:" or "Contacts:" in the README.md content.
-    2. If no emails are found via step 1, it scans CODEOWNERS file content (if available)
-    3. It no emails found in step 1 or 2, it scans the *entire* README.md content for any email patterns. (desperate?)
-    Returns a sorted list of unique, lowercase email addresses found through these methods.
-    """
     all_emails = []
     readme_content = repo_data.get('readme_content')
-    codeowners_content = repo_data.get('_codeowners_content') 
-
+    codeowners_content = repo_data.get('_codeowners_content')
     repo_name_for_log = repo_data.get('name', 'N/A')
-
-    # --- Priority 1: Look for "Contact:" or "Contacts:" keyword lines in README ---
     found_contact_line = False
+
     if readme_content:
         contact_line_matches = CONTACT_LINE_REGEX.finditer(readme_content)
-        contact_line_emails = []
-        for match in contact_line_matches:
-            line_content = match.group(1) # Get the content after the keyword
-            if line_content:
-                emails_on_line = _extract_emails_from_content(line_content, f"README 'Contact:' line for {repo_name_for_log}")
-                contact_line_emails.extend(emails_on_line)
-
+        contact_line_emails = [email for match in contact_line_matches for email in _extract_emails_from_content(match.group(1), f"README 'Contact:' line for {repo_name_for_log}")]
         if contact_line_emails:
             logger.info(f"Prioritizing emails found on 'Contact:' line(s) in README for {repo_name_for_log}.")
             all_emails = contact_line_emails
             found_contact_line = True
 
-   # --- Priority 2: Fallback to full scan if no specific contact line found ---
-   # --- Sub-Priority 2a: Check CODEOWNERS first ---
     if not found_contact_line:
         codeowners_emails = _extract_emails_from_content(codeowners_content, f"CODEOWNERS for {repo_name_for_log}")
         if codeowners_emails:
             logger.info(f"Prioritizing emails found in CODEOWNERS for {repo_name_for_log} (no 'Contact:' line in README).")
             all_emails = codeowners_emails
-        else:
-            # --- Sub-Priority 2b: Scan full README if CODEOWNERS is empty or missing ---
+        elif readme_content: # Only scan full README if no contact line and no CODEOWNERS emails
             logger.debug(f"No specific 'Contact:' line in README and no emails in CODEOWNERS for {repo_name_for_log}. Scanning full README.")
             readme_emails = _extract_emails_from_content(readme_content, f"full README for {repo_name_for_log}")
             if readme_emails:
@@ -392,349 +377,218 @@ def _get_combined_contact_emails(repo_data: Dict[str, Any]) -> List[str]:
     unique_sorted_emails = sorted(list(set(email.lower() for email in all_emails)))
     logger.info(f"Final unique contact emails for {repo_name_for_log}: {unique_sorted_emails}")
     return unique_sorted_emails
-# --- End Email Extraction Helpers ---
 
 def _strip_html_tags(text: str) -> str:
-    """Removes HTML tags from a string."""
-    if not text:
-        return ""
-    return HTML_TAG_REGEX.sub('', text).strip()
+    return HTML_TAG_REGEX.sub('', text).strip() if text else ""
 
 def _parse_readme_for_version(readme_content: str | None) -> str | None:
-    """Extracts a version string (e.g., 'Version: 1.2.3') from README content, stripping HTML."""
-    if not readme_content:
-        logger.debug("_parse_readme_for_version: No README content provided.")
-        return None
-    match = VERSION_REGEX.search(readme_content)
+    if not readme_content: return None
+    match = VERSION_MARKER.search(readme_content)
     if match:
-       # Extract the raw value after the colon
        raw_version_str = match.group(1).strip()
-       logger.debug(f"_parse_readme_for_version: Regex matched. Raw value: '{raw_version_str}'")
-       # Basic cleanup: remove leading 'v' if present and strip HTML/Markdown
-       decoded_version_str = html.unescape(raw_version_str) # Decode HTML entities like &lt;br&gt;
-       logger.debug(f"_parse_readme_for_version: After html.unescape: '{decoded_version_str}'")
-       stripped_version_str = _strip_html_tags(decoded_version_str) # Remove tags like <br>
-       logger.debug(f"_parse_readme_for_version: After _strip_html_tags: '{stripped_version_str}'")
-       version_str = stripped_version_str.strip('*_`') # Remove potential markdown emphasis
-       logger.debug(f"_parse_readme_for_version: After stripping markdown emphasis: '{version_str}'")
-
+       decoded_version_str = html.unescape(raw_version_str)
+       stripped_version_str = _strip_html_tags(decoded_version_str)
+       version_str = stripped_version_str.strip('*_`')
        if version_str.lower().startswith('v'):
            version_str = version_str[1:].strip()
-       logger.debug(f"_parse_readme_for_version: After stripping leading 'v': '{version_str}'")
-
-#       logger.debug(f"Found potential version in README via regex: {version_str}")
-       # Add more validation/cleanup if needed
-       if version_str: # Ensure it's not empty after stripping
+       if version_str:
             logger.debug(f"_parse_readme_for_version: Returning cleaned version: '{version_str}'")
             return version_str
-       else:
-            logger.debug("_parse_readme_for_version: Version string became empty after cleaning.")
-    else:
-        logger.debug("Version regex did not find a match in README.")
-        logger.debug("_parse_readme_for_version: Version regex did not find a match in README.")
     return None
 
 def _parse_readme_for_tags(readme_content: str | None) -> list[str]:
-    """Attempts to extract keywords/tags from README."""
-    tags = []
-    if not readme_content:
-        return tags
-    match = KEYWORDS_REGEX.search(readme_content)
+    if not readme_content: return []
+    match = TAGS_REGEX.search(readme_content) # Using TAGS_REGEX now
     if match:
       tags_line = match.group(1).strip()
-      # Strip HTML tags first
-      # Note: The provided code calls _strip_html_tags but doesn't seem to handle html.unescape like the version function.
-      # Assuming consistency is desired, let's add unescape here too.
       decoded_tags_line = html.unescape(tags_line)
-      tags_line = _strip_html_tags(decoded_tags_line)
-       # Split by comma, remove empty strings, strip whitespace from each tag
-      potential_tags = tags_line.split(',') # Now only splitting by comma
-      # Strip markdown from individual tags
-      tags = [tag.strip().strip('*_`') for tag in potential_tags if tag.strip()]
+      tags_line_stripped = _strip_html_tags(decoded_tags_line)
+      tags = [tag.strip().strip('*_`') for tag in tags_line_stripped.split(',') if tag.strip()]
       logger.debug(f"Found potential tags in README via regex: {tags}")
-    return tags
+      return tags
+    return []
 
 def _parse_readme_for_status(readme_content: str | None) -> str | None:
-    """Attempts to extract a status string (maintained, deprecated, etc.) from README."""
-    if not readme_content:
-        return None
+    if not readme_content: return None
     match = STATUS_REGEX.search(readme_content)
     if match:
-        status_str = match.group(1).strip().lower() # Normalize to lowercase
+        status_str = match.group(1).strip().lower()
         logger.debug(f"Found potential status in README via regex: '{status_str}'")
-        # Map 'active' to 'maintained' for consistency if desired, or keep as 'active'
-        if status_str == 'active':
-            return 'maintained'
-        return status_str # Return lowercase status (e.g., 'maintained', 'deprecated')
+        return 'maintained' if status_str == 'active' else status_str
     return None
 
 def _parse_readme_for_labor_hours(readme_content: str | None) -> int | None:
-    """Attempts to extract estimated labor hours from README."""
-    if not readme_content:
-        return None
+    if not readme_content: return None
     match = LABOR_HOURS_REGEX.search(readme_content)
     if match:
         try:
-            hours_str = match.group(1).strip()
-            hours_int = int(hours_str)
-            logger.debug(f"Found potential labor hours in README via regex: {hours_int}")
-            return hours_int
+            return int(match.group(1).strip())
         except (ValueError, IndexError):
             logger.warning(f"Found labor hours pattern in README but failed to parse number: '{match.group(1)}'")
     return None
 
-def process_repository_exemptions(repo_data: dict) -> dict:
-    """
-    Applies exemption logic cascade, private repo processing, and README fallbacks.
-    Updates repo_data with schema fields. Extracts contact emails.
+def _parse_readme_for_organization(readme_content: str | None, repo_name: str) -> str | None:
+    if not readme_content: return None
+    match = ORGANIZATION_MARKER.search(readme_content)
+    if match:
+        org_value = match.group(1).strip()
+        if org_value:
+            org_value = re.sub(r"^(Organization|Org):\s*", "", org_value, flags=re.IGNORECASE).strip()
+            org_value = html.unescape(org_value)
+            org_value = re.sub(r'<br\s*/?>', ' ', org_value, flags=re.IGNORECASE).strip()
+            logger.debug(f"Found and cleaned 'Organization:' marker in README for {repo_name} with value: '{org_value}'")
+            return org_value
+    return None
 
-    Args:
-        repo_data: Dictionary containing repository data (partially schema-aligned).
-                   Expected temporary fields: 'readme_content', '_is_private_flag',
-                   '_language_heuristic', '_codeowners_content'.
+def process_repository_exemptions(repo_data: dict, default_org_identifiers: list[str] | None = None) -> dict:
+    initial_org_from_connector = repo_data.get('organization', 'UnknownOrg')
+    repo_name = repo_data.get("name", "UnknownRepo")
+    readme_content = repo_data.get("readme_content") # This is passed by connectors
+    all_languages = repo_data.get('languages', [])
 
-    Returns:
-        The modified repo_data dictionary.
-    """
-    # --- Get data using new field names ---
-    readme_content = repo_data.get('readme_content')
-    all_languages = repo_data.get('_all_languages', [])
-    is_private = repo_data.get('_is_private_flag', False) # Use temp field
-    repo_name = repo_data.get('name', 'UnknownRepo') # Use schema field 'name'
-    org_name = repo_data.get('organization', 'UnknownOrg') # Use schema field 'organization'
+    logger.debug(f"Processing exemptions/fallbacks for: {initial_org_from_connector}/{repo_name}")
+    repo_data.setdefault("contact", {})
+    repo_data.setdefault("permissions", {"usageType": USAGE_OPEN_SOURCE, "licenses": []}) # Default to openSource
 
-    logger.debug(f"Processing exemptions/fallbacks for: {org_name}/{repo_name}")
-
-    # --- Ensure nested structures exist ---
-    if 'permissions' not in repo_data:
-        repo_data['permissions'] = {}
-    if 'contact' not in repo_data:
-        repo_data['contact'] = {}
-
-    # --- Initialize/Clear relevant output fields ---
-    repo_data['permissions']['usageType'] = None
+    repo_data['permissions']['usageType'] = None # Clear before processing
     repo_data['permissions']['exemptionText'] = None
-    repo_data['contractNumber'] = repo_data.get('contractNumber')
-    repo_data['contact']['email'] = repo_data['contact'].get('email') # Keep if connector set a default
-    # repo_data['contact']['all_extracted_emails'] = [] # This is internal now, removed later
-    repo_data['_private_contact_emails'] = [] # For passing to PrivateIdManager
-
-    # --- Combine Email Extraction ---
-    # This extracts emails from README and CODEOWNERS content passed in repo_data
+    
     actual_contact_emails = _get_combined_contact_emails(repo_data)
-    # Store actual emails temporarily for PrivateIdManager
     repo_data['_private_contact_emails'] = actual_contact_emails
-    # Store all found emails temporarily for deciding the public email
-    all_extracted_emails_temp = actual_contact_emails # Use a temp variable
 
-     # Flag to track if an exemption was applied
-    exemption_applied = False
+    # --- Organization Processing ---
+    effective_default_org_ids = list(set(doi.lower() for doi in (default_org_identifiers or []) if doi))
+    if initial_org_from_connector.lower() not in effective_default_org_ids and \
+       initial_org_from_connector.lower() not in (val.lower() for val in KNOWN_CDC_ORGANIZATIONS.values()):
+        effective_default_org_ids.append(initial_org_from_connector.lower())
+    if "unknownorg" not in effective_default_org_ids:
+        effective_default_org_ids.append("unknownorg")
 
-    # --- Private Repository Processing (Organization name, Contract) ---
-    ##if is_private and readme_content:
+    prog_org = _programmatic_org_from_repo_name(repo_name, initial_org_from_connector, effective_default_org_ids)
+    if prog_org:
+        logger.info(f"Programmatic org from name for '{repo_name}': '{prog_org}'. Initial: '{initial_org_from_connector}'.")
+        repo_data['organization'] = prog_org
+
     if readme_content:
-        logger.debug(f"Applying repo README parsing for Org/Contract: {org_name}/{repo_name}")
-        # Org processing
-        org_match = re.search(r"^Org:\s*(.*)", readme_content, re.MULTILINE | re.IGNORECASE)
-        if org_match:
-            extracted_org = org_match.group(1).strip()
-            if extracted_org and extracted_org != org_name:
-                logger.info(f"Updating organization for '{repo_name}' based on README: '{org_name}' -> '{extracted_org}'")
-                repo_data['organization'] = extracted_org
-        else:
-            logger.debug(f"Repo '{org_name}/{repo_name}' - No organization found. Calling AI analysis.")
-            org_name = _call_ai_for_organization(repo_data)
-            if org_name:
-                repo_data['organization'] = org_name
-                logger.info(f"Repo '{repo_name}' linked to {org_name} via AI analysis.")
-            else:
-                logger.debug(f"Repo '{repo_name}' - AI analysis did not result in an organization name.")
+        extracted_org_from_readme = _parse_readme_for_organization(readme_content, repo_name)
+        if extracted_org_from_readme:
+            current_org_before_readme = repo_data.get('organization', initial_org_from_connector)
+            if extracted_org_from_readme.lower() != current_org_before_readme.lower():
+                logger.info(f"Updating organization for '{repo_name}' from README. Previous: '{current_org_before_readme}', README: '{extracted_org_from_readme}'")
+                repo_data['organization'] = extracted_org_from_readme
 
-        # Contract processing
+    current_org_after_prog_readme = repo_data.get('organization', 'UnknownOrg').lower()
+    if current_org_after_prog_readme in effective_default_org_ids:
+        logger.info(f"Organization for '{repo_name}' is default ('{repo_data.get('organization', '')}'). Attempting AI inference.")
+        ai_org = _call_ai_for_organization(repo_data)
+        if ai_org and ai_org.lower() != "none":
+            validated_ai_org = next((full_name for acronym, full_name in KNOWN_CDC_ORGANIZATIONS.items() if ai_org.lower() == full_name.lower() or ai_org.lower() == acronym.lower()), None)
+            if validated_ai_org and validated_ai_org.lower() != current_org_after_prog_readme:
+                logger.info(f"Updating organization for '{repo_name}' from AI. Previous: '{repo_data.get('organization', '')}', AI: '{validated_ai_org}'")
+                repo_data['organization'] = validated_ai_org
+            elif not validated_ai_org:
+                 logger.warning(f"AI suggested org '{ai_org}' for '{repo_name}', but not in known list. Discarding.")
+    else:
+        logger.info(f"Organization for '{repo_name}' is '{repo_data.get('organization', '')}', not calling AI.")
+
+    # --- Contract Number ---
+    if readme_content:
         contract_match = re.search(r"^Contract#:\s*(.*)", readme_content, re.MULTILINE | re.IGNORECASE)
         if contract_match:
             repo_data['contractNumber'] = contract_match.group(1).strip()
-            logger.debug(f"Found Contract#: {repo_data['contractNumber']} in README for private repo {repo_name}")
-
 
     # --- Exemption Cascade Logic ---
-    # Step 1: Manual Exemption Check (README.MD)
-    # Check if the exemption is already applied in the readme.md file
-    # Look for a line starting with "Exemption:" followed by a valid exemption code
-    # and a justification line starting with "Exemption justification:"
+    exemption_applied = False
     if readme_content:
         manual_exempt_match = re.search(r"Exemption:\s*(\S+)", readme_content, re.IGNORECASE | re.MULTILINE)
         justification_match = re.search(r"Exemption justification:\s*(.*)", readme_content, re.IGNORECASE | re.MULTILINE)
-
         if manual_exempt_match and justification_match:
             captured_code = manual_exempt_match.group(1).strip()
-            if captured_code in VALID_AI_EXEMPTION_CODES:
+            if captured_code in VALID_AI_EXEMPTION_CODES or captured_code == EXEMPT_NON_CODE:
                 repo_data['permissions']['usageType'] = captured_code
                 repo_data['permissions']['exemptionText'] = justification_match.group(1).strip()
                 exemption_applied = True
-                logger.info(f"Repo '{org_name}/{repo_name}' - Step 1: Exempted manually via README ({captured_code}).")
-            else:
-                logger.warning(f"Repo '{org_name}/{repo_name}' - Found manual exemption tag 'Exemption: {captured_code}' in README, but the code is not valid. Ignoring manual exemption.")
+                logger.info(f"Repo '{repo_name}': Exempted manually via README ({captured_code}).")
 
-    # Step 2: Non-code Detection (Only if not already exempted)
-    # Check if the repository is likely non-code based on the language heuristic
-    # and apply exemption if applicable
     if not exemption_applied:
-        is_purely_non_code = False # Assume it contains code unless proven otherwise
-
-        if not all_languages:
-            # If API returns no languages, treat as non-code 
-            is_purely_non_code = True
-            logger.debug(f"Repo '{org_name}/{repo_name}' - No languages detected by API, considering as non-code for exemption.")
-        else:
-            contains_code_language = False
-            for lang_name in all_languages:
-                # Check if the current language is NOT considered non-code
-                # Perform case-insensitive comparison for robustness
-                if lang_name and lang_name.strip() not in NON_CODE_LANGUAGES:
-                    contains_code_language = True
-                    logger.debug(f"Repo '{org_name}/{repo_name}' - Found code language: '{lang_name}'. Not applying non-code exemption.")
-                    break # No need to check further
-
-            # If the loop finished without finding any code language
-            if not contains_code_language:
-                is_purely_non_code = True
-
+        is_purely_non_code = not any(lang and lang.strip().lower() not in [l.lower() for l in NON_CODE_LANGUAGES if l] for lang in all_languages) if all_languages else True
         if is_purely_non_code:
             repo_data['permissions']['usageType'] = EXEMPT_NON_CODE
-            # Improve justification text
-            languages_str = ', '.join(filter(None, all_languages)) if all_languages else 'None detected' # Filter out None before joining
-            repo_data['permissions']['exemptionText'] = f"Non-code repository (detected languages considered non-code: [{languages_str}])"
+            languages_str = ', '.join(filter(None, all_languages)) or 'None detected'
+            repo_data['permissions']['exemptionText'] = f"Non-code repository (languages: [{languages_str}])"
             exemption_applied = True
-            logger.info(f"Repo '{org_name}/{repo_name}' - Step 2: Exempted as non-code (Languages: [{languages_str}]).")
+            logger.info(f"Repo '{repo_name}': Exempted as non-code (Languages: [{languages_str}]).")
 
-    # Step 3: Sensitive Keyword Detection (README) (Only if not already exempted)
-    # Check if the repository contains sensitive keywords in the README.MD content
-    # and apply exemption if applicable
     if not exemption_applied and readme_content:
         found_keywords = [kw for kw in SENSITIVE_KEYWORDS if re.search(r'\b' + re.escape(kw) + r'\b', readme_content, re.IGNORECASE)]
         if found_keywords:
-            repo_data['permissions']['usageType'] = EXEMPT_BY_LAW # Default to EXEMPT_BY_LAW for keywords
-            repo_data['permissions']['exemptionText'] = f"Flagged for review: Found keywords in README: [{', '.join(found_keywords)}]"
+            repo_data['permissions']['usageType'] = EXEMPT_BY_LAW
+            repo_data['permissions']['exemptionText'] = f"Flagged: Found keywords in README: [{', '.join(found_keywords)}]"
             exemption_applied = True
-            logger.info(f"Repo '{org_name}/{repo_name}' - Step 3: Exempted due to sensitive keywords in README ({EXEMPT_BY_LAW}): {found_keywords}.")
+            logger.info(f"Repo '{repo_name}': Exempted due to sensitive keywords ({EXEMPT_BY_LAW}): {found_keywords}.")
 
-    # --- Step 4: AI Fallback (Only if not already exempted) ---
-    # If no exemption was applied yet, call the AI to determine the usageType
-    # and exemptionText based on the repository details
     if not exemption_applied:
-        logger.debug(f"Repo '{org_name}/{repo_name}' - Step 4: No standard exemption found. Calling AI analysis.")
+        logger.debug(f"Repo '{repo_name}': No standard exemption. Calling AI for exemption analysis.")
         ai_usage_type, ai_exemption_text = _call_ai_for_exemption(repo_data)
         if ai_usage_type:
             repo_data['permissions']['usageType'] = ai_usage_type
             repo_data['permissions']['exemptionText'] = ai_exemption_text
             exemption_applied = True
-            logger.info(f"Repo '{org_name}/{repo_name}' - Step 4: Exempted via AI analysis ({ai_usage_type}).")
-        else:
-            logger.debug(f"Repo '{org_name}/{repo_name}' - Step 4: AI analysis did not result in an exemption.")
+            logger.info(f"Repo '{repo_name}': Exempted via AI analysis ({ai_usage_type}).")
 
+    if not exemption_applied: # Default if no exemption applied
+        repo_data['permissions']['usageType'] = USAGE_GOVERNMENT_WIDE_REUSE if repo_data.get('repositoryVisibility') == 'private' else USAGE_OPEN_SOURCE
+        logger.info(f"Repo '{repo_name}': Assigned default usageType: {repo_data['permissions']['usageType']}.")
+        repo_data['permissions']['exemptionText'] = None # Ensure no leftover text
 
-    # --- Assign Default usageType if NOT Exempted ---
-    if not exemption_applied:
-        logger.debug(f"Repo '{org_name}/{repo_name}' - No exemption applied. Assigning default usageType.")
-        if is_private:
-            repo_data['permissions']['usageType'] = USAGE_GOVERNMENT_WIDE_REUSE
-            logger.info(f"Repo '{org_name}/{repo_name}' - Assigned default usageType: {USAGE_GOVERNMENT_WIDE_REUSE} (private repo).")
-        else:
-            repo_data['permissions']['usageType'] = USAGE_OPEN_SOURCE
-            logger.info(f"Repo '{org_name}/{repo_name}' - Assigned default usageType: {USAGE_OPEN_SOURCE} (public repo).")
-        # Ensure exemptionText is None if no exemption applied
-        repo_data['permissions']['exemptionText'] = None
-
-    # --- README Fallbacks for Missing Schema Fields ---
+    # --- README Fallbacks for other fields ---
     if readme_content:
-        # Fallback for Version (if still "N/A")
-        if repo_data.get("version") == "N/A":
+        if repo_data.get("version", "N/A") == "N/A":
             parsed_version = _parse_readme_for_version(readme_content)
-            if parsed_version:
-                repo_data["version"] = parsed_version
-                logger.info(f"Repo '{org_name}/{repo_name}' - Updated 'version' from README fallback.")
-                logger.debug(f"process_repository_exemptions: repo_data['version'] set to '{repo_data['version']}'") # <-- Add this debug log
-
-        # Fallback for Tags (if still [])
-        # Check if 'tags' key exists and is empty list
-        if isinstance(repo_data.get("tags"), list) and not repo_data.get("tags"):
+            if parsed_version: repo_data["version"] = parsed_version
+        if not repo_data.get("tags"): # Assuming tags is a list
             parsed_tags = _parse_readme_for_tags(readme_content)
-            if parsed_tags:
-                repo_data["tags"] = parsed_tags
-                logger.info(f"Repo '{org_name}/{repo_name}' - Updated 'tags' from README fallback.")
-
-        # Fallback for Labor Hours (if still 0)
-        if repo_data.get("laborHours") == 0:
+            if parsed_tags: repo_data["tags"] = parsed_tags
+        if repo_data.get("laborHours", 0) == 0:
             parsed_hours = _parse_readme_for_labor_hours(readme_content)
-            if parsed_hours is not None and parsed_hours > 0:
-                repo_data["laborHours"] = parsed_hours
-                logger.info(f"Repo '{org_name}/{repo_name}' - Updated 'laborHours' ({parsed_hours}) from README fallback.")
-
+            if parsed_hours is not None and parsed_hours > 0: repo_data["laborHours"] = parsed_hours
         parsed_status = _parse_readme_for_status(readme_content)
-        if parsed_status:
-            repo_data["_status_from_readme"] = parsed_status # Store in temporary field
-            logger.info(f"Repo '{org_name}/{repo_name}' - Found status '{parsed_status}' from README.")
+        if parsed_status: repo_data["_status_from_readme"] = parsed_status
 
-        # Fallback for License URL (if license exists, URL is missing, AND it's not the default)
-        license_list_in_perms = repo_data.get('permissions', {}).get('licenses')
-        if (isinstance(license_list_in_perms, list) and
-                license_list_in_perms and # Check if list is not empty
-                # Check if URL key is missing OR if its value is None/empty
-                (license_list_in_perms[0].get('URL') is None or not license_list_in_perms[0].get('URL')) and
-                # Check if it's NOT the default license we added
-                license_list_in_perms[0].get('name') != "Apache License 2.0"):
-             # Basic check: if readme_url exists and contains 'README', try replacing with 'LICENSE'
-             readme_url = repo_data.get('readme_url')
-             if readme_url and isinstance(readme_url, str):
-                  # Very simple heuristic, might need refinement based on platform URL structure
-                  potential_license_url = None
-                  if 'README.md' in readme_url:
-                       potential_license_url = readme_url.replace('README.md', 'LICENSE', 1)
-                  elif 'README.txt' in readme_url:
-                       potential_license_url = readme_url.replace('README.txt', 'LICENSE', 1)
-                  elif '/README' in readme_url: # More generic
-                       potential_license_url = readme_url.replace('/README', '/LICENSE', 1)
+        # Guess license URL if not present
+        licenses = repo_data.get('permissions', {}).get('licenses', [])
+        if licenses and isinstance(licenses, list) and licenses[0] and not licenses[0].get('URL'):
+            readme_url = repo_data.get('readme_url')
+            if readme_url:
+                potential_license_url = None
+                if 'README.md' in readme_url: potential_license_url = readme_url.replace('README.md', 'LICENSE', 1)
+                elif 'README.txt' in readme_url: potential_license_url = readme_url.replace('README.txt', 'LICENSE', 1)
+                elif '/README' in readme_url:
+                    parts = readme_url.split('/')
+                    if parts and parts[-1].lower().startswith('readme'):
+                        parts[-1] = 'LICENSE'
+                        potential_license_url = '/'.join(parts)
+                if potential_license_url and potential_license_url != readme_url:
+                    licenses[0]['URL'] = potential_license_url
+                    logger.info(f"Repo '{repo_name}': Guessed license URL: {potential_license_url}")
 
-                  if potential_license_url and potential_license_url != readme_url:
-                       # We don't KNOW if this URL is valid, but it's a guess
-                       repo_data['permissions']['licenses'][0]['URL'] = potential_license_url
-                       logger.info(f"Repo '{org_name}/{repo_name}' - Guessed licence URL: {potential_license_url} based on README URL.")
-
-
-    # --- Final Contact Email Logic for code.json ---
-    # Use the temporary list populated earlier
-    final_json_email = None
-    if is_private:
-        # --- Use Environment Variable ---
-        final_json_email = PRIVATE_CONTACT_EMAIL_DEFAULT # Use variable read from env
-        logger.debug(f"Setting contact.email to generic '{final_json_email}' for private repo {repo_name}")
-    elif all_extracted_emails_temp: # Use the temp variable here
-        # Public repo: use the first actual email found (already sorted)
-        final_json_email = all_extracted_emails_temp[0]
-        logger.info(f"Setting primary contact.email to '{final_json_email}' for public repo {repo_name}")
-    else:
-        # Public repo with NO emails found: use default public email
-        # --- Use Environment Variable ---
-        final_json_email = PUBLIC_CONTACT_EMAIL_DEFAULT # Use variable read from env
-        logger.debug(f"Setting default public contact email for {repo_name} as none were extracted.")
-
-    # Set the email in the contact dict
+    # --- Final Contact Email Logic ---
+    final_json_email = PUBLIC_CONTACT_EMAIL_DEFAULT # Default for public
+    if repo_data.get('repositoryVisibility') == 'private':
+        final_json_email = PRIVATE_CONTACT_EMAIL_DEFAULT
+    elif actual_contact_emails: # Use extracted if public and available
+        final_json_email = actual_contact_emails[0]
     repo_data['contact']['email'] = final_json_email
 
-    # --- Final Cleanup: Remove empty contact dict if truly empty ---
-    # If only 'name' remains and email is None (shouldn't happen with defaults, but good check)
-    if not repo_data['contact'].get('email') and \
-       not all_extracted_emails_temp and \
-       list(repo_data.get('contact', {}).keys()) == ['name']: # Check existence of contact dict
-         repo_data.pop('contact', None)
-         logger.debug(f"Removed empty contact dictionary for {repo_name}")
+    # Clean up empty contact dict if only 'name' was present without email, or if totally empty
+    if repo_data.get('contact') and list(repo_data['contact'].keys()) == ['name'] and not repo_data['contact'].get('email'):
+        repo_data.pop('contact', None)
+    elif repo_data.get('contact') and not repo_data['contact']: # if contact is {}
+        repo_data.pop('contact', None)
 
-    # --- Remove temporary fields ---
-    repo_data.pop('_codeowners_content', None)
+    # --- Clean up temporary fields used only by this processor ---
     repo_data.pop('readme_content', None)
-    # Remove the temporary list from the final output (no longer needed in contact dict)
-    # repo_data['contact'].pop('all_extracted_emails', None) # This was removed in previous step
-
+    repo_data.pop('_codeowners_content', None)
+    # _is_private_flag is not used by this processor, should be handled by connector if it creates it.
 
     return repo_data

@@ -51,38 +51,161 @@ python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
+**Configure Environment Variables:**
+Copy the `docs/.env.template` file (or create a new file named `.env`) in the project root directory (where `generate_codejson.py` is located).
+```bash
+cp docs/.env.template .env 
+```
+Then, edit the `.env` file and populate it with your specific settings and credentials. **Do not commit the `.env` file with your actual secrets to version control.**
 
 
+## Running the Tool (CLI)
+The main script `generate_codejson.py` provides a Command-Line Interface (CLI) to perform scans and merge results.
+
+All commands should be run from the root directory of the project where `generate_codejson.py` is located. Make sure your virtual environment is activated.
+
+### General Usage
+
+```bash
+python generate_codejson.py <command> [options]
+```
+
+### Available Commands
+
+1.  **`github`**: Scan GitHub organizations.
+    *   **Authentication:**
+        *   `--gh-tk <YOUR_GITHUB_PAT>`: **Required.** Your GitHub Personal Access Token.
+    *   **Targeting Public GitHub.com:**
+        *   `--orgs <org1,org2>`: Comma-separated public GitHub.com organizations to scan. If not provided, uses `GITHUB_ORGS` from `.env`.
+        *   `--limit <number>` **optional** Limit the number of repositories to scan per organization. Useful for testing.
+        ```bash
+        python generate_codejson.py github --gh-tk YOUR_GITHUB_PAT --orgs YourOrg1,YourOrg2 --limit 10
+        ```
+    *   **Targeting GitHub Enterprise Server (GHES):**
+        *   `--github-ghes-url <GHES_URL>`: **Required.** The URL of your GHES instance (e.g., `https://github.mycompany.com`).
+        *   `--orgs <ghes_org1,ghes_org2>`: **Required.** Comma-separated organizations on the specified GHES instance.
+        ```bash
+        python generate_codejson.py github --gh-tk YOUR_GITHUB_PAT --github-ghes-url https://github.mycompany.com --orgs YourGHESOrg1 --limit 5
+        ```
+    *   *Output: Generates `intermediate_github_<OrgName>.json` files.*
+
+
+2.  **`gitlab`**: Scan GitLab groups.
+    *   **Authentication:**
+        *   `--gl-tk <YOUR_GITLAB_PAT>`: **Required.** Your GitLab Personal Access Token.
+    *   **Targeting:**
+        *   `--groups <group1/subgroup,group2>`: Comma-separated GitLab group paths. If not provided, uses `GITLAB_GROUPS` from `.env`.
+        *   `--gitlab-url <GITLAB_INSTANCE_URL>`: URL of your GitLab instance (e.g., `https://gitlab.mycompany.com`). If not provided, uses `GITLAB_URL` from `.env` (which defaults to `https://gitlab.com`).
+        *   `--limit <number>` **optional** Limit the number of repositories to scan per organization for debugging purposes.
+        ```bash
+        python generate_codejson.py gitlab --gl-tk YOUR_GITLAB_PAT --gitlab-url https://git.biotech.cdc.gov --groups my-group/subgroup --limit 10
+        ```
+ *   *Output: Generates `intermediate_gitlab_<GroupPath>.json` files.*
+
+3.  **`azure`**: Scan Azure DevOps organization/project targets.
+    *   **Authentication (choose one method):**
+        *   **PAT Token:**
+            *   `--az-tk <YOUR_AZURE_PAT>`: Your Azure DevOps Personal Access Token.
+        *   or **Service Principal:**
+            *   `--az-cid <CLIENT_ID>`: Service Principal Client ID.
+            *   `--az-cs <CLIENT_SECRET>`: Service Principal Client Secret.
+            *   `--az-tid <TENANT_ID>`: Service Principal Tenant ID.
+    *   **Targeting:**
+        *   `--targets <Org1/ProjA,Org2/ProjB>`: Comma-separated Azure DevOps `OrganizationName/ProjectName` pairs. If not provided, uses `AZURE_DEVOPS_TARGETS` from `.env`.
+        *   `--limit <number>` **optional** Limit the number of repositories to scan per organization.
+        *   *Note: The environment variable `AZURE_DEVOPS_API_URL` defaults to https://dev.azure.com and is sourced from `.env` *
+        *    The environment variable `AZURE_DEVOPS_ORG` (can contain a default organization name for parsing targets if only project name is given) is sourced from `.env` file. 
+        *    So, if AZURE_DEVOPS_ORG=**MyMainOrg** and `--targets` (or AZURE_DEVOPS_TARGETS) =ProjectX,MyOtherOrg/ProjectY, the scanner will attempt to scan **MyMainOrg**/ProjectX and MyOtherOrg/ProjectY.
+        ```bash
+        # Using PAT
+        python generate_codejson.py azure --az-tk YOUR_AZURE_PAT --targets MyAzureOrg/ProjectA
+        # Using Service Principal
+        python generate_codejson.py azure --az-cid "xxxx" --az-cs "xxxx" --az-tid "xxxx" --targets MyAzureOrg/ProjectB --limit 3
+        ```
+    *   *Output: Generates `intermediate_azure_<OrgName_ProjectName>.json` files.*
+
+4.  **`merge`**: Merge all intermediate `*.json` files into the final catalog.
+    *   This command looks for all `intermediate_*.json` files in your configured `OutputDir` (default: `output/`).
+    *   It combines them into a single file named according to `catalogJsonFile` in your `.env` (default: `code.json`).
+    *   *Note: This command also backs up existing `ExemptedCSVFile` and `PrivateIDCSVFile` before they might be updated by subsequent scan commands.*
+    ```bash
+    python generate_codejson.py merge
+    ```
+
+### Example Workflow (Scan all configured targets and merge)
+
+This example demonstrates scanning a specific GitHub organization, a GitLab group, and then merging the results.
+Authentication details are provided via CLI. Other configurations (like output directory, default GitLab URL if not specified, etc.) can still be set in your `.env` file.
+
+```bash
+# Scan a public GitHub organization
+python generate_codejson.py github --gh-tk YOUR_GITHUB_PAT --orgs YourPublicOrg --limit 10
+
+# Scan a GitLab group on a specific instance
+python generate_codejson.py gitlab --gl-tk YOUR_GITLAB_PAT --gitlab-url https://git.example.com --groups my-group/project-set
+
+# Scan an Azure DevOps project using Service Principal
+python generate_codejson.py azure --az-cid "xxxx" --az-cs "xxxx" --az-tid "xxxx" --targets MyOrg/MyProject
+
+# Merge all generated intermediate files
+python generate_codejson.py merge
+```
+
+This will produce:
+- Individual `intermediate_*.json` files for each scanned organization/group/project.
+- Individual log files in `output/logs/` for each target scan.
+- A main log file `logs/generate_codejson_main.log`.
+- The final merged `code.json` (or as configured by `catalogJsonFile`).
+- Updated `exempted_log.csv` and `privateid_mapping.csv` (or as configured).
+
+### Debug Mode
+
+You can limit the total number of repositories processed across all targets in a single run by setting the `LimitNumberOfRepos` variable in your `.env` file (set to None or leave blank for no limit).
+You can limit the total number of repositories processed for a specific scan run using the `--limit <number>` option with the `github`, `gitlab`, or `azure` commands. Alternatively, for a global default limit (if no CLI `--limit` is used), you can set the `LimitNumberOfRepos` variable in your `.env` file (set to 0 or leave it blank/commented out for no limit).
+```
+LimitNumberOfRepos=10 
+```
+This is useful for quick tests and debugging.
+
+## Output Files
+
+- **`<OutputDir>/<catalogJsonFile>`** (e.g., `output/code.json`): The final merged catalog file.
+- **`<OutputDir>/intermediate_*.json`**: Temporary JSON files, one for each scanned GitHub org, GitLab group, or Azure DevOps project. These are consumed by the `merge` command.
+- **`<OutputDir>/logs/`**: Contains individual log files for each target scan (e.g., `github_MyOrg.log`) and a main script log (`generate_codejson_main.log`).
+- **`<OutputDir>/<ExemptedCSVFile>`** (e.g., `output/exempted_log.csv`): CSV log of repositories identified as exempt.
+- **`<OutputDir>/<PrivateIDCSVFile>`** (e.g., `output/privateid_mapping.csv`): CSV mapping of private repositories to their generated PrivateIDs and contact emails.
+
+## Troubleshooting
+
+- Check the log files in the `output/logs/` directory and `logs/generate_codejson_main.log` for detailed error messages.
+- Ensure your API tokens have the correct permissions and are not expired.
+- Verify that the organization, group, or project names/paths specified in `.env` or via CLI are correct.
+- If using AI features, ensure your `GOOGLE_API_KEY` is correctly set and the API is enabled for your project.
 
 ## 🐳 Docker Usage
 
-To build and run inside Docker:
-
+To build or recreate the running container:
 ```bash
-docker build -t shareitact_scan .
-docker run --env-file .env -v $(pwd)/output:/app/output shareitact_scan
+docker-compose up --build -d
 ```
-
-## 🔄 Run the Generator
-
-To run locally:
-
+To execute the scanner and generate the metadata catalog:
 ```bash
-python generate_codejson.py
+docker-compose exec app python generate_codejson.py <command> [options]
 ```
-
+To stop and remove the container inside Docker:
+```bash
+docker-compose stop
+or docker-compose down  (to also purge the container)
+```
 ## 🔐 Configuration
 
-Create a `.env` file in the root directory to securely store all required tokens and credentials:
+Check the `.env` file in the root directory to configure the following:
+- **`OutputDir`**: Directory to store output files.
+- **`catalogJsonFile`**: Name of the final merged catalog file.
+- **`ExemptedCSVFile`**: Name of the CSV file to log exempted repositories.
+- **`PrivateIDCSVFile`**: Name of the CSV file to log private repositories and their generated PrivateIDs.
+- **`GOOGLE_API_KEY`**: Google API key for AI features.
 
-```env
-GITHUB_TOKEN=your_token
-GITLAB_TOKEN=your_token
-AZURE_DEVOPS_TOKEN=your_token
-
-AI_MODEL_PROVIDER=openai
-AI_API_KEY=your_openai_or_other_api_token
-```
 
 ## 🧪 Test Individual Connectors
 

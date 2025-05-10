@@ -1,343 +1,337 @@
-# github_connector.py
+# clients\github_connector.py
+"""
+GitHub Connector for Share IT Act Repository Scanning Tool.
+
+This module is responsible for fetching repository data from GitHub,
+including metadata, README content, CODEOWNERS files, topics, and tags.
+It interacts with the GitHub API via the PyGithub library.
+"""
+
 import os
 import logging
-import json 
-from dotenv import load_dotenv 
-from datetime import datetime, timezone 
-from github import Github, BadCredentialsException, UnknownObjectException, GithubException
-from requests.exceptions import RequestException # Keep requests for potential direct API calls if needed
-import base64
-from typing import List, Optional, Dict, Any 
-import requests # Need requests for _fetch_paginated_data if using direct calls
-from urllib.parse import urlparse, urlunparse # For pagination helper
-# --- Import the processor ---
-import utils.exemption_processor
+import base64 # For decoding README content
+from typing import List, Dict, Optional, Any
+from datetime import timezone
+# Removed: from dotenv import load_dotenv - No longer needed here for auth
 
+from github import Github, GithubException, UnknownObjectException, RateLimitExceededException
+
+# Attempt to import the exemption processor
+try:
+    from utils import exemption_processor
+except ImportError:
+    logging.getLogger(__name__).error(
+        "Failed to import exemption_processor from utils. "
+        "Exemption processing will be skipped by the GitHub connector (using mock)."
+    )
+    class MockExemptionProcessor:
+        def process_repository_exemptions(self, repo_data: Dict[str, Any], default_org_identifiers: Optional[List[str]] = None) -> Dict[str, Any]:
+            repo_data.setdefault('_status_from_readme', None)
+            repo_data.setdefault('_private_contact_emails', [])
+            repo_data.setdefault('contact', {})
+            repo_data.setdefault('permissions', {"usageType": "openSource"})
+            repo_data.pop('readme_content', None)
+            repo_data.pop('_codeowners_content', None)
+            return repo_data
+    exemption_processor = MockExemptionProcessor()
+
+# load_dotenv() # No longer loading .env directly for auth in this connector
 logger = logging.getLogger(__name__)
 
-DEFAULT_PER_PAGE = 100 # Default number of items per page for GitHub API
+PLACEHOLDER_GITHUB_TOKEN = "YOUR_GITHUB_PAT"
 
-def is_placeholder_token(token):
-    """Checks if the token is missing or likely a placeholder."""
-    return not token or (token.startswith("ghp_") and len(token) < 40)
+def is_placeholder_token(token: Optional[str]) -> bool:
+    """Checks if the GitHub token is missing or a known placeholder."""
+    return not token or token == PLACEHOLDER_GITHUB_TOKEN
 
-# --- Helper to fetch CODEOWNERS ---
-def _get_codeowners_content(repo) -> Optional[str]:
-    """Fetches CODEOWNERS content from standard locations using PyGithub object."""
-    common_paths = [
-        ".github/CODEOWNERS",
-        "docs/CODEOWNERS",
-        "CODEOWNERS"
-    ]
-    repo_full_name = getattr(repo, 'full_name', 'UnknownRepo') # Get repo name safely for logging
-
-    for path in common_paths:
-        try:
-            # Use the PyGithub object's get_contents method
-            logger.debug(f"Attempting to fetch CODEOWNERS at path: '{path}' for repo: {repo_full_name}")
-            content_file = repo.get_contents(path)
-            content_bytes = base64.b64decode(content_file.content)
-            try:
-                # Try decoding as UTF-8 first
-                return content_bytes.decode('utf-8')
-            except UnicodeDecodeError:
-                # If UTF-8 fails, try latin-1 as a fallback
-                logger.warning(f"Could not decode CODEOWNERS at {path} as UTF-8 for {repo_full_name}. Trying latin-1.")
-                try:
-                    return content_bytes.decode('latin-1')
-                except Exception as decode_err:
-                     # If latin-1 also fails, log error and return None for this path
-                     logger.error(f"Failed to decode CODEOWNERS at {path} for {repo_full_name} even with latin-1: {decode_err}")
-                     # Returning None here means we might find it at another path, which is okay.
-                     # If this was the last path, the function will return None overall.
-                     return None
-        except UnknownObjectException:
-            # This means the file was not found at this specific path (404)
-            logger.debug(f"CODEOWNERS file not found at path: '{path}' for repo: {repo_full_name}")
-            continue # Try the next common path
-
-        # --- MODIFIED: Catch specific PyGithub API errors ---
-        except GithubException as ge:
-            # Catches API errors like rate limits (403), server errors (5xx), etc.
-            status = getattr(ge, 'status', 'N/A')
-            message = getattr(ge, 'data', {}).get('message', str(ge)) # Try to get specific message
-            logger.error(f"GitHub API error (Status: {status}) fetching CODEOWNERS at '{path}' for {repo_full_name}: {message}", exc_info=False) # Log concise error
-            # Optional: Log full traceback only in DEBUG level if needed
-            # logger.debug(f"Full traceback for GithubException fetching {path} in {repo_full_name}:", exc_info=True)
-
-            # If it's a rate limit (403) or server error (5xx), it's unlikely subsequent paths will work for this repo now.
-            # Stop trying to find CODEOWNERS for this specific repository to avoid further errors/rate limit issues.
-            if status == 403 or status >= 500:
-                 logger.warning(f"Stopping CODEOWNERS check for {repo_full_name} due to API error status {status}.")
-                 return None # Give up on finding CODEOWNERS for this repo entirely
-
-            # For other GithubExceptions (e.g., maybe a specific permission issue on this path),
-            # continue to the next path just in case.
-            continue
-
-        except Exception as e:
-            # Catch any other unexpected errors during the process for this specific path
-            logger.error(f"Unexpected error fetching/processing CODEOWNERS at path '{path}' for {repo_full_name}: {e}", exc_info=True)
-            # Continue to the next path, as the error might be specific to this attempt/path
-            continue # Try next path
-
-    # If the loop completes without finding the file or returning early due to error
-    logger.debug(f"No CODEOWNERS file found in standard locations for {repo_full_name}")
-# --- END Helper ---
-
-# --- REMOVED _fetch_paginated_data and _fetch_tags_pygithub as api_tags are no longer needed ---
-
-def fetch_repositories(token, org_name, processed_counter: list[int], debug_limit: int | None) -> list[dict]:
+def _get_readme_details_pygithub(repo_obj) -> tuple[Optional[str], Optional[str]]:
     """
-    Fetches repository details from GitHub, processes exemptions,
-    respecting a global limit, and returns a list of processed repository data dictionaries.
+    Fetches and decodes the README content and its HTML URL.
+    Tries common README filenames.
+    """
+    common_readme_names = ["README.md", "README.txt", "README", "readme.md"]
+    for readme_name in common_readme_names:
+        try:
+            readme_file = repo_obj.get_contents(readme_name)
+            readme_content_bytes = base64.b64decode(readme_file.content)
+            try:
+                readme_content_str = readme_content_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                try:
+                    readme_content_str = readme_content_bytes.decode('latin-1')
+                except Exception:
+                    readme_content_str = readme_content_bytes.decode('utf-8', errors='ignore')
+            
+            readme_url = readme_file.html_url 
+            logger.debug(f"Successfully fetched README '{readme_name}' (URL: {readme_url}) for {repo_obj.full_name}")
+            return readme_content_str, readme_url
+        except UnknownObjectException:
+            logger.debug(f"README '{readme_name}' not found in {repo_obj.full_name}")
+            continue
+        except GithubException as e:
+            logger.error(f"GitHub API error fetching README '{readme_name}' for {repo_obj.full_name}: {e.status} {getattr(e, 'data', str(e))}", exc_info=False)
+            return None, None # Stop if other API error
+        except Exception as e:
+            logger.error(f"Unexpected error decoding README '{readme_name}' for {repo_obj.full_name}: {e}", exc_info=True)
+            return None, None
+    logger.debug(f"No common README file found for {repo_obj.full_name}")
+    return None, None
+
+
+def _get_codeowners_content_pygithub(repo_obj) -> Optional[str]:
+    codeowners_locations = ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"]
+    for location in codeowners_locations:
+        try:
+            codeowners_file = repo_obj.get_contents(location)
+            codeowners_content = codeowners_file.decoded_content.decode('utf-8', errors='replace')
+            logger.debug(f"Successfully fetched CODEOWNERS from '{location}' for {repo_obj.full_name}")
+            return codeowners_content
+        except UnknownObjectException:
+            logger.debug(f"CODEOWNERS file not found at '{location}' in {repo_obj.full_name}")
+            continue
+        except GithubException as e:
+            logger.error(f"GitHub API error fetching CODEOWNERS from '{location}' for {repo_obj.full_name}: {e.status} {getattr(e, 'data', str(e))}", exc_info=False)
+            return None # Stop if other API error
+        except Exception as e:
+            logger.error(f"Unexpected error decoding CODEOWNERS from '{location}' for {repo_obj.full_name}: {e}", exc_info=True)
+            return None
+    logger.debug(f"No CODEOWNERS file found in standard locations for {repo_obj.full_name}")
+    return None
+
+
+def _fetch_tags_pygithub(repo_obj) -> List[str]:
+    tag_names = []
+    try:
+        logger.debug(f"Fetching tags for repo: {repo_obj.full_name}")
+        tags = repo_obj.get_tags()
+        tag_names = [tag.name for tag in tags if tag.name]
+        logger.debug(f"Found {len(tag_names)} tags for {repo_obj.full_name}")
+    except RateLimitExceededException:
+        logger.error(f"Rate limit exceeded while fetching tags for {repo_obj.full_name}. Skipping tags for this repo.")
+    except GithubException as e:
+        logger.error(f"GitHub API error fetching tags for {repo_obj.full_name}: {e.status} {getattr(e, 'data', str(e))}", exc_info=False)
+    except Exception as e: # Catch other potential errors like network issues during this specific call
+        logger.error(f"Unexpected error fetching tags for {repo_obj.full_name}: {e}", exc_info=True)
+    return tag_names
+
+
+def fetch_repositories(
+    token: Optional[str], 
+    org_name: str, 
+    processed_counter: List[int], 
+    debug_limit: Optional[int], 
+    github_instance_url: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Fetches repository details from a specific GitHub organization.
 
     Args:
-        token: GitHub PAT.
-        org_name: GitHub organization name.
-        processed_counter: A mutable list containing the current global count of processed repos.
-        debug_limit: The maximum number of repos to process globally (or None).
+        token: The GitHub Personal Access Token.
+        org_name: The name of the GitHub organization.
+        processed_counter: Mutable list to track processed repositories for debug limit.
+        debug_limit: Optional global limit for repositories to process.
+        github_instance_url: Optional base URL for GitHub Enterprise Server.
+
+    Returns:
+        A list of dictionaries, each containing processed metadata for a repository.
     """
+    instance_msg = f"GitHub instance: {github_instance_url}" if github_instance_url else "public GitHub.com"
+    logger.info(f"Attempting to fetch repositories for GitHub organization: {org_name} on {instance_msg}")
 
-
-    if is_placeholder_token(token):
-        logger.info("GitHub token is missing or appears to be a placeholder. Skipping GitHub scan.")
-        return []
-    if not org_name:
-        logger.warning("GitHub organization name not provided. Skipping GitHub scan.")
+    if is_placeholder_token(token): # is_placeholder_token now takes token as arg
+        logger.error("GitHub token is a placeholder or missing. Cannot fetch repositories.")
         return []
 
-    processed_repo_list = [] # Store final processed data
-    g = None
     try:
-        logger.info(f"Attempting to connect to GitHub API...")
-        # Use PyGithub library
-        g = Github(login_or_token=token, timeout=30) # Add timeout
-        user = g.get_user()
-        logger.info(f"GitHub SDK initialized and authenticated as user: {user.login}")
+        if github_instance_url:
+            # For GitHub Enterprise, the base_url should be the API endpoint
+            # e.g., https://hostname/api/v3
+            if not github_instance_url.endswith("/api/v3"):
+                base_url = github_instance_url.rstrip('/') + "/api/v3"
+            else:
+                base_url = github_instance_url
+            gh = Github(base_url=base_url, login_or_token=token)
+            logger.info(f"Connecting to GitHub Enterprise Server at {base_url}")
+        else:
+            gh = Github(login_or_token=token) # Default to public GitHub.com
+            logger.info("Connecting to public GitHub.com")
+        
+        organization = gh.get_organization(org_name)
+        logger.info(f"Successfully connected to GitHub instance and found organization: {org_name}")
+    except RateLimitExceededException as rle:
+        logger.critical(f"GitHub API rate limit exceeded when trying to connect or get org '{org_name}'. Cannot proceed. Details: {rle}")
+        return []
+    except UnknownObjectException:
+        logger.error(f"GitHub organization '{org_name}' not found on {instance_msg} or token lacks permissions.")
+        return []
+    except GithubException as e:
+        logger.critical(f"Failed to connect to GitHub or get organization '{org_name}' on {instance_msg}: {e.status} {getattr(e, 'data', str(e))}", exc_info=False)
+        return []
+    except Exception as e: # Catch other potential errors like network resolution for GHES URL
+        logger.critical(f"An unexpected error occurred initializing GitHub connection for org '{org_name}' on {instance_msg}: {e}", exc_info=True)
+        return []
 
-        logger.info(f"Fetching repositories for GitHub organization: {org_name} ..")
-        org = g.get_organization(org_name)
-        # get_repos returns a PaginatedList, which handles pagination automatically
-        repos = org.get_repos(type='all')
-
-        # --- Loop through repos, respecting the limit ---
-        for i, repo in enumerate(repos): # Iterating through PaginatedList
-            # --- ADD DEBUG CHECK ---
+    processed_repo_list: List[Dict[str, Any]] = []
+    try:
+        repos_iterator = organization.get_repos(type='all') # type can be 'all', 'public', 'private', 'forks', 'sources', 'member'
+        repo_count_for_org = 0
+        for repo in repos_iterator:
             if debug_limit is not None and processed_counter[0] >= debug_limit:
-                logger.warning(f"--- DEBUG MODE: Global limit ({debug_limit}) reached during GitHub scan. Stopping GitHub fetch. ---")
-                break # Exit the loop over GitHub repos
-            # --- END DEBUG CHECK ---
+                logger.info(f"Global debug limit ({debug_limit}) reached. Stopping repository fetching for {org_name}.")
+                break
 
-            repo_data = {} # Start with an empty dict for this repo
+            repo_full_name = repo.full_name
+            logger.info(f"Processing repository: {repo_full_name}")
+            repo_count_for_org += 1
+            
+            repo_data: Dict[str, Any] = {} 
             try:
-               # --- Add fork check early ---
                 if repo.fork:
-                    logger.info(f"Skipping forked repository: {repo.full_name}")
-                    continue # Move to the next repository in the loop
-                # --- End fork check ---
+                    logger.info(f"Skipping forked repository: {repo_full_name}")
+                    continue
 
-                logger.debug(f"Fetching data for GitHub repo: {repo.full_name}")
-                # --- Fetch Base Data ---
-                created_at_iso = repo.created_at.isoformat() if repo.created_at else None
-                pushed_at_iso = repo.pushed_at.isoformat() if repo.pushed_at else None
-                repo_visibility = "private" if repo.private else "public"
-                # repo_language = repo.language # Keep primary if needed elsewhere, but fetch all
-                # --- Fetch ALL Languages ---
+                created_at_dt = repo.created_at.replace(tzinfo=timezone.utc) if repo.created_at else None
+                pushed_at_dt = repo.pushed_at.replace(tzinfo=timezone.utc) if repo.pushed_at else None 
+                updated_at_dt = repo.updated_at.replace(tzinfo=timezone.utc) if repo.updated_at else None
+
+                repo_visibility = "public" 
+                if repo.private:
+                    repo_visibility = "private"
+                # PyGithub's repo.visibility attribute is more explicit if available (GHES might differ)
+                if hasattr(repo, 'visibility') and repo.visibility: 
+                    if repo.visibility.lower() in ["public", "private", "internal"]:
+                         repo_visibility = repo.visibility.lower()
+
                 all_languages_list = []
                 try:
-                    languages_dict = repo.get_languages() # Returns dict like {'Python': 123, 'HTML': 45}
+                    languages_dict = repo.get_languages()
                     if languages_dict:
                         all_languages_list = list(languages_dict.keys())
-                        logger.debug(f"Fetched languages for {repo.full_name}: {all_languages_list}")
-                    else:
-                        logger.debug(f"No languages detected by API for {repo.full_name}")
-                except Exception as lang_err:
-                    logger.error(f"Error fetching languages for {repo.full_name}: {lang_err}", exc_info=True)
+                except Exception as lang_err: # Catch broad errors, e.g. if repo is empty
+                    logger.warning(f"Could not fetch languages for {repo_full_name}: {lang_err}", exc_info=False)
 
-                # Prepare license structure
                 licenses_list = []
-                if repo.license:
-                    licenses_list.append({
-                        "name": repo.license.name,
-                        # "URL": repo.license.url # PyGithub might provide the API URL for the license details
-                    })
-                # Add default license if none found
-                if not licenses_list:
-                    logger.debug(f"No license found via API for {repo.name}. Applying default: Apache License 2.0")
-                    licenses_list.append({
-                        "name": "Apache License 2.0",
-                        "URL": "https://www.apache.org/licenses/LICENSE-2.0"
-                    })
+                if repo.license and hasattr(repo.license, 'spdx_id') and repo.license.spdx_id and repo.license.spdx_id.lower() != "noassertion":
+                    license_entry = {"spdxID": repo.license.spdx_id}
+                    # PyGithub license object doesn't always have a direct html_url for the license text itself.
+                    # The key (often spdx_id) is the most reliable.
+                    if hasattr(repo.license, 'html_url') and repo.license.html_url: # This is usually API URL to license
+                        pass # Not adding this as it's not the license text URL
+                    if hasattr(repo.license, 'name') and repo.license.name:
+                        license_entry["name"] = repo.license.name
+                    licenses_list.append(license_entry)
+                
+                readme_content_str, readme_html_url = _get_readme_details_pygithub(repo)
+                codeowners_content_str = _get_codeowners_content_pygithub(repo)
+                repo_topics = repo.get_topics() # List of strings
+                repo_git_tags = _fetch_tags_pygithub(repo) # List of strings (tag names)
 
-                # --- Fetch README Content ---
-                readme_content_str: Optional[str] = None
-                readme_url: Optional[str] = None
-                try:
-                    readme_file = repo.get_readme()
-                    readme_url = readme_file.html_url
-                    readme_content_bytes = base64.b64decode(readme_file.content)
-                    try: readme_content_str = readme_content_bytes.decode('utf-8')
-                    except UnicodeDecodeError:
-                        try: readme_content_str = readme_content_bytes.decode('latin-1')
-                        except Exception: readme_content_str = readme_content_bytes.decode('utf-8', errors='ignore')
-                    logger.debug(f"Successfully fetched README for {repo.name}")
-                except UnknownObjectException: logger.debug(f"No README found for repository: {repo.name}")
-                except Exception as readme_err: logger.error(f"Error fetching/decoding README for {repo.name}: {readme_err}", exc_info=True)
-
-                # --- Fetch CODEOWNERS Content ---
-                codeowners_content_str = _get_codeowners_content(repo)
-
-                # --- Fetch Topics ---
-                repo_topics = repo.get_topics() # PyGithub method to get topics
-
-                # --- REMOVED Fetching Tags (api_tags) ---
-                # repo_tags = _fetch_tags_pygithub(repo)
-
-                # Build the dictionary using the structure you provided
                 repo_data = {
-                    # === Core Schema Fields ===
                     "name": repo.name,
-                    "description": repo.description or '',
-                    "organization": repo.owner.login,
+                    "organization": org_name, 
+                    "description": repo.description or "",
                     "repositoryURL": repo.html_url,
-                    "homepageURL": repo.homepage or repo.html_url, # Use actual homepage if available
-                    "downloadURL": None, # Keep as None unless specific release logic is added
+                    "homepageURL": repo.homepage or "", 
+                    "downloadURL": None, 
                     "vcs": "git",
                     "repositoryVisibility": repo_visibility,
-                    "status": "development", # Placeholder - exemption_processor might update based on README
-                    "version": "N/A", # Placeholder - exemption_processor might update based on README
-                    "laborHours": 0, # Placeholder
-                  #  "languages": [repo_language] if repo_language else [],
-                    "languages": all_languages_list, # Populate with the full list
-                    "tags": repo_topics, # Use fetched topics directly for the 'tags' field
-
-                    # === Nested Schema Fields ===
+                    "status": "development", 
+                    "version": "N/A",      
+                    "laborHours": 0,       
+                    "languages": all_languages_list,
+                    "tags": repo_topics,
                     "date": {
-                        "created": created_at_iso,
-                        "lastModified": pushed_at_iso,
+                        "created": created_at_dt.isoformat() if created_at_dt else None,
+                        "lastModified": pushed_at_dt.isoformat() if pushed_at_dt else (updated_at_dt.isoformat() if updated_at_dt else None),
                     },
                     "permissions": {
-                        "usageType": None,
+                        "usageType": "openSource", 
                         "exemptionText": None,
                         "licenses": licenses_list
                     },
-                    "contact": {
-                        "name": "Centers for Disease Control and Prevention",
-                        "email": None
-                    },
-                    "contractNumber": None,
-
-                    # === Fields needed for processing (will be removed later) ===
+                    "contact": {}, 
+                    "contractNumber": None, 
                     "readme_content": readme_content_str,
                     "_codeowners_content": codeowners_content_str,
-                    "_is_private_flag": repo.private,
-                    "_all_languages": all_languages_list, # Pass the full list
-
-                    # === Additional Fields (Useful for Inference/Debugging) ===
-                    "repo_id": repo.id,
-                    "readme_url": readme_url,
-                    # "api_tags": repo_tags, # REMOVED
-                    "archived": repo.archived, # Store archived status for status inference
+                    "repo_id": repo.id, 
+                    "readme_url": readme_html_url, 
+                    "_api_tags": repo_git_tags, 
+                    "archived": repo.archived,  
                 }
-
-                # --- Call Exemption Processor ---
-                processed_data = exemption_processor.process_repository_exemptions(repo_data)
-
-                # --- Clean up temporary/processed fields ---
-                # Processor now handles removing readme_content and _codeowners_content
-                processed_data.pop('_is_private_flag', None)
-                #processed_data.pop('_language_heuristic', None)
-                processed_data.pop('_all_languages', None) 
-                # Keep 'archived' if needed by generate_codejson.py inference functions
-                # processed_data.pop('archived', None)
-
-                # Add the fully processed data to the list
-                processed_repo_list.append(processed_data)
-
-                # --- INCREMENT GLOBAL COUNTER ---
-                processed_counter[0] += 1
-                # --- END INCREMENT ---
-
-            except Exception as repo_err:
-                logger.error(f"Error processing GitHub repository '{repo.name}' (within main loop): {repo_err}", exc_info=True)
-                processed_repo_list.append({
-                    'name': repo.name,
-                    'organization': repo.owner.login,
-                    'processing_error': f"Connector stage: {repo_err}"
-                 })
+                
+                # Pass default identifiers for organization context to exemption_processor
+                repo_data = exemption_processor.process_repository_exemptions(repo_data, default_org_identifiers=[org_name])
+                
+                processed_repo_list.append(repo_data)
                 processed_counter[0] += 1
 
+            except RateLimitExceededException as rle_repo:
+                logger.error(f"GitHub API rate limit exceeded processing repo {repo_full_name}. Skipping remaining for {org_name}. Details: {rle_repo}")
+                break 
+            except GithubException as gh_err_repo:
+                logger.error(f"GitHub API error processing repo {repo_full_name}: {gh_err_repo.status} {getattr(gh_err_repo, 'data', str(gh_err_repo))}. Skipping.", exc_info=False)
+                processed_repo_list.append({"name": repo.name, "organization": org_name, "processing_error": f"GitHub API Error: {gh_err_repo.status}"})
+            except Exception as e_repo:
+                logger.error(f"Unexpected error processing repo {repo_full_name}: {e_repo}. Skipping.", exc_info=True)
+                processed_repo_list.append({"name": repo.name, "organization": org_name, "processing_error": f"Unexpected Error: {e_repo}"})
 
-        logger.info(f"Finished GitHub scan. Processed {len(processed_repo_list)} repositories in this connector. Global count: {processed_counter[0]}")
+        logger.info(f"Fetched and initiated processing for {repo_count_for_org} repositories from GitHub organization: {org_name}")
 
-    # --- Exception Handling ---
-    except BadCredentialsException:
-        logger.error(f"GitHub authentication failed. Check GITHUB_TOKEN. Skipping.")
-        return []
-    except UnknownObjectException:
-        logger.error(f"GitHub organization '{org_name}' not found. Check GITHUB_ORG. Skipping.")
-        return []
-    except GithubException as e:
-        message = e.data.get('message', '') if isinstance(e.data, dict) else str(e.data)
-        logger.error(f"GitHub API error: {e.status} {message}. Skipping.", exc_info=True)
-        return []
-    except RequestException as e:
-        logger.error(f"Network error connecting to GitHub: {e}. Skipping.", exc_info=True)
-        return []
-    except Exception as e:
-        logger.error(f"Unexpected error during GitHub fetch for org '{org_name}': {e}. Skipping.", exc_info=True)
-        return []
+    except RateLimitExceededException as rle_org_iteration:
+        logger.error(f"GitHub API rate limit exceeded iterating repositories for {org_name}. Partial results may be returned. Details: {rle_org_iteration}")
+    except GithubException as gh_err_org_iteration:
+        logger.error(f"GitHub API error iterating repositories for {org_name}: {gh_err_org_iteration.status} {getattr(gh_err_org_iteration, 'data', str(gh_err_org_iteration))}. Partial results.", exc_info=False)
+    except Exception as e_org_iteration: # Catch other potential errors like network resolution for GHES URL
+        logger.error(f"Unexpected error iterating repositories for {org_name} on {instance_msg}: {e_org_iteration}. Partial results.", exc_info=True)
 
     return processed_repo_list
 
-
-
-if __name__ == "__main__":
-    # --- Added Setup Code ---
-    # Load .env file for standalone execution
-    load_dotenv()
-
-    # Basic logging setup for direct execution
+if __name__ == '__main__':
+    # This basic test block will use environment variables for token and org
+    # To test GHES, you'd need to set GITHUB_ENTERPRISE_URL in .env or modify this test
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger(__name__) # Use the connector's logger
+    
+    # For testing, you'd typically get these from CLI args or a test config
+    # For this direct run, we'll simulate getting them (e.g. from env for simplicity)
+    test_gh_token = os.getenv("GITHUB_TOKEN_TEST") # Use a specific test token if needed
+    test_org_name_env = os.getenv("GITHUB_ORGS_TEST", "").split(',')[0].strip() # Test with first org from a test env var
+    test_ghes_url_env = os.getenv("GITHUB_ENTERPRISE_URL_TEST")
 
-    logger.info("Running GitHub connector directly for testing...")
 
-    # Get necessary config from environment
-    github_token = os.getenv("GITHUB_TOKEN")
-    github_org = os.getenv("GITHUB_ORG")
-    # --- End Added Setup Code ---
-
-    if not github_token or not github_org:
-        logger.error("GITHUB_TOKEN and GITHUB_ORG must be set in .env file for direct execution.")
+    if not test_gh_token or is_placeholder_token(test_gh_token):
+        logger.error("Test GitHub token (GITHUB_TOKEN_TEST) not found or is a placeholder in .env.")
+    elif not test_org_name_env:
+        logger.error("No GitHub organization found in GITHUB_ORGS_TEST in .env for testing.")
     else:
-        try:
-            # --- Set a specific limit for direct testing ---
-            test_counter = [0]
-            # Set a small limit, e.g., 5 repositories
-            test_limit = 5
-            # --- End limit setting ---
+        instance_for_test = test_ghes_url_env or "public GitHub.com"
+        logger.info(f"--- Testing GitHub Connector for organization: {test_org_name_env} on instance: {instance_for_test} ---")
+        counter = [0]
+        
+        repositories = fetch_repositories(
+            token=test_gh_token, 
+            org_name=test_org_name_env, 
+            processed_counter=counter, 
+            debug_limit=None, 
+            github_instance_url=test_ghes_url_env
+        )
 
-            logger.info(f"Fetching repositories for org: {github_org} (Limit: {test_limit})") # Log the limit
-
-            repositories = fetch_repositories(
-                token=github_token,
-                org_name=github_org,
-                processed_counter=test_counter,
-                debug_limit=test_limit # Pass the limit here
-            )
-
-            logger.info(f"Direct execution finished. Found {len(repositories)} repositories (up to limit).")
-
-            # Print the results nicely formatted as JSON
-            print("\n--- Fetched Repositories (JSON Output) ---")
-            # Use default=str to handle potential non-serializable types like datetime
-            print(json.dumps(repositories, indent=2, default=str))
-            print("--- End of Output ---")
-
-        except Exception as e:
-            logger.error(f"An error occurred during direct execution: {e}", exc_info=True)
-
-    logger.info("Direct execution script finished.")
-# --- End of block ---
+        if repositories:
+            logger.info(f"Successfully fetched {len(repositories)} repositories.")
+            for i, repo_info in enumerate(repositories[:3]): 
+                logger.info(f"--- Repository {i+1} ({repo_info.get('name')}) ---")
+                logger.info(f"  Repo ID: {repo_info.get('repo_id')}")
+                logger.info(f"  Name: {repo_info.get('name')}")
+                logger.info(f"  Org: {repo_info.get('organization')}")
+                logger.info(f"  Description: {repo_info.get('description')}")
+                logger.info(f"  Visibility: {repo_info.get('repositoryVisibility')}")
+                logger.info(f"  Archived (temp): {repo_info.get('archived')}")
+                logger.info(f"  API Tags (temp): {repo_info.get('_api_tags')}")
+                logger.info(f"  Permissions: {repo_info.get('permissions')}")
+                logger.info(f"  Contact: {repo_info.get('contact')}")
+                if "processing_error" in repo_info:
+                    logger.error(f"  Processing Error: {repo_info['processing_error']}")
+            if len(repositories) > 3:
+                logger.info(f"... and {len(repositories)-3} more repositories.")
+        else:
+            logger.warning("No repositories fetched or an error occurred.")
+        logger.info(f"Total repositories processed according to counter: {counter[0]}")

@@ -1,0 +1,34 @@
+# ---------------------------------
+# docker-compose up --build -d
+# docker-compose up -d --force-recreate repo-scanner
+# docker-compose down
+# ---------------------------------
+#
+# You can then open the container's terminal or shell and run the scanner manually:
+# $> python generate_codejson.py github --orgs CDCent
+#
+# ---------------------------------
+
+services:
+  repo-scanner:
+    build:
+      context: . # Use the Dockerfile in the current directory
+      dockerfile: Dockerfile
+    image: cdc-repo-scanner:latest 
+    container_name: cdc_repo_scanner_app # Optional: give a specific name to the running container
+    
+    # Mount volumes for persistent data and configuration
+    # This replaces the -v flags from the docker run command
+    volumes:
+      - ./output:/app/output   # Mounts host's ./output to /app/output in container
+      - ./logs:/app/logs       # Mounts host's ./logs to /app/logs in container
+      - ./.env:/app/.env
+
+    # Load environment variables from the .env file in the current directory
+    env_file:
+      - .env
+
+    # Keep the container running and allow interactive access
+    stdin_open: true # Equivalent to -i in docker run
+    tty: true        # Equivalent to -t in docker run
+    # The CMD ["bash"] in your Dockerfile will be the default command
