@@ -8,4 +8,5 @@ python-gitlab
 azure-devops
 azure-identity
 msrest==0.6.21
+pandas
 filelock>=3.0.0

@@ -1,5 +1,4 @@
 # generate_codejson.py
-# c:\src\OCIO-ricky\ShareITAct_RepoScanning\generate_codejson.py
 """
 Main script for the Share IT Act Repository Scanning Tool.
 
@@ -33,10 +32,10 @@ except ImportError as e:
 
 # Import utils - Ensure these files exist and are importable
 try:
-    from utils import ExemptionLogger, PrivateIdManager
+    from utils import ExemptionLogger, RepoIdMappingManager # Updated import
 except ImportError as e:
     print(f"Error importing utility modules: {e}")
-    print("Please ensure 'utils' directory exists and contains ExemptionLogger.py and PrivateIdManager.py")
+    print("Please ensure 'utils' directory exists and contains ExemptionLogger.py and repo_id_mapping_manager.py") # Updated filename
     sys.exit(1)
 
 # --- Check for packaging library for version parsing ---
@@ -73,10 +72,10 @@ class Config:
         self.CATALOG_JSON_FILE = os.getenv("catalogJsonFile", "code.json")
         self.EXEMPTION_LOG_FILENAME = os.getenv("ExemptedCSVFile", "exempted_log.csv")
         self.AGENCY_NAME = os.getenv("AGENCY_NAME", "CDC")
-        self.PRIVATE_ID_FILENAME = os.getenv("PrivateIDCSVFile", "privateid_mapping.csv")
+        self.PRIVATE_ID_FILENAME = os.getenv("PrivateIDCSVFile", "privateid_mapping.csv") 
         
         self.EXEMPTION_LOG_FILEPATH = os.path.join(self.OUTPUT_DIR, self.EXEMPTION_LOG_FILENAME)
-        self.PRIVATE_ID_FILEPATH = os.path.join(self.OUTPUT_DIR, self.PRIVATE_ID_FILENAME)
+        self.PRIVATE_ID_FILEPATH = os.path.join(self.OUTPUT_DIR, self.PRIVATE_ID_FILENAME) # Reverted path
 
         self.INSTRUCTIONS_URL = os.getenv("INSTRUCTIONS_PDF_URL")
         self.EXEMPTED_NOTICE_URL = os.getenv("EXEMPTED_NOTICE_PDF_URL")
@@ -90,6 +89,19 @@ class Config:
         self.AZURE_DEVOPS_ORG_ENV = os.getenv("AZURE_DEVOPS_ORG")
         self.AZURE_DEVOPS_API_URL_ENV = os.getenv("AZURE_DEVOPS_API_URL", "https://dev.azure.com")
         self.AZURE_DEVOPS_TARGETS_RAW_ENV = [t.strip() for t in os.getenv("AZURE_DEVOPS_TARGETS", "").split(',') if t.strip()]
+
+        hours_per_commit_str = os.getenv("HOURS_PER_COMMIT")
+        if hours_per_commit_str is not None:
+            try:
+                self.HOURS_PER_COMMIT_ENV = float(hours_per_commit_str)
+            except ValueError:
+                logging.getLogger(__name__).warning(
+                    f"Invalid value for HOURS_PER_COMMIT environment variable: '{hours_per_commit_str}'. "
+                    "This setting will be ignored unless overridden by CLI."
+                )
+                self.HOURS_PER_COMMIT_ENV = None
+        else:
+            self.HOURS_PER_COMMIT_ENV = None
 
 # --- Logging Setup ---
 def setup_global_logging(log_level=logging.INFO):
@@ -244,7 +256,14 @@ def infer_status(repo_data, logger_instance):
     logger_instance.debug(f"Status for {repo_name_for_log}: 'development' (default)")
     return "development"
 
-def process_and_finalize_repo_data_list(repos_list: List[Dict[str, Any]], cfg: Config, privateid_mgr: PrivateIdManager, exemption_mgr: ExemptionLogger, target_logger: logging.Logger) -> List[Dict[str, Any]]:
+def process_and_finalize_repo_data_list(
+    repos_list: List[Dict[str, Any]], 
+    cfg: Config, 
+    repo_id_mapping_mgr: RepoIdMappingManager, # Updated parameter name
+    exemption_mgr: ExemptionLogger, 
+    target_logger: logging.Logger,
+    platform: str # Added platform for prefixing
+) -> List[Dict[str, Any]]:
     finalized_list = []
     if not repos_list:
         return []
@@ -253,6 +272,7 @@ def process_and_finalize_repo_data_list(repos_list: List[Dict[str, Any]], cfg: C
         repo_name = repo_data.get('name', 'UnknownRepo')
         org_name = repo_data.get('organization', 'UnknownOrg')
         is_private_or_internal = repo_data.get('repositoryVisibility', '').lower() in ['private', 'internal']
+        platform_repo_id = str(repo_data.get('repo_id', '')) # Get the platform's repo_id
 
         target_logger.debug(f"Finalizing data for repo: {org_name}/{repo_name}")
 
@@ -266,13 +286,25 @@ def process_and_finalize_repo_data_list(repos_list: List[Dict[str, Any]], cfg: C
             continue
 
         try:
-            private_emails_list = repo_data.get('_private_contact_emails', [])
-            private_id = None
-            if is_private_or_internal:
-                private_id = privateid_mgr.get_or_generate_id(repo_name, org_name, private_emails_list)
-                repo_data['privateID'] = private_id
+            prefixed_repo_id_for_code_json = None
+            if is_private_or_internal and platform_repo_id:
+                private_emails_list = repo_data.get('_private_contact_emails', [])
+                # Ensure entry in mapping file (stores raw platform_repo_id and URL)
+                prefixed_repo_id_for_code_json = f"{platform.lower()}_{platform_repo_id}" # Create prefixed ID first
+                repo_id_mapping_mgr.get_or_create_mapping_entry(
+                    private_id_value=prefixed_repo_id_for_code_json, # Pass the prefixed ID
+                    repo_name=repo_name, 
+                    organization=org_name, 
+                    repository_url=repo_data.get('repositoryURL', ''), # Pass the URL
+                    contact_emails=private_emails_list
+                )
+                
+                # Create prefixed ID for code.json's privateID field
+                repo_data['privateID'] = prefixed_repo_id_for_code_json 
             else:
-                repo_data.pop('privateID', None)
+                if is_private_or_internal and not platform_repo_id:
+                    target_logger.warning(f"Repo {org_name}/{repo_name} is private/internal but has no platform_repo_id. Cannot set 'privateID' field or map.")
+                repo_data.pop('privateID', None) # Remove if not private/internal or no repo_id
 
             usage_type = repo_data.get('permissions', {}).get('usageType')
             is_exempt = usage_type and usage_type.lower().startswith('exempt')
@@ -289,8 +321,13 @@ def process_and_finalize_repo_data_list(repos_list: List[Dict[str, Any]], cfg: C
             
             if is_exempt:
                 exemption_text = repo_data.get('permissions', {}).get('exemptionText', '')
-                log_id = private_id if is_private_or_internal else f"PublicRepo-{org_name}-{repo_name}"
-                exemption_mgr.log_exemption(log_id, repo_name, usage_type, exemption_text)
+                # Log exemption with the prefixed_repo_id if available, otherwise a placeholder
+                log_id_for_exemption = prefixed_repo_id_for_code_json
+                if not log_id_for_exemption: 
+                    if is_private_or_internal: # Fallback if private/internal but no platform_repo_id
+                         log_id_for_exemption = f"NoPlatformRepoID-{platform.lower()}-{org_name}-{repo_name}"
+                    # For public, no privateID is set, so no specific ID needed for exemption log unless desired
+                exemption_mgr.log_exemption(log_id_for_exemption or f"Public-{org_name}-{repo_name}", repo_name, usage_type, exemption_text)
 
             repo_data['status'] = infer_status(repo_data, target_logger)
             if repo_data.get('version', 'N/A') == 'N/A':
@@ -339,12 +376,13 @@ def scan_and_process_single_target(
     platform: str, 
     target_identifier: str, 
     cfg: Config, 
-    privateid_mgr: PrivateIdManager, 
+    repo_id_mapping_mgr: RepoIdMappingManager, # Updated parameter name
     exemption_mgr: ExemptionLogger, 
     global_repo_counter: List[int], 
     limit_to_pass: Optional[int], 
-    auth_params: Dict[str, Any], # New parameter for authentication details
-    platform_url: Optional[str] = None
+    auth_params: Dict[str, Any], 
+    platform_url: Optional[str] = None,
+    hours_per_commit: Optional[float] = None 
 ) -> bool:
     target_logger_name = f"{platform}.{target_identifier.replace('/', '_').replace('.', '_')}"
     target_log_filename = f"{platform}_{target_identifier.replace('/', '_').replace('.', '_')}.log"
@@ -363,20 +401,22 @@ def scan_and_process_single_target(
     try:
         if platform == "github":
             fetched_repos = clients.github_connector.fetch_repositories(
-                token=auth_params.get("token"), # Get token from auth_params
+                token=auth_params.get("token"), 
                 org_name=target_identifier, 
                 processed_counter=global_repo_counter, 
                 debug_limit=limit_to_pass, 
-                github_instance_url=platform_url
+                github_instance_url=platform_url,
+                hours_per_commit=hours_per_commit         
             )
             connector_success = True
         elif platform == "gitlab":
             fetched_repos = clients.gitlab_connector.fetch_repositories(
-                token=auth_params.get("token"), # Get token from auth_params
+                token=auth_params.get("token"), 
                 group_path=target_identifier, 
                 processed_counter=global_repo_counter, 
                 debug_limit=limit_to_pass, 
-                gitlab_instance_url=platform_url 
+                gitlab_instance_url=platform_url, # Corrected param name
+                hours_per_commit=hours_per_commit          
             )
             connector_success = True
         elif platform == "azure":
@@ -385,7 +425,6 @@ def scan_and_process_single_target(
                  return False
             org_name, project_name = target_identifier.split('/', 1)
             fetched_repos = clients.azure_devops_connector.fetch_repositories(
-                # Pass specific auth params for Azure
                 pat_token=auth_params.get("pat_token"),
                 spn_client_id=auth_params.get("spn_client_id"),
                 spn_client_secret=auth_params.get("spn_client_secret"),
@@ -393,7 +432,8 @@ def scan_and_process_single_target(
                 organization_name=org_name, 
                 project_name=project_name, 
                 processed_counter=global_repo_counter, 
-                debug_limit=limit_to_pass
+                debug_limit=limit_to_pass,
+                hours_per_commit=hours_per_commit          
             )
             connector_success = True
         else:
@@ -410,9 +450,8 @@ def scan_and_process_single_target(
         target_logger.info(f"--- Finished scan for {platform} target: {target_identifier} (Critical Connector Error) ---")
         return False 
 
-    default_org_ids_for_exemption_processor = [target_identifier] # Default to the target itself
+    default_org_ids_for_exemption_processor = [target_identifier] 
     if platform == "azure" and '/' in target_identifier:
-        # For Azure, target_identifier is "Org/Project", so Org is the primary default
         default_org_ids_for_exemption_processor = [target_identifier.split('/',1)[0]]
 
 
@@ -421,12 +460,10 @@ def scan_and_process_single_target(
         intermediate_data = [] 
     else:
         target_logger.info(f"Finalizing {len(fetched_repos)} repositories for {target_identifier}...")
-        # Pass default_org_ids to exemption_processor
         intermediate_data = process_and_finalize_repo_data_list(
-            [repo for repo in fetched_repos if repo is not None and not repo.get("processing_error")], # Filter out errored items before finalization
-            cfg, privateid_mgr, exemption_mgr, target_logger
+            [repo for repo in fetched_repos if repo is not None and not repo.get("processing_error")], 
+            cfg, repo_id_mapping_mgr, exemption_mgr, target_logger, platform # Pass platform
         )
-        # Handle repos that had processing errors during fetch
         errored_repos = [repo for repo in fetched_repos if repo and repo.get("processing_error")]
         if errored_repos:
             intermediate_data.extend(errored_repos)
@@ -444,7 +481,7 @@ def scan_and_process_single_target(
         target_logger.info(f"--- Finished scan for {platform} target: {target_identifier} (Write Error) ---")
         return False 
 
-def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> bool:
+def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> bool: # Removed repo_id_mapping_mgr
     main_logger.info("--- Starting Merge Operation ---")
     search_path = os.path.join(cfg.OUTPUT_DIR, INTERMEDIATE_FILE_PATTERN)
     intermediate_files = glob.glob(search_path)
@@ -478,24 +515,51 @@ def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> boo
         return not merge_errors
     
     final_code_json_structure = {
-        "version":  CODE_JSON_SCHEMA_VERSION,
+        "version": CODE_JSON_SCHEMA_VERSION,
         "agency": cfg.AGENCY_NAME, 
         "measurementType":  CODE_JSON_MEASUREMENT_TYPE, 
-        "projects": all_projects
+        "projects": [] # Initialize projects as an empty list
     }
     
-    now_iso = datetime.now(timezone.utc).isoformat()
-    for project in final_code_json_structure["projects"]:
-        if "processing_error" not in project:
-            if "date" not in project or not isinstance(project.get("date"), dict):
-                project["date"] = {}
-            project["date"]["metadataLastUpdated"] = now_iso
+    processed_projects_for_final_catalog = []
+    for project_data in all_projects:
+        now_iso = datetime.now(timezone.utc).isoformat() # For metadataLastUpdated
+        # Skip if it's just an error placeholder from a failed connector run for a target
+        if "processing_error" in project_data and len(project_data.keys()) <= 3: # e.g. name, org, error
+            main_logger.warning(f"Skipping project entry during merge due to processing_error: {project_data.get('name', 'Unknown')}")
+            processed_projects_for_final_catalog.append(project_data) # Keep error record
+            continue
+
+        updated_project_data = project_data.copy() # Work with a copy
+
+        # Add/Update metadataLastUpdated
+        if "date" not in updated_project_data or not isinstance(updated_project_data.get("date"), dict):
+            updated_project_data["date"] = {}
+        updated_project_data["date"]["metadataLastUpdated"] = now_iso
+
+        # --- Visibility Normalization for Final Output ---
+        # The usageType should have been correctly set by exemption_processor.py
+        # and is trusted from the intermediate file.
+        # Here, we just ensure 'internal' visibility is mapped to 'private' for the final code.json.
+        repo_visibility_original = updated_project_data.get("repositoryVisibility", "").lower()
+        if repo_visibility_original == "internal":
+            updated_project_data["repositoryVisibility"] = "private" 
+            main_logger.debug(f"Repo {updated_project_data.get('name')}: Standardized visibility from 'internal' to 'private' for final output.")
+        
+        # The 'privateID' field (now containing prefixed repo_id) comes from the intermediate file.
+        # No need to generate or modify it here.
+        main_logger.debug(f"Repo {updated_project_data.get('name')}: Using privateID '{updated_project_data.get('privateID')}' from intermediate file.")
+        
+        processed_projects_for_final_catalog.append(updated_project_data)
 
     backup_existing_file(cfg.OUTPUT_DIR, cfg.CATALOG_JSON_FILE)
     
+    final_code_json_structure["projects"] = processed_projects_for_final_catalog
+    final_code_json_structure["projects"].sort(key=lambda x: x.get("name", "").lower()) # Sort projects by name
+
     final_catalog_filepath = os.path.join(cfg.OUTPUT_DIR, cfg.CATALOG_JSON_FILE)
     if write_json_file(final_code_json_structure, final_catalog_filepath):
-        main_logger.info(f"Successfully merged {len(all_projects)} projects into {final_catalog_filepath}")
+        main_logger.info(f"Successfully merged {len(processed_projects_for_final_catalog)} projects into {final_catalog_filepath}")
         main_logger.info("--- Merge Operation Finished Successfully ---")
         return not merge_errors 
     else:
@@ -504,7 +568,7 @@ def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> boo
         return False 
 
 # --- CLI Argument Parsing Helpers ---
-def get_targets_from_cli_or_env(cli_arg_value: Optional[str], env_config_value: List[str], entity_name_plural: str, main_logger: logging.Logger) -> List[str]:
+def get_targets_from_cli_or_env(cli_arg_value: Optional[str], env_config_value: List[str], entity_name_plural: str, main_logger: logging.Logger) -> List[str]: 
     targets = []
     source = ""
     if cli_arg_value:
@@ -520,7 +584,7 @@ def get_targets_from_cli_or_env(cli_arg_value: Optional[str], env_config_value: 
         main_logger.info(f"No {entity_name_plural} specified via {source if source else 'command line or .env'} to scan.")
     return targets
 
-def parse_azure_targets_from_string_list(raw_target_list: List[str], default_org_from_env: Optional[str], main_logger: logging.Logger) -> List[str]:
+def parse_azure_targets_from_string_list(raw_target_list: List[str], default_org_from_env: Optional[str], main_logger: logging.Logger) -> List[str]: 
     parsed_targets = []
     for target_str in raw_target_list:
         if '/' in target_str:
@@ -535,7 +599,7 @@ def parse_azure_targets_from_string_list(raw_target_list: List[str], default_org
     return parsed_targets
 
 # --- Main CLI Function ---
-def main_cli():
+def main_cli(): 
     cfg = Config()
     setup_global_logging()
     main_logger = logging.getLogger(__name__) 
@@ -549,6 +613,7 @@ def main_cli():
     gh_parser.add_argument("--github-ghes-url", help="URL of the GitHub Enterprise Server instance (e.g., https://github.mycompany.com). If provided, --orgs will target this GHES instance.")
     gh_parser.add_argument("--gh-tk", help="GitHub Personal Access Token (PAT).")
     gh_parser.add_argument("--limit", type=int, help="Limit total repositories processed for this GitHub scan run (overrides .env).")
+    gh_parser.add_argument("--hours-per-commit", type=float, help="Hours to estimate per commit for GitHub repos. Enables labor estimation.")
 
     # --- GitLab Command ---
     gl_parser = subparsers.add_parser("gitlab", help="Scan configured GitLab groups.")
@@ -556,7 +621,8 @@ def main_cli():
     gl_parser.add_argument("--gitlab-url", help="GitLab instance URL (e.g., https://gitlab.com) (overrides .env).")
     gl_parser.add_argument("--gl-tk", help="GitLab Personal Access Token (PAT).")
     gl_parser.add_argument("--limit", type=int, help="Limit total repositories processed for this GitLab scan run (overrides .env).")
-    
+    gl_parser.add_argument("--hours-per-commit", type=float, help="Hours to estimate per commit for GitLab repos. Enables labor estimation.")
+
     # --- Azure DevOps Command ---
     az_parser = subparsers.add_parser("azure", help="Scan Azure DevOps Org/Project targets.")
     az_parser.add_argument("--targets", help="Comma-separated Azure Org/Project pairs (overrides .env).")
@@ -565,19 +631,21 @@ def main_cli():
     az_parser.add_argument("--az-cs", help="Azure Service Principal Client Secret.")
     az_parser.add_argument("--az-tid", help="Azure Service Principal Tenant ID.")
     az_parser.add_argument("--limit", type=int, help="Limit total repositories processed for this Azure scan run (overrides .env).")
-    
+    az_parser.add_argument("--hours-per-commit", type=float, help="Hours to estimate per commit for Azure DevOps repos. Enables labor estimation.")
+
     # --- Merge Command ---
     merge_parser = subparsers.add_parser("merge", help="Merge intermediate catalog files into the final code.json.")
 
     args = parser.parse_args()
 
+
     os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
     try:
         exemption_manager = ExemptionLogger(cfg.EXEMPTION_LOG_FILEPATH)
-        privateid_manager = PrivateIdManager(cfg.PRIVATE_ID_FILEPATH)
-        main_logger.info("ExemptionLogger and PrivateIdManager initialized.")
+        repo_id_mapping_manager = RepoIdMappingManager(cfg.PRIVATE_ID_FILEPATH) # Use correct filepath from Config
+        main_logger.info("ExemptionLogger and RepoIdMappingManager initialized.")
     except Exception as mgr_err:
-        main_logger.critical(f"Failed to initialize Exemption/PrivateID managers: {mgr_err}", exc_info=True)
+        main_logger.critical(f"Failed to initialize Exemption/RepoIdMapping managers: {mgr_err}", exc_info=True)
         sys.exit(1) 
 
     overall_command_success = True 
@@ -594,6 +662,18 @@ def main_cli():
         limit_for_scans = cfg.DEBUG_REPO_LIMIT
         main_logger.info(f"Using repository processing limit from .env: {limit_for_scans}.")
     
+    hours_per_commit_for_scan: Optional[float] = None 
+    cli_hpc_value = getattr(args, 'hours_per_commit', None)
+
+    if cli_hpc_value is not None:
+        hours_per_commit_for_scan = float(cli_hpc_value) 
+        main_logger.info(f"CLI override: Labor hours estimation ENABLED. Hours per commit set to {hours_per_commit_for_scan}.")
+    elif cfg.HOURS_PER_COMMIT_ENV is not None: 
+        hours_per_commit_for_scan = cfg.HOURS_PER_COMMIT_ENV
+        main_logger.info(f"Using .env: Labor hours estimation ENABLED. Hours per commit set to {hours_per_commit_for_scan}.")
+    else: 
+        main_logger.info(f"No explicit hours_per_commit set via CLI or .env. Labor estimation DISABLED.")
+
     auth_params_for_connector: Dict[str, Any] = {}
 
     if args.command == "github":
@@ -605,7 +685,7 @@ def main_cli():
             main_logger.error("--gh-tk (GitHub token) is required for GitHub scans.")
             sys.exit(1)
         auth_params_for_connector["token"] = args.gh_tk
-        if clients.github_connector.is_placeholder_token(args.gh_tk): # Check CLI token
+        if clients.github_connector.is_placeholder_token(args.gh_tk): 
             main_logger.error("GitHub token provided via --gh-tk is a placeholder. Cannot scan GitHub.")
             sys.exit(1)
 
@@ -627,7 +707,9 @@ def main_cli():
         
         main_logger.info(f"--- Starting GitHub Scan for {len(targets_to_scan)} {target_entity_name} ---")
         for target in targets_to_scan:
-            if not scan_and_process_single_target("github", target, cfg, privateid_manager, exemption_manager, global_repo_scan_counter, limit_for_scans, auth_params=auth_params_for_connector, platform_url=github_url_for_scan):
+            if not scan_and_process_single_target("github", target, cfg, repo_id_mapping_manager, exemption_manager, 
+                                                  global_repo_scan_counter, limit_for_scans, 
+                                                  auth_params=auth_params_for_connector, platform_url=github_url_for_scan, hours_per_commit=hours_per_commit_for_scan):
                 overall_command_success = False 
             if limit_for_scans is not None and global_repo_scan_counter[0] >= limit_for_scans:
                  main_logger.warning(f"Global debug limit ({limit_for_scans}) reached. Stopping further GitHub target scans.")
@@ -639,7 +721,7 @@ def main_cli():
             main_logger.error("--gl-tk (GitLab token) is required for GitLab scans.")
             sys.exit(1)
         auth_params_for_connector["token"] = args.gl_tk
-        if clients.gitlab_connector.is_placeholder_token(args.gl_tk): # Check CLI token
+        if clients.gitlab_connector.is_placeholder_token(args.gl_tk): 
             main_logger.error("GitLab token provided via --gl-tk is a placeholder. Cannot scan GitLab.")
             sys.exit(1)
 
@@ -652,7 +734,9 @@ def main_cli():
 
         main_logger.info(f"--- Starting GitLab Scan for {len(targets_to_scan)} Groups on {gitlab_url_for_scan} ---")
         for target in targets_to_scan:
-            if not scan_and_process_single_target("gitlab", target, cfg, privateid_manager, exemption_manager, global_repo_scan_counter, limit_for_scans, auth_params=auth_params_for_connector, platform_url=gitlab_url_for_scan):
+            if not scan_and_process_single_target("gitlab", target, cfg, repo_id_mapping_manager, exemption_manager, 
+                                                  global_repo_scan_counter, limit_for_scans, 
+                                                  auth_params=auth_params_for_connector, platform_url=gitlab_url_for_scan, hours_per_commit=hours_per_commit_for_scan):
                 overall_command_success = False 
             if limit_for_scans is not None and global_repo_scan_counter[0] >= limit_for_scans:
                  main_logger.warning(f"Global debug limit ({limit_for_scans}) reached. Stopping further GitLab target scans.")
@@ -660,7 +744,6 @@ def main_cli():
         main_logger.info("--- GitLab Scan Command Finished ---")
 
     elif args.command == "azure":
-        # Determine Azure auth method
         if args.az_cid and args.az_cs and args.az_tid:
             main_logger.info("Using Azure Service Principal credentials from CLI.")
             auth_params_for_connector = {
@@ -668,14 +751,13 @@ def main_cli():
                 "spn_client_secret": args.az_cs,
                 "spn_tenant_id": args.az_tid
             }
-            # Check for placeholders in SPN details
             if clients.azure_devops_connector.are_spn_details_placeholders(args.az_cid, args.az_cs, args.az_tid):
                 main_logger.error("One or more Azure Service Principal CLI arguments are placeholders. Cannot scan Azure DevOps.")
                 sys.exit(1)
         elif args.az_tk:
             main_logger.info("Using Azure PAT from CLI.")
             auth_params_for_connector = {"pat_token": args.az_tk}
-            if clients.azure_devops_connector.is_placeholder_token(args.az_tk): # Check CLI token
+            if clients.azure_devops_connector.is_placeholder_token(args.az_tk): 
                 main_logger.error("Azure PAT provided via --az-tk is a placeholder. Cannot scan Azure DevOps.")
                 sys.exit(1)
         else:
@@ -700,7 +782,9 @@ def main_cli():
         
         main_logger.info(f"--- Starting Azure DevOps Scan for {len(targets_to_scan)} Targets ---")
         for target in targets_to_scan: 
-            if not scan_and_process_single_target("azure", target, cfg, privateid_manager, exemption_manager, global_repo_scan_counter, limit_for_scans, auth_params=auth_params_for_connector):
+            if not scan_and_process_single_target("azure", target, cfg, repo_id_mapping_manager, exemption_manager, 
+                                                  global_repo_scan_counter, limit_for_scans, 
+                                                  auth_params=auth_params_for_connector, hours_per_commit=hours_per_commit_for_scan):
                 overall_command_success = False 
             if limit_for_scans is not None and global_repo_scan_counter[0] >= limit_for_scans:
                  main_logger.warning(f"Global debug limit ({limit_for_scans}) reached. Stopping further Azure DevOps target scans.")
@@ -709,17 +793,17 @@ def main_cli():
 
     elif args.command == "merge":
         backup_existing_file(cfg.OUTPUT_DIR, cfg.EXEMPTION_LOG_FILENAME)
-        backup_existing_file(cfg.OUTPUT_DIR, cfg.PRIVATE_ID_FILENAME)
-        if not merge_intermediate_catalogs(cfg, main_logger):
+        backup_existing_file(cfg.OUTPUT_DIR, cfg.PRIVATE_ID_FILENAME) # Use correct filename from Config
+        if not merge_intermediate_catalogs(cfg, main_logger): # Manager no longer needed here
             overall_command_success = False 
         main_logger.info("--- Merge Command Finished ---")
 
     try:
-        main_logger.info("Saving Exemption logs and Private ID mappings...")
+        main_logger.info("Saving Exemption logs and Repo ID mappings...")
         exemption_manager.save_all_exemptions() 
-        privateid_manager.save_all_mappings()
+        repo_id_mapping_manager.save_all_mappings() # Call save on renamed manager
         main_logger.info(f"Exemptions logged to: {cfg.EXEMPTION_LOG_FILEPATH}")
-        main_logger.info(f"Private ID mappings saved to: {cfg.PRIVATE_ID_FILEPATH}")
+        main_logger.info(f"Private ID mappings saved to: {cfg.PRIVATE_ID_FILEPATH}") # Update log message
     except Exception as save_err:
         main_logger.error(f"Error saving manager data: {save_err}", exc_info=True)
         overall_command_success = False 

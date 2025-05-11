@@ -1,4 +1,4 @@
-# utils\exemption_processor.py
+# utils/exemption_processor.py
 """
 Handles the core logic for processing repository metadata to determine
 code-sharing exemptions, infer missing information, and prepare data for
@@ -537,9 +537,28 @@ def process_repository_exemptions(repo_data: dict, default_org_identifiers: list
             logger.info(f"Repo '{repo_name}': Exempted via AI analysis ({ai_usage_type}).")
 
     if not exemption_applied: # Default if no exemption applied
-        repo_data['permissions']['usageType'] = USAGE_GOVERNMENT_WIDE_REUSE if repo_data.get('repositoryVisibility') == 'private' else USAGE_OPEN_SOURCE
-        logger.info(f"Repo '{repo_name}': Assigned default usageType: {repo_data['permissions']['usageType']}.")
-        repo_data['permissions']['exemptionText'] = None # Ensure no leftover text
+        # Determine final usageType based on visibility and license if no exemption was applied
+        visibility_for_rules = repo_data.get('repositoryVisibility', '').lower()
+        # Treat 'internal' as 'private' for this rule application
+        # The final mapping of the 'repositoryVisibility' field itself to 'private'
+        # if 'internal' is handled in merge_intermediate_catalogs.
+        # Here, we just use the rule for usageType.
+        if visibility_for_rules == 'internal':
+            effective_visibility_for_usage_rule = 'private'
+        else:
+            effective_visibility_for_usage_rule = visibility_for_rules
+
+        licenses_list = repo_data.get('permissions', {}).get('licenses', [])
+        has_license = bool(licenses_list)
+
+        if effective_visibility_for_usage_rule == 'public' and has_license:
+            final_usage_type = USAGE_OPEN_SOURCE
+        else: # Covers public without license, and private/internal (with or without license)
+            final_usage_type = USAGE_GOVERNMENT_WIDE_REUSE
+        
+        repo_data['permissions']['usageType'] = final_usage_type
+        logger.info(f"Repo '{repo_name}': Assigned final usageType: '{final_usage_type}' (Visibility: {visibility_for_rules}, HasLicense: {has_license}).")
+        repo_data['permissions']['exemptionText'] = None # Ensure no leftover text if no exemption was applied
 
     # --- README Fallbacks for other fields ---
     if readme_content:

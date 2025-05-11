@@ -12,7 +12,8 @@ import logging
 import base64
 from typing import List, Optional, Dict, Any
 from datetime import timezone, datetime 
-# Removed: from dotenv import load_dotenv - No longer needed here for auth
+from utils.labor_hrs_estimator import analyze_gitlab_repo_sync # Import the labor hrs estimator
+
 
 import gitlab # python-gitlab library
 from gitlab.exceptions import GitlabAuthenticationError, GitlabGetError, GitlabListError
@@ -128,9 +129,9 @@ def fetch_repositories(
     token: Optional[str], 
     group_path: str, 
     processed_counter: List[int], 
-    debug_limit: Optional[int], 
-    gitlab_instance_url: Optional[str] # Changed from str to Optional[str]
-) -> List[Dict[str, Any]]:
+    debug_limit: int | None = None, 
+    gitlab_instance_url: str | None = None,
+    hours_per_commit: Optional[float] = None) -> list[dict]:
     """
     Fetches repository (project) details from a specific GitLab group.
 
@@ -274,6 +275,26 @@ def fetch_repositories(
                     "archived": project.archived,  
                 }
                 
+                if hours_per_commit is not None:
+                    logger.debug(f"Estimating labor hours for GitLab repo: {project.path_with_namespace}")
+                    try:
+ 
+                        labor_df = analyze_gitlab_repo_sync(
+                            project_id=str(project.id), # Ensure project_id is a string
+                            token=token, # Still pass token for estimator's internal fallback
+                            hours_per_commit=hours_per_commit,
+                            gitlab_api_url=effective_gitlab_url,
+                            session=None # Let the estimator manage its own session
+                        )
+                        if not labor_df.empty:
+                            repo_data["laborHours"] = round(float(labor_df["EstimatedHours"].sum()), 2)
+                            logger.info(f"Estimated labor hours for {project.path_with_namespace}: {repo_data['laborHours']}")
+                        else:
+                            repo_data["laborHours"] = 0.0
+                    except Exception as e_lh:
+                        logger.warning(f"Could not estimate labor hours for {project.path_with_namespace}: {e_lh}", exc_info=True)
+                        repo_data["laborHours"] = 0.0 # Default or None if preferred
+
                 # Pass default identifiers for organization context to exemption_processor
                 repo_data = exemption_processor.process_repository_exemptions(repo_data, default_org_identifiers=[group.full_path])
                 

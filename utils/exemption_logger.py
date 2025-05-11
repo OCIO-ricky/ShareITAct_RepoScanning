@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 class ExemptionLogger:
     """Handles loading and logging repository exemptions to a CSV file."""
 
+    # Changed 'repoID' to 'privateID' to match the field name in code.json.
+    # This column will store the prefixed repo_id (e.g., github_12345).
     EXPECTED_HEADER = ['privateID', 'repositoryName', 'usageType', 'exemptionText', 'timestamp']
 
     def __init__(self, filepath="output/exempted_log.csv", template_path=None): # Made template optional
@@ -37,7 +39,8 @@ class ExemptionLogger:
         # Counter for new exemptions logged during this run
         self.new_exemptions_logged_count = 0
         # Set to store repo names already logged (used in log_exemption)
-        self.exempted_repos = set()
+        # Changed to store privateID (prefixed repo_id) for more accurate duplicate checking
+        self.logged_exemptions_by_private_id = set()
         # Ensure file exists and headers are correct before loading
         self._ensure_log_file_header() # Simplified version below
         # Load existing entries to populate self.exempted_repos
@@ -98,13 +101,13 @@ class ExemptionLogger:
 
                 count = 0
                 for row_num, row in enumerate(reader, start=2): # Start count from 2 (after header)
-                    repo_name = row.get('repositoryName')
-                    if repo_name:
-                        # Add repo name to the set for quick lookup later
-                        self.exempted_repos.add(repo_name)
+                    private_id_from_csv = row.get('privateID') # Use 'privateID' column
+                    if private_id_from_csv:
+                        # Add privateID to the set for quick lookup later
+                        self.logged_exemptions_by_private_id.add(private_id_from_csv)
                         count += 1
                     else:
-                         logger.warning(f"Skipping row {row_num} with missing repositoryName in '{self.log_file_path}': {row}")
+                         logger.warning(f"Skipping row {row_num} with missing privateID in '{self.log_file_path}': {row}")
             logger.info(f"Loaded {count} existing exemption entries (repo names) from {self.log_file_path}")
         except FileNotFoundError:
             # Should be handled by _ensure_log_file_header, but good safety check
@@ -112,15 +115,15 @@ class ExemptionLogger:
         except Exception as e:
             logger.error(f"Error loading exemption log {self.log_file_path}: {e}", exc_info=True)
 
-    def log_exemption(self, private_id: str, repo_name: str, usage_type: str, exemption_text: str):
+    def log_exemption(self, private_id_value: str, repo_name: str, usage_type: str, exemption_text: str):
         """Logs an exemption entry to the CSV file if not already logged."""
         # Check if already logged in this session or loaded from file
-        if repo_name in self.exempted_repos:
-            logger.debug(f"Repository '{repo_name}' already logged as exempted. Skipping.")
+        if private_id_value in self.logged_exemptions_by_private_id:
+            logger.debug(f"Exemption for privateID '{private_id_value}' (Repo: '{repo_name}') already logged. Skipping.")
             return False # Indicate not logged this time
 
         log_entry = {
-            'privateID': private_id or '', # Ensure it's not None
+            'privateID': private_id_value or '', # Store the prefixed repo_id under the 'privateID' key
             'repositoryName': repo_name,
             'usageType': usage_type,
             'exemptionText': exemption_text,
@@ -145,7 +148,7 @@ class ExemptionLogger:
                 writer.writerow(log_entry)
 
             # Update in-memory set and counter only if write succeeds
-            self.exempted_repos.add(repo_name)
+            self.logged_exemptions_by_private_id.add(private_id_value)
             self.new_exemptions_logged_count += 1
             logger.debug(f"Logged exemption for '{repo_name}'")
             return True # Indicate logged successfully

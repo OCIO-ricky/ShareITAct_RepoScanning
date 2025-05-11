@@ -1,4 +1,4 @@
-# clients\github_connector.py
+# clients/github_connector.py
 """
 GitHub Connector for Share IT Act Repository Scanning Tool.
 
@@ -12,7 +12,8 @@ import logging
 import base64 # For decoding README content
 from typing import List, Dict, Optional, Any
 from datetime import timezone
-# Removed: from dotenv import load_dotenv - No longer needed here for auth
+from utils.labor_hrs_estimator import analyze_github_repo_sync # Import the estimator
+
 
 from github import Github, GithubException, UnknownObjectException, RateLimitExceededException
 
@@ -119,9 +120,9 @@ def fetch_repositories(
     token: Optional[str], 
     org_name: str, 
     processed_counter: List[int], 
-    debug_limit: Optional[int], 
-    github_instance_url: Optional[str] = None
-) -> List[Dict[str, Any]]:
+    debug_limit: int | None = None, 
+    github_instance_url: str | None = None, 
+    hours_per_commit: Optional[float] = None) -> list[dict]:
     """
     Fetches repository details from a specific GitHub organization.
 
@@ -259,6 +260,26 @@ def fetch_repositories(
                     "archived": repo.archived,  
                 }
                 
+                if hours_per_commit is not None:
+                    logger.debug(f"Estimating labor hours for GitHub repo: {repo.full_name}")
+                    try:
+                        labor_df = analyze_github_repo_sync(
+                            owner=org_name,
+                            repo=repo.name,
+                            token=token, # Still pass token for estimator's internal fallback
+                            hours_per_commit=hours_per_commit,
+                            github_api_url=github_instance_url or "https://api.github.com",
+                            session=None # Let the estimator manage its own session
+                        )
+                        if not labor_df.empty:
+                            repo_data["laborHours"] = round(float(labor_df["EstimatedHours"].sum()), 2)
+                            logger.info(f"Estimated labor hours for {repo.full_name}: {repo_data['laborHours']}")
+                        else:
+                            repo_data["laborHours"] = 0.0
+                    except Exception as e_lh:
+                        logger.warning(f"Could not estimate labor hours for {repo.full_name}: {e_lh}", exc_info=True)
+                        repo_data["laborHours"] = 0.0 # Default or None if preferred
+
                 # Pass default identifiers for organization context to exemption_processor
                 repo_data = exemption_processor.process_repository_exemptions(repo_data, default_org_identifiers=[org_name])
                 

@@ -1,4 +1,4 @@
-# clients\azure_devops_connector.py
+# clients/azure_devops_connector.py
 """
 Azure DevOps Connector for Share IT Act Repository Scanning Tool.
 
@@ -12,6 +12,8 @@ import logging
 import base64
 from typing import List, Dict, Optional, Any, Tuple
 from datetime import timezone, datetime
+from utils.labor_hrs_estimator import _create_summary_dataframe # Import the labor hrs estimator
+
 
 # --- Try importing Azure DevOps SDK ---
 try:
@@ -160,8 +162,8 @@ def fetch_repositories(
     organization_name: str, 
     project_name: str, 
     processed_counter: List[int], 
-    debug_limit: Optional[int]
-) -> List[Dict[str, Any]]:
+    debug_limit: Optional[int] = None,
+    hours_per_commit: Optional[float] = None) -> list[dict]:
     """
     Fetches repository details from a specific Azure DevOps project.
     Uses Service Principal if all SPN details are provided, otherwise falls back to PAT.
@@ -300,7 +302,40 @@ def fetch_repositories(
                 default_ids_for_exemption = [organization_name]
                 if project_name and project_name.lower() != organization_name.lower():
                     default_ids_for_exemption.append(project_name)
-                
+
+                if hours_per_commit is not None:
+                    logger.debug(f"Estimating labor hours for Azure DevOps repo: {repo.name} in {project_name}")
+                    try:
+                        commit_details_list = []
+                        # Fetch commits using the Azure DevOps SDK's GitClient
+                        # Note: get_commits might return a limited number by default.
+                        # For a full history, we might need to handle pagination or use a large 'top'.
+                        # The SDK's get_commits method might have a default limit (e.g., 100).
+                        # For simplicity here, fetching up to 10000. Adjust as needed.
+                        # A more robust solution would implement paging if repo has more commits.
+                        ado_commits = git_client.get_commits(repository_id=repo.id, project=project_name, top=10000)
+
+                        for ado_commit in ado_commits:
+                            if ado_commit.author and ado_commit.author.name and ado_commit.author.email and ado_commit.author.date:
+                                commit_details_list.append((
+                                    ado_commit.author.name,
+                                    ado_commit.author.email,
+                                    ado_commit.author.date # This is already a datetime object
+                                ))
+                        
+                        if commit_details_list:
+                            labor_df = _create_summary_dataframe(commit_details_list, hours_per_commit)
+                            if not labor_df.empty:
+                                repo_data["laborHours"] = round(float(labor_df["EstimatedHours"].sum()), 2)
+                                logger.info(f"Estimated labor hours for {repo.name}: {repo_data['laborHours']}")
+                            else:
+                                repo_data["laborHours"] = 0.0
+                        else:
+                            repo_data["laborHours"] = 0.0
+                    except Exception as e_lh:
+                        logger.warning(f"Could not estimate labor hours for Azure DevOps repo {repo.name}: {e_lh}", exc_info=True)
+                        repo_data["laborHours"] = 0.0 # Default or None if preferred
+               
                 repo_data = exemption_processor.process_repository_exemptions(repo_data, default_org_identifiers=default_ids_for_exemption)
                 
                 processed_repo_list.append(repo_data)
