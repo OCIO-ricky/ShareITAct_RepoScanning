@@ -202,7 +202,7 @@ Check the `.env` file in the root directory to configure the following:
 - **`catalogJsonFile`**: Name of the final merged catalog file.
 - **`ExemptedCSVFile`**: Name of the CSV file to log exempted repositories.
 - **`PrivateIDCSVFile`**: Name of the CSV file to log private repositories and their generated PrivateIDs.
-- **`GOOGLE_API_KEY`**: Google API key for AI features.
+- **`GOOGLE_API_KEY`**: Google API key for AI features.  Got to https://aistudio.google.com/apikey 
 
 ## 📤 Output
 
