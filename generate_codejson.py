@@ -615,14 +615,30 @@ def _validate_cli_pat_token(token_value: Optional[str], cli_arg_name: str, platf
 
 # --- Helper for Time Formatting ---
 def format_duration(total_seconds: float) -> str:
-    """Converts total seconds into a string of hours, minutes, and seconds."""
+    """Converts total seconds into a string of hours, minutes, and rounded seconds."""
     if total_seconds < 0: # Should not happen with time differences
-        return "0.00 seconds"
+        return "0 seconds"
+
+    # Round the total_seconds first to avoid cascading rounding issues if very close to a minute/hour boundary
+    # For example, 59.999 seconds should become 1 minute, 0 seconds, not 0 minutes, 60 seconds.
+    # However, for display purposes, it's often better to round at the final step (seconds display).
+    # Let's stick to rounding only the final seconds part for now as per the request.
 
     hours = int(total_seconds // 3600)
     remaining_seconds_after_hours = total_seconds % 3600
     minutes = int(remaining_seconds_after_hours // 60)
-    final_seconds = remaining_seconds_after_hours % 60
+    
+    # Round the final seconds component
+    final_seconds_float = remaining_seconds_after_hours % 60
+    rounded_seconds = int(round(final_seconds_float))
+
+    # Adjust minutes and hours if rounding seconds caused a carry-over
+    if rounded_seconds == 60:
+        rounded_seconds = 0
+        minutes += 1
+        if minutes == 60:
+            minutes = 0
+            hours += 1
 
     parts = []
     if hours > 0:
@@ -630,10 +646,15 @@ def format_duration(total_seconds: float) -> str:
     if minutes > 0:
         parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
     
-    # Always include seconds, even if 0, for completeness if other units are present or if it's the only unit.
-    parts.append(f"{final_seconds:.2f} second{'s' if abs(final_seconds - 1.0) > 1e-9 else ''}") # Handle float comparison for singular 'second'
-
-    return ", ".join(parts) if parts else "0.00 seconds"
+    # Always include seconds if they are non-zero, or if no other parts are present.
+    # Or if hours/minutes are present, include seconds even if 0 for consistency.
+    if rounded_seconds > 0 or not parts or (hours > 0 or minutes > 0):
+        parts.append(f"{rounded_seconds} second{'s' if rounded_seconds != 1 else ''}")
+    
+    if not parts: # This case handles if total_seconds was < 0.5 and rounded to 0 seconds
+        return "0 seconds"
+        
+    return ", ".join(parts)
 # --- Main CLI Function ---
 def main_cli(): 
     script_start_time = time.time() # Record the start time of the script
