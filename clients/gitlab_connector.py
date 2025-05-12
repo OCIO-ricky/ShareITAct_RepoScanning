@@ -190,6 +190,16 @@ def fetch_repositories(
                 if hasattr(project, 'forked_from_project') and project.forked_from_project:
                     logger.info(f"Skipping forked repository: {repo_full_name}")
                     continue
+
+                # Initialize _is_empty_repo flag
+                repo_data['_is_empty_repo'] = False
+                if project.empty_repo:
+                    logger.info(f"Repository {repo_full_name} is marked as empty by GitLab API (project.empty_repo is True).")
+                    repo_data['_is_empty_repo'] = True
+                # Additionally, check commit count if statistics are available and reliable
+                elif hasattr(project, 'statistics') and project.statistics and project.statistics.get('commit_count', -1) == 0:
+                    logger.info(f"Repository {repo_full_name} has 0 commits according to statistics, treating as effectively empty for content processing.")
+                    repo_data['_is_empty_repo'] = True
                 
                 repo_description = project.description if project.description else ""
                 
@@ -273,6 +283,7 @@ def fetch_repositories(
                     "readme_url": readme_html_url, 
                     "_api_tags": repo_git_tags, 
                     "archived": project.archived,  
+                    "_is_empty_repo": repo_data.get('_is_empty_repo', False) # Ensure it's in repo_data
                 }
                 
                 if hours_per_commit is not None:

@@ -45,10 +45,11 @@ def is_placeholder_token(token: Optional[str]) -> bool:
     """Checks if the GitHub token is missing or a known placeholder."""
     return not token or token == PLACEHOLDER_GITHUB_TOKEN
 
-def _get_readme_details_pygithub(repo_obj) -> tuple[Optional[str], Optional[str]]:
+def _get_readme_details_pygithub(repo_obj) -> tuple[Optional[str], Optional[str], bool]:
     """
     Fetches and decodes the README content and its HTML URL.
     Tries common README filenames.
+    Returns: (content, url, is_empty_repo_error_occurred)
     """
     common_readme_names = ["README.md", "README.txt", "README", "readme.md"]
     for readme_name in common_readme_names:
@@ -65,39 +66,51 @@ def _get_readme_details_pygithub(repo_obj) -> tuple[Optional[str], Optional[str]
             
             readme_url = readme_file.html_url 
             logger.debug(f"Successfully fetched README '{readme_name}' (URL: {readme_url}) for {repo_obj.full_name}")
-            return readme_content_str, readme_url
+            return readme_content_str, readme_url, False
         except UnknownObjectException:
             logger.debug(f"README '{readme_name}' not found in {repo_obj.full_name}")
             continue
         except GithubException as e:
-            logger.error(f"GitHub API error fetching README '{readme_name}' for {repo_obj.full_name}: {e.status} {getattr(e, 'data', str(e))}", exc_info=False)
-            return None, None # Stop if other API error
+            if e.status == 404 and isinstance(e.data, dict) and e.data.get('message') == 'This repository is empty.':
+                logger.info(f"Fetching README '{readme_name}' for {repo_obj.full_name} failed: GitHub API indicates repository is empty.")
+                return None, None, True # Signal empty repo error
+            else:
+                logger.error(f"GitHub API warning fetching README '{readme_name}' for {repo_obj.full_name}: {e.status} {getattr(e, 'data', str(e))}", exc_info=False)
+                return None, None, False # Stop if other API error, not an empty repo error
         except Exception as e:
             logger.error(f"Unexpected error decoding README '{readme_name}' for {repo_obj.full_name}: {e}", exc_info=True)
-            return None, None
+            return None, None, False
     logger.debug(f"No common README file found for {repo_obj.full_name}")
-    return None, None
+    return None, None, False
 
 
-def _get_codeowners_content_pygithub(repo_obj) -> Optional[str]:
+def _get_codeowners_content_pygithub(repo_obj) -> tuple[Optional[str], bool]:
+    """
+    Fetches CODEOWNERS content from standard locations.
+    Returns: (content, is_empty_repo_error_occurred)
+    """
     codeowners_locations = ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"]
     for location in codeowners_locations:
         try:
             codeowners_file = repo_obj.get_contents(location)
             codeowners_content = codeowners_file.decoded_content.decode('utf-8', errors='replace')
             logger.debug(f"Successfully fetched CODEOWNERS from '{location}' for {repo_obj.full_name}")
-            return codeowners_content
+            return codeowners_content, False
         except UnknownObjectException:
             logger.debug(f"CODEOWNERS file not found at '{location}' in {repo_obj.full_name}")
             continue
         except GithubException as e:
-            logger.error(f"GitHub API error fetching CODEOWNERS from '{location}' for {repo_obj.full_name}: {e.status} {getattr(e, 'data', str(e))}", exc_info=False)
-            return None # Stop if other API error
+            if e.status == 404 and isinstance(e.data, dict) and e.data.get('message') == 'This repository is empty.':
+                logger.info(f"Fetching CODEOWNERS from '{location}' for {repo_obj.full_name} failed: GitHub API indicates repository is empty.")
+                return None, True # Signal empty repo error
+            else:
+                logger.error(f"GitHub API warning fetching CODEOWNERS from '{location}' for {repo_obj.full_name}: {e.status} {getattr(e, 'data', str(e))}", exc_info=False)
+                return None, False # Stop if other API error, not an empty repo error
         except Exception as e:
             logger.error(f"Unexpected error decoding CODEOWNERS from '{location}' for {repo_obj.full_name}: {e}", exc_info=True)
-            return None
+            return None, False
     logger.debug(f"No CODEOWNERS file found in standard locations for {repo_obj.full_name}")
-    return None
+    return None, False
 
 
 def _fetch_tags_pygithub(repo_obj) -> List[str]:
@@ -110,7 +123,7 @@ def _fetch_tags_pygithub(repo_obj) -> List[str]:
     except RateLimitExceededException:
         logger.error(f"Rate limit exceeded while fetching tags for {repo_obj.full_name}. Skipping tags for this repo.")
     except GithubException as e:
-        logger.error(f"GitHub API error fetching tags for {repo_obj.full_name}: {e.status} {getattr(e, 'data', str(e))}", exc_info=False)
+        logger.error(f"GitHub API warning fetching tags for {repo_obj.full_name}: {e.status} {getattr(e, 'data', str(e))}", exc_info=False)
     except Exception as e: # Catch other potential errors like network issues during this specific call
         logger.error(f"Unexpected error fetching tags for {repo_obj.full_name}: {e}", exc_info=True)
     return tag_names
@@ -206,11 +219,22 @@ def fetch_repositories(
                 all_languages_list = []
                 try:
                     languages_dict = repo.get_languages()
-                    if languages_dict:
+                    # Check if the repo is empty based on the languages call as well
+                    # This is a strong indicator if the API returns this specific message.
+                    if not languages_dict and repo.size == 0: # Heuristic for empty
+                        logger.info(f"Repository {repo_full_name} has no languages and size is 0, likely empty.")
+                        # This doesn't set _is_empty_repo directly, relies on specific API error
+                    elif languages_dict:
                         all_languages_list = list(languages_dict.keys())
+                except GithubException as lang_err:
+                    if lang_err.status == 404 and isinstance(lang_err.data, dict) and lang_err.data.get('message') == 'This repository is empty.':
+                        logger.info(f"Repository {repo_full_name} is confirmed empty by API (get_languages).")
+                        repo_data['_is_empty_repo'] = True # Set flag here
+                    else:
+                        logger.warning(f"Could not fetch languages for {repo_full_name}: {lang_err.status} {getattr(lang_err, 'data', str(lang_err))}", exc_info=False)
                 except Exception as lang_err: # Catch broad errors, e.g. if repo is empty
                     logger.warning(f"Could not fetch languages for {repo_full_name}: {lang_err}", exc_info=False)
-
+                
                 licenses_list = []
                 if repo.license and hasattr(repo.license, 'spdx_id') and repo.license.spdx_id and repo.license.spdx_id.lower() != "noassertion":
                     license_entry = {"spdxID": repo.license.spdx_id}
@@ -222,8 +246,13 @@ def fetch_repositories(
                         license_entry["name"] = repo.license.name
                     licenses_list.append(license_entry)
                 
-                readme_content_str, readme_html_url = _get_readme_details_pygithub(repo)
-                codeowners_content_str = _get_codeowners_content_pygithub(repo)
+                readme_content_str, readme_html_url, readme_empty_repo_error = _get_readme_details_pygithub(repo)
+                codeowners_content_str, codeowners_empty_repo_error = _get_codeowners_content_pygithub(repo)
+
+                # If not already marked empty by get_languages, check if README/CODEOWNERS calls indicated it
+                if not repo_data.get('_is_empty_repo', False):
+                    repo_data['_is_empty_repo'] = readme_empty_repo_error or codeowners_empty_repo_error
+
                 repo_topics = repo.get_topics() # List of strings
                 repo_git_tags = _fetch_tags_pygithub(repo) # List of strings (tag names)
 
@@ -257,7 +286,8 @@ def fetch_repositories(
                     "repo_id": repo.id, 
                     "readme_url": readme_html_url, 
                     "_api_tags": repo_git_tags, 
-                    "archived": repo.archived,  
+                    "archived": repo.archived,
+                    "_is_empty_repo": repo_data.get('_is_empty_repo', False) # Ensure it's in repo_data
                 }
                 
                 if hours_per_commit is not None:

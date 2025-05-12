@@ -235,7 +235,13 @@ def fetch_repositories(
                     elif repo.parent_repository.name:
                         parent_info = repo.parent_repository.name
                     logger.info(f"Skipping forked repository: {repo.name} (fork of {parent_info})")
-                    continue
+                    continue # Skip forked repositories
+
+                # Initialize _is_empty_repo flag
+                repo_data['_is_empty_repo'] = False
+                if repo.size == 0: # PyGithub repo object has 'size' in KB. Azure's repo object also has 'size'.
+                    logger.info(f"Repository {repo.name} (ID: {repo.id}) has size 0, indicating it is empty.")
+                    repo_data['_is_empty_repo'] = True # Mark as empty, but continue processing to gather basic metadata
 
                 created_at_iso: Optional[str] = None 
                 pushed_at_iso: Optional[str] = None
@@ -295,7 +301,8 @@ def fetch_repositories(
                     "repo_id": repo.id,
                     "readme_url": readme_html_url,
                     "_api_tags": repo_git_tags,
-                    "archived": repo.is_disabled if hasattr(repo, 'is_disabled') else False,
+                    "archived": repo.is_disabled if hasattr(repo, 'is_disabled') else False, # Check if repo is disabled
+                    "_is_empty_repo": repo_data.get('_is_empty_repo', False), # Ensure it's in repo_data
                     "_azure_project_name": project_name
                 }
 

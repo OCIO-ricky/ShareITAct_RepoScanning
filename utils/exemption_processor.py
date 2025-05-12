@@ -484,6 +484,7 @@ def process_repository_exemptions(repo_data: dict, default_org_identifiers: list
     repo_name = repo_data.get("name", "UnknownRepo")
     readme_content = repo_data.get("readme_content") # This is passed by connectors
     all_languages = repo_data.get('languages', [])
+    is_empty_repo = repo_data.get("_is_empty_repo", False)
 
     logger.debug(f"Processing exemptions/fallbacks for: {initial_org_from_connector}/{repo_name}")
     repo_data.setdefault("contact", {})
@@ -517,18 +518,21 @@ def process_repository_exemptions(repo_data: dict, default_org_identifiers: list
                 repo_data['organization'] = extracted_org_from_readme
 
     current_org_after_prog_readme = repo_data.get('organization', 'UnknownOrg').lower()
-    if current_org_after_prog_readme in effective_default_org_ids:
-        logger.info(f"Organization for '{repo_name}' is default ('{repo_data.get('organization', '')}'). Attempting AI inference.")
-        ai_org = _call_ai_for_organization(repo_data)
-        if ai_org and ai_org.lower() != "none":
-            validated_ai_org = next((full_name for acronym, full_name in KNOWN_CDC_ORGANIZATIONS.items() if ai_org.lower() == full_name.lower() or ai_org.lower() == acronym.lower()), None)
-            if validated_ai_org and validated_ai_org.lower() != current_org_after_prog_readme:
-                logger.info(f"Updating organization for '{repo_name}' from AI. Previous: '{repo_data.get('organization', '')}', AI: '{validated_ai_org}'")
-                repo_data['organization'] = validated_ai_org
-            elif not validated_ai_org:
-                 logger.warning(f"AI suggested org '{ai_org}' for '{repo_name}', but not in known list. Discarding.")
+    if is_empty_repo:
+        logger.info(f"Repository '{repo_name}' is marked as empty. Skipping AI organization inference.")
     else:
-        logger.info(f"Organization for '{repo_name}' is '{repo_data.get('organization', '')}', not calling AI.")
+        if current_org_after_prog_readme in effective_default_org_ids:
+            logger.info(f"Organization for '{repo_name}' is default ('{repo_data.get('organization', '')}'). Attempting AI inference.")
+            ai_org = _call_ai_for_organization(repo_data) 
+            if ai_org and ai_org.lower() != "none":
+                validated_ai_org = next((full_name for acronym, full_name in KNOWN_CDC_ORGANIZATIONS.items() if ai_org.lower() == full_name.lower() or ai_org.lower() == acronym.lower()), None)
+                if validated_ai_org and validated_ai_org.lower() != current_org_after_prog_readme:
+                    logger.info(f"Updating organization for '{repo_name}' from AI. Previous: '{repo_data.get('organization', '')}', AI: '{validated_ai_org}'")
+                    repo_data['organization'] = validated_ai_org
+                elif not validated_ai_org:
+                     logger.warning(f"AI suggested org '{ai_org}' for '{repo_name}', but not in known list. Discarding.")
+        else:
+            logger.info(f"Organization for '{repo_name}' is '{repo_data.get('organization', '')}', not calling AI for organization.")
 
     # --- Contract Number ---
     if readme_content:
@@ -566,15 +570,18 @@ def process_repository_exemptions(repo_data: dict, default_org_identifiers: list
             exemption_applied = True
             logger.info(f"Repo '{repo_name}': Exempted due to sensitive keywords ({EXEMPT_BY_LAW}): {found_keywords}.")
 
-    if not exemption_applied:
-        logger.debug(f"Repo '{repo_name}': No standard exemption. Calling AI for exemption analysis.")
-        ai_usage_type, ai_exemption_text = _call_ai_for_exemption(repo_data)
-        if ai_usage_type:
-            repo_data['permissions']['usageType'] = ai_usage_type
-            repo_data['permissions']['exemptionText'] = ai_exemption_text
-            exemption_applied = True
-            logger.info(f"Repo '{repo_name}': Exempted via AI analysis ({ai_usage_type}).")
-
+    if not exemption_applied :
+        if is_empty_repo:
+            logger.info(f"Repository '{repo_name}' is marked as empty. Skipping AI exemption analysis.")
+        else:
+            logger.debug(f"Repo '{repo_name}': No standard exemption. Calling AI for exemption analysis.")
+            ai_usage_type, ai_exemption_text = _call_ai_for_exemption(repo_data) 
+            if ai_usage_type:
+                repo_data['permissions']['usageType'] = ai_usage_type
+                repo_data['permissions']['exemptionText'] = ai_exemption_text
+                exemption_applied = True
+                logger.info(f"Repo '{repo_name}': Exempted via AI analysis ({ai_usage_type}).")
+    
     if not exemption_applied: # Default if no exemption applied
         # Determine final usageType based on visibility and license if no exemption was applied
         visibility_for_rules = repo_data.get('repositoryVisibility', '').lower()
@@ -648,6 +655,7 @@ def process_repository_exemptions(repo_data: dict, default_org_identifiers: list
     # --- Clean up temporary fields used only by this processor ---
     repo_data.pop('readme_content', None)
     repo_data.pop('_codeowners_content', None)
+    repo_data.pop('_is_empty_repo', None) 
     # _is_private_flag is not used by this processor, should be handled by connector if it creates it.
 
     return repo_data
