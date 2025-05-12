@@ -13,6 +13,7 @@ This repository contains a Python-based scanning utility designed to discover, a
   - Azure DevOps
 - Extracts structured metadata for public and private repositories
 - Detects exemption flags and classifications
+- Estimates labor hours based on repo commit history.
 - Generates valid `code.json` entries
 - Runs standalone or inside Docker
 - Output saved for inventory consolidation and publication
