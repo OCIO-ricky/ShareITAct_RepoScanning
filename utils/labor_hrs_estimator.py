@@ -9,11 +9,14 @@ import pandas as pd
 import logging
 import base64
 import re # For parsing Link header
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Union
+
+# Imports for robust session retries
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # It's good practice to have a logger instance per module
 logger = logging.getLogger(__name__)
-
 # --- Helper Functions ---
 def _create_summary_dataframe(commit_records: List[Tuple[str, str, datetime]], hours_per_commit: float) -> pd.DataFrame:
     """
@@ -66,6 +69,29 @@ def _parse_github_link_header(link_header: Optional[str]) -> Dict[str, str]:
                 links[match.group(2)] = match.group(1)
     return links
 
+def _create_resilient_session(base_url: Optional[str] = None) -> requests.Session:
+    """
+    Creates a requests.Session configured with a robust retry strategy.
+    """
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=5,  # Total number of retries to allow
+        backoff_factor=1,  # Base for exponential backoff (e.g., 1s, 2s, 4s, 8s, 16s)
+        status_forcelist=[429, 500, 502, 503, 504],  # HTTP status codes to retry on
+        # SSLErrors are connection errors, which are retried by default.
+        # We can be explicit about allowed methods for retries:
+        allowed_methods=frozenset(['HEAD', 'GET']),
+        respect_retry_after_header=True
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    
+    if base_url:
+        session.mount(base_url, adapter)
+    else: # Mount for both http and https if no specific base_url
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        
+    return session
 # --- Analysis Functions ---
 
 def analyze_local_git(repo_path: str, hours_per_commit: float = 0.5) -> pd.DataFrame:
@@ -122,13 +148,13 @@ def analyze_github_repo_sync(
     
     _session_managed_internally = False
     if session is None:
-        session = requests.Session()
+        session = _create_resilient_session(base_url=github_api_url)
         _session_managed_internally = True
         session.headers.update({
             "Authorization": f"token {token}",
             "Accept": "application/vnd.github.v3+json"
         })
-        logger.debug("No external session provided; created and configured internal session for GitHub.")
+        logger.debug("No external session provided; created and configured internal resilient session for GitHub.")
     else:
         logger.debug("Using externally provided session for GitHub.")
 
@@ -198,7 +224,7 @@ def analyze_gitlab_repo_sync(
     _session_managed_internally = False
     if session is None:
         session = requests.Session()
-        _session_managed_internally = True
+        session = _create_resilient_session(base_url=gitlab_api_url)
         session.headers.update({"PRIVATE-TOKEN": token})
         logger.debug("No external session provided; created and configured internal session for GitLab.")
     else:
@@ -275,13 +301,13 @@ def analyze_azure_devops_repo_sync(
     
     _session_managed_internally = False
     if session is None:
+        session = _create_resilient_session(base_url=azure_devops_api_url)
+        _session_managed_internally = True
         auth_header_val = _get_azure_devops_auth_header_val(pat_token)
         if not auth_header_val:
             logger.error("Failed to generate Azure DevOps auth header for internal session.")
             return _create_summary_dataframe([], hours_per_commit)
-        
-        session = requests.Session()
-        _session_managed_internally = True
+
         session.headers.update({"Authorization": auth_header_val})
         logger.debug("No external session provided; created and configured internal session for Azure DevOps.")
     else:
@@ -339,5 +365,3 @@ def analyze_azure_devops_repo_sync(
     if not processed_commits:
         logger.info(f"No commit records found or parsed for Azure DevOps repo: {organization}/{project}/{repo_id}")
     return _create_summary_dataframe(processed_commits, hours_per_commit)
-
-

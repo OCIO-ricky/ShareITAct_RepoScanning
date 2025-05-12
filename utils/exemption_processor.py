@@ -43,13 +43,19 @@ from typing import List, Optional, Dict, Any
 # --- Try importing the AI library ---
 try:
     import google.generativeai as genai
+    from google.api_core.exceptions import InvalidArgument, PermissionDenied
     AI_LIBRARY_IMPORTED = True # Indicates the library itself is available
 except ImportError:
     AI_LIBRARY_IMPORTED = False
+    InvalidArgument, PermissionDenied = None, None # Define for type hinting and checks
     genai = None # Ensure genai is defined even if import fails
 
 logger = logging.getLogger(__name__)
 logger.info(f"Initial AI library import status (google.generativeai): {AI_LIBRARY_IMPORTED}")
+
+# ANSI escape codes for coloring output
+ANSI_RED = "\x1b[31;1m"  # Bold Red
+ANSI_RESET = "\x1b[0m"   # Reset to default color
 
 # --- Define Exemption Codes as Constants ---
 EXEMPT_BY_LAW = "exemptByLaw"
@@ -142,7 +148,12 @@ if AI_LIBRARY_IMPORTED: # Only proceed if the google.generativeai library was su
                 logger.error("Google Generative AI library was marked as imported, but 'genai' module is None. AI processing disabled.")
                 # AI_ENABLED remains False
         except Exception as ai_config_err:
-            logger.error(f"Failed to configure Google Generative AI with the provided API key: {ai_config_err}", exc_info=True)
+            # Check if the configuration error is due to an invalid API key
+            err_str = str(ai_config_err).lower()
+            if "api key" in err_str and ("invalid" in err_str or "not valid" in err_str):
+                logger.error(f"Failed to configure Google Generative AI: API key is not valid. AI processing will be disabled. Error: {ai_config_err}")
+            else:
+                logger.error(f"Failed to configure Google Generative AI with the provided API key: {ai_config_err}")
             # AI_ENABLED remains False (explicitly, though it was already False)
 else:
     logger.info("Google Generative AI library not imported. AI processing will be disabled for this module.")
@@ -158,7 +169,7 @@ ORGANIZATION_MARKER = re.compile(r"^\s*Organization:\s*(.+)$", re.IGNORECASE | r
 STATUS_REGEX = re.compile(r"^(?:Project Status|Status):\s*(Maintained|Deprecated|Experimental|Active|Inactive)\b", re.MULTILINE | re.IGNORECASE)
 LABOR_HOURS_REGEX = re.compile(r"^(?:Estimated Labor Hours|Labor Hours):\s*(\d+)\b", re.MULTILINE | re.IGNORECASE)
 CONTACT_LINE_REGEX = re.compile(r"^(?:Contact|Contacts):\s*(.*)", re.MULTILINE | re.IGNORECASE)
-HTML_TAG_REGEX = re.compile(r'<[^>]+>')
+HTML_TAG_REGEX = re.compile(r'<[^>]+>') # Corrected to match actual HTML tags
 TAGS_REGEX = re.compile(r"^(?:Keywords|Tags|Topics):\s*(.+)", re.MULTILINE | re.IGNORECASE)
 EMAIL_PATTERN = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
 EMAIL_FILTER_DOMAINS = ('.example.com', '.example.org')
@@ -183,6 +194,8 @@ def _programmatic_org_from_repo_name(repo_name: str, current_org: str, default_o
     return None
 
 def _call_ai_for_organization(repo_data: dict) -> str | None:
+    global AI_ENABLED # Allow modification of the global flag
+
     if not AI_ENABLED or not genai or not AI_ORGANIZATION_ENABLED: # Check AI_ORGANIZATION_ENABLED flag
         logger.debug("AI processing or AI organization inference is disabled. Skipping AI organization call.")
         return None
@@ -249,8 +262,20 @@ Determine the organization based on the rules above.
         else:
             logger.warning(f"AI analysis for '{repo_name_for_ai}' could not find the organization name. Ignoring.")
             return None
+    except (InvalidArgument, PermissionDenied) as ai_auth_err:
+        err_str = str(ai_auth_err).lower()
+        if "api key not valid" in err_str or "api_key_invalid" in err_str or "permission_denied" in err_str:
+            logger.error(
+                f"{ANSI_RED}Error during AI organization call for repository '{repo_name_for_ai}': API key is invalid or lacks permissions. "
+                f"Disabling AI for the rest of this run. Error: {ai_auth_err.code} {ai_auth_err.message}{ANSI_RESET}"
+            )
+            AI_ENABLED = False
+        else:
+            logger.error(f"Authorization/Argument error during AI organization call for '{repo_name_for_ai}': {ai_auth_err}")
+        return None
     except Exception as ai_err:
-        logger.error(f"Error during AI call for repository '{repo_name_for_ai}': {ai_err}", exc_info=True)
+        logger.error(f"Error during AI call for repository '{repo_name_for_ai}': {ai_err}")
+        # For other types of errors, we don't disable AI globally unless it's a clear API key issue.
         return None
     finally:
         if AI_ENABLED and AI_DELAY_ENABLED > 0:
@@ -258,6 +283,8 @@ Determine the organization based on the rules above.
             time.sleep(AI_DELAY_ENABLED)
 
 def _call_ai_for_exemption(repo_data: dict) -> tuple[str | None, str | None]:
+    global AI_ENABLED # Allow modification of the global flag
+
     if not AI_ENABLED or not genai:
         logger.debug("AI processing is disabled. Skipping AI exemption call.")
         return None, None
@@ -332,8 +359,20 @@ def _call_ai_for_exemption(repo_data: dict) -> tuple[str | None, str | None]:
         else:
             logger.warning(f"AI exemption analysis for '{repo_name}' returned an unexpected format: '{ai_result_text}'. Ignoring.")
             return None, None
+    except (InvalidArgument, PermissionDenied) as ai_auth_err:
+        err_str = str(ai_auth_err).lower()
+        if "api key not valid" in err_str or "api_key_invalid" in err_str or "permission_denied" in err_str:
+            logger.error(
+                f"{ANSI_RED}Error during AI exemption call for repository '{repo_name}': API key is invalid or lacks permissions. "
+                f"Disabling AI for the rest of this run. Error: {ai_auth_err.code} {ai_auth_err.message}{ANSI_RESET}"
+            )
+            AI_ENABLED = False
+        else:
+            logger.error(f"Authorization/Argument error during AI exemption call for '{repo_name}': {ai_auth_err}")
+        return None, None
     except Exception as ai_err:
-        logger.error(f"Error during AI exemption call for repository '{repo_name}': {ai_err}", exc_info=True)
+        logger.error(f"Error during AI exemption call for repository '{repo_name}': {ai_err}")
+        # For other types of errors, we don't disable AI globally
         return None, None
     finally:
         if AI_ENABLED and AI_DELAY_ENABLED > 0:
@@ -435,7 +474,7 @@ def _parse_readme_for_organization(readme_content: str | None, repo_name: str) -
         if org_value:
             org_value = re.sub(r"^(Organization|Org):\s*", "", org_value, flags=re.IGNORECASE).strip()
             org_value = html.unescape(org_value)
-            org_value = re.sub(r'<br\s*/?>', ' ', org_value, flags=re.IGNORECASE).strip()
+            org_value = re.sub(r'<br\s*/?>', ' ', org_value, flags=re.IGNORECASE).strip() # Corrected regex from &lt;br&gt;
             logger.debug(f"Found and cleaned 'Organization:' marker in README for {repo_name} with value: '{org_value}'")
             return org_value
     return None
