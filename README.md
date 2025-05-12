@@ -134,19 +134,16 @@ python generate_codejson.py <command> [options]
 
 ### Example Workflow (Scan all configured targets and merge)
 
-This example demonstrates scanning a specific GitHub organization, a GitLab group, and then merging the results.
-Authentication details are provided via CLI. Other configurations (like output directory, default GitLab URL if not specified, etc.) can still be set in your `.env` file.
+This example demonstrates scanning GitHub organizations, GitLab groups, ADO projects and then merging the results.
+Authentication details and other parameters can be provided via CLI. If not provided, the scanner will use the values from the `.env` file.
 
 ```bash
-# Scan a public GitHub organization
-python generate_codejson.py github --gh-tk YOUR_GITHUB_PAT --orgs YourPublicOrg --limit 10
-
-# Scan a GitLab group on a specific instance
-python generate_codejson.py gitlab --gl-tk YOUR_GITLAB_PAT --gitlab-url https://git.example.com --groups my-group/project-set
-
-# Scan an Azure DevOps project using Service Principal
-python generate_codejson.py azure --az-cid "xxxx" --az-cs "xxxx" --az-tid "xxxx" --targets MyOrg/MyProject
-
+# Scan GitHub organizations listed in the .env file (GITHUB_ORGS)
+python generate_codejson.py github --gh-tk <YOUR_GITHUB_PAT> 
+# Scan GitLab groups listed in the .env file (GITLAB_GROUPS). The GitLab URL is set in the .env file (GITLAB_URL)
+python generate_codejson.py gitlab --gl-tk <YOUR_GITLAB_PAT> 
+# Scan Azure DevOps projects-pairs listed in the .env file (AZURE_DEVOPS_TARGETS).
+python generate_codejson.py azure --az-tk <YOUR_ADO_PAT> 
 # Merge all generated intermediate files
 python generate_codejson.py merge
 ```
@@ -206,22 +203,9 @@ Check the `.env` file in the root directory to configure the following:
 - **`PrivateIDCSVFile`**: Name of the CSV file to log private repositories and their generated PrivateIDs.
 - **`GOOGLE_API_KEY`**: Google API key for AI features.
 
-
-## 🧪 Test Individual Connectors
-
-You can run each connector script directly to test its connection and basic data fetching capabilities for a specific platform.
-
-*(Note: Running connectors directly is primarily for testing the connection and data retrieval logic. It will **not** perform the full processing pipeline or generate the final `code.json`, `exempted_log.csv`, or `privateid_mapping.csv` files. The output will typically be printed to the console.)*
-
-```bash
-python clients/github_connector.py
-python clients/gitlab_connector.py
-python clients/azure_devops_connector.py
-```
-
 ## 📤 Output
 
-Successful runs produce:
+After running the **merge** command to combine all the intermidiary .json files found in the /output directtory, a new metadata catalog **code.json** is produced:
 
 - `output/code.json`: Machine-readable metadata export that conforms to the code.gov schema
 - `output/exempted_log.csv`: List of repositories inferred to be exempt, including exemption codes and justification texts (for validation and audit)
