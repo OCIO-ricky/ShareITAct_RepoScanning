@@ -139,12 +139,18 @@ def analyze_github_repo_sync(
     owner: str, 
     repo: str, 
     token: str, 
-    hours_per_commit: float = 0.5, 
+    hours_per_commit: Optional[float] = 0.5, 
     github_api_url: str = "https://api.github.com",
     session: Optional[requests.Session] = None
 ) -> pd.DataFrame:
     """Estimate labor hours from a GitHub repo using its API (synchronously)."""
     logger.info(f"Analyzing GitHub repository: {owner}/{repo} using API: {github_api_url}")
+
+    if hours_per_commit is None:
+        logger.info(f"hours_per_commit is None for GitHub repo {owner}/{repo}. "
+                      "Skipping labor hours estimation and returning empty DataFrame.")
+        # _create_summary_dataframe expects a float for hours_per_commit, pass 0.0 as it won't be used with empty records.
+        return _create_summary_dataframe([], 0.0)
     
     _session_managed_internally = False
     if session is None:
@@ -214,12 +220,17 @@ def analyze_github_repo_sync(
 def analyze_gitlab_repo_sync(
     project_id: str, 
     token: str, 
-    hours_per_commit: float = 0.5, 
+    hours_per_commit: Optional[float] = 0.5, 
     gitlab_api_url: str = "https://gitlab.com",
     session: Optional[requests.Session] = None
 ) -> pd.DataFrame:
     """Estimate labor hours from a GitLab repo using its API (synchronously)."""
     logger.info(f"Analyzing GitLab project ID: {project_id} using API: {gitlab_api_url}")
+
+    if hours_per_commit is None:
+        logger.info(f"hours_per_commit is None for GitLab project ID {project_id}. "
+                      "Skipping labor hours estimation and returning empty DataFrame.")
+        return _create_summary_dataframe([], 0.0)
 
     _session_managed_internally = False
     if session is None:
@@ -292,13 +303,19 @@ def analyze_azure_devops_repo_sync(
     project: str, 
     repo_id: str, 
     pat_token: str, # Expects the raw PAT
-    hours_per_commit: float = 0.5,
+    hours_per_commit: Optional[float] = 0.5,
     azure_devops_api_url: str = "https://dev.azure.com",
     session: Optional[requests.Session] = None
 ) -> pd.DataFrame:
     """Estimate labor hours from Azure DevOps repo using its API (synchronously)."""
     logger.info(f"Analyzing Azure DevOps repository: {organization}/{project}/{repo_id} using API: {azure_devops_api_url}")
     
+    if hours_per_commit is None:
+        logger.info(f"hours_per_commit is None for Azure DevOps repo {organization}/{project}/{repo_id}. "
+                      "Skipping labor hours estimation and returning empty DataFrame.")
+        # _create_summary_dataframe expects a float for hours_per_commit, pass 0.0 as it won't be used with empty records.
+        return _create_summary_dataframe([], 0.0)
+
     _session_managed_internally = False
     if session is None:
         session = _create_resilient_session(base_url=azure_devops_api_url)
@@ -306,7 +323,7 @@ def analyze_azure_devops_repo_sync(
         auth_header_val = _get_azure_devops_auth_header_val(pat_token)
         if not auth_header_val:
             logger.error("Failed to generate Azure DevOps auth header for internal session.")
-            return _create_summary_dataframe([], hours_per_commit)
+            return _create_summary_dataframe([], 0.0) # hours_per_commit would be None here, pass 0.0
 
         session.headers.update({"Authorization": auth_header_val})
         logger.debug("No external session provided; created and configured internal session for Azure DevOps.")
