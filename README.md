@@ -184,18 +184,18 @@ This is useful for quick tests and debugging.
 
 ## 🐳 Docker Usage
 
-To build or recreate the running container:
+To run the container in Docker. You must then type and execute the command(s) inside the container's "Exec" tab (console)
 ```bash
 docker-compose up --build -d
 ```
-To execute the scanner and generate the metadata catalog:
+To run the container and also execute a command to run the scanner ...
 ```bash
 docker-compose exec app python generate_codejson.py <command> [options]
 ```
-To stop and remove the container inside Docker:
+To stop the container:
 ```bash
 docker-compose stop
-or docker-compose down  (to also purge the container)
+or docker-compose down  (to also delete the container)
 ```
 ## 🔐 Configuration
 

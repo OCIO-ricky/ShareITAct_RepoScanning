@@ -22,7 +22,7 @@ services:
     volumes:
       - ./output:/app/output   # Mounts host's ./output to /app/output in container
       - ./logs:/app/logs       # Mounts host's ./logs to /app/logs in container
-      - ./.env:/app/.env
+      - .env:/app/.env
 
     # Load environment variables from the .env file in the current directory
     env_file:
