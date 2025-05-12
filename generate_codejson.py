@@ -613,6 +613,27 @@ def _validate_cli_pat_token(token_value: Optional[str], cli_arg_name: str, platf
         sys.exit(1)
     return token_value
 
+# --- Helper for Time Formatting ---
+def format_duration(total_seconds: float) -> str:
+    """Converts total seconds into a string of hours, minutes, and seconds."""
+    if total_seconds < 0: # Should not happen with time differences
+        return "0.00 seconds"
+
+    hours = int(total_seconds // 3600)
+    remaining_seconds_after_hours = total_seconds % 3600
+    minutes = int(remaining_seconds_after_hours // 60)
+    final_seconds = remaining_seconds_after_hours % 60
+
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+    if minutes > 0:
+        parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+    
+    # Always include seconds, even if 0, for completeness if other units are present or if it's the only unit.
+    parts.append(f"{final_seconds:.2f} second{'s' if abs(final_seconds - 1.0) > 1e-9 else ''}") # Handle float comparison for singular 'second'
+
+    return ", ".join(parts) if parts else "0.00 seconds"
 # --- Main CLI Function ---
 def main_cli(): 
     script_start_time = time.time() # Record the start time of the script
@@ -828,7 +849,8 @@ def main_cli():
 
     script_end_time = time.time() # Record the end time of the script
     total_duration_seconds = script_end_time - script_start_time
-    main_logger.info(f"Total script execution time: {total_duration_seconds:.2f} seconds.")
+    formatted_duration = format_duration(total_duration_seconds)
+    main_logger.info(f"Total script execution time: {formatted_duration}.")
 
     if overall_command_success:
         main_logger.info(f"Command '{args.command}' completed successfully.")
