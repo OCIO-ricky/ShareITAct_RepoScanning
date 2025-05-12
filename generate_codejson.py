@@ -209,15 +209,20 @@ def infer_version(repo_data, logger_instance):
             if PACKAGING_AVAILABLE:
                 if not parsed.is_prerelease: parsed_versions.append(parsed)
                 else: parsed_prereleases.append(parsed)
-            else:
+            else: # Regex fallback
                  parsed_versions.append(parsed)
 
     if parsed_versions:
         try:
             latest_version = sorted(parsed_versions)[-1]
             return str(latest_version)
-        except TypeError:
-            logger_instance.warning(f"Could not sort versions for {repo_data.get('name')}. Returning first parsed version if available.")
+        except TypeError as te:
+            logger_instance.warning(
+                f"TypeError while sorting versions for {repo_data.get('name')}: {te}. "
+                f"Versions list (first 5 elements): {[str(v) for v in parsed_versions[:5]]}. "
+                f"Types in list (first 5 elements): {[type(v).__name__ for v in parsed_versions[:5]]}. "
+                "Returning first parsed version if available."
+            )
             return str(parsed_versions[0]) if parsed_versions else "N/A"
     if parsed_prereleases and PACKAGING_AVAILABLE: 
         try:
@@ -598,8 +603,20 @@ def parse_azure_targets_from_string_list(raw_target_list: List[str], default_org
                 main_logger.warning(f"Azure target '{target_str}' is not in Org/Project format and no default AZURE_DEVOPS_ORG_ENV is set. Skipping.")
     return parsed_targets
 
+# --- CLI Helper for Token Validation ---
+def _validate_cli_pat_token(token_value: Optional[str], cli_arg_name: str, platform_name: str, placeholder_check_func, main_logger: logging.Logger) -> str:
+    if not token_value:
+        main_logger.error(f"--{cli_arg_name} ({platform_name} PAT) is required for {platform_name} scans.")
+        sys.exit(1)
+    if placeholder_check_func(token_value):
+        main_logger.error(f"{platform_name} PAT provided via --{cli_arg_name} is a placeholder. Cannot scan {platform_name}.")
+        sys.exit(1)
+    return token_value
+
 # --- Main CLI Function ---
 def main_cli(): 
+    script_start_time = time.time() # Record the start time of the script
+
     cfg = Config()
     setup_global_logging()
     main_logger = logging.getLogger(__name__) 
@@ -651,28 +668,37 @@ def main_cli():
     overall_command_success = True 
     global_repo_scan_counter = [0] 
 
+    # Determine repository processing limit (CLI > .env > no limit)
     limit_for_scans = None
-    if hasattr(args, 'limit') and args.limit is not None: 
-        if args.limit > 0:
-            limit_for_scans = args.limit
+    cli_limit_val = getattr(args, 'limit', None)
+    if cli_limit_val is not None:
+        if cli_limit_val > 0:
+            limit_for_scans = cli_limit_val
             main_logger.info(f"CLI override: Repository processing limit set to {limit_for_scans} for this run.")
-        else: 
-            main_logger.info(f"CLI override: --limit set to {args.limit}, effectively no limit for this run.")
+        else: # limit <= 0 means no limit for this run
+            main_logger.info(f"CLI override: --limit set to {cli_limit_val}, effectively no limit for this run (processing all).")
     elif cfg.DEBUG_REPO_LIMIT is not None: 
         limit_for_scans = cfg.DEBUG_REPO_LIMIT
         main_logger.info(f"Using repository processing limit from .env: {limit_for_scans}.")
-    
-    hours_per_commit_for_scan: Optional[float] = None 
-    cli_hpc_value = getattr(args, 'hours_per_commit', None)
+    else:
+        main_logger.info("No repository processing limit set (processing all).")
 
-    if cli_hpc_value is not None:
-        hours_per_commit_for_scan = float(cli_hpc_value) 
-        main_logger.info(f"CLI override: Labor hours estimation ENABLED. Hours per commit set to {hours_per_commit_for_scan}.")
+    # Determine hours_per_commit (CLI > .env > None/Disabled)
+    hours_per_commit_for_scan: Optional[float] = None 
+    cli_hpc_val = getattr(args, 'hours_per_commit', None)
+    if cli_hpc_val is not None:
+        try:
+            hours_per_commit_for_scan = float(cli_hpc_val)
+            # Log message will be printed below if hours_per_commit_for_scan is not None
+        except ValueError:
+            main_logger.error(f"Invalid --hours-per-commit CLI value '{cli_hpc_val}'. Labor estimation will be DISABLED.")
     elif cfg.HOURS_PER_COMMIT_ENV is not None: 
         hours_per_commit_for_scan = cfg.HOURS_PER_COMMIT_ENV
+    
+    if hours_per_commit_for_scan is not None:
         main_logger.info(f"Using .env: Labor hours estimation ENABLED. Hours per commit set to {hours_per_commit_for_scan}.")
     else: 
-        main_logger.info(f"No explicit hours_per_commit set via CLI or .env. Labor estimation DISABLED.")
+        main_logger.info(f"Labor hours estimation DISABLED for this run (no valid hours_per_commit from CLI or .env).")
 
     auth_params_for_connector: Dict[str, Any] = {}
 
@@ -680,14 +706,10 @@ def main_cli():
         github_url_for_scan = None
         targets_to_scan = []
         target_entity_name = "Public GitHub.com organizations"
-
-        if not args.gh_tk:
-            main_logger.error("--gh-tk (GitHub token) is required for GitHub scans.")
-            sys.exit(1)
-        auth_params_for_connector["token"] = args.gh_tk
-        if clients.github_connector.is_placeholder_token(args.gh_tk): 
-            main_logger.error("GitHub token provided via --gh-tk is a placeholder. Cannot scan GitHub.")
-            sys.exit(1)
+        
+        auth_params_for_connector["token"] = _validate_cli_pat_token(
+            args.gh_tk, "gh-tk", "GitHub", clients.github_connector.is_placeholder_token, main_logger
+        )
 
         if args.github_ghes_url:
             github_url_for_scan = args.github_ghes_url
@@ -717,13 +739,9 @@ def main_cli():
         main_logger.info("--- GitHub Scan Command Finished ---")
     
     elif args.command == "gitlab":
-        if not args.gl_tk:
-            main_logger.error("--gl-tk (GitLab token) is required for GitLab scans.")
-            sys.exit(1)
-        auth_params_for_connector["token"] = args.gl_tk
-        if clients.gitlab_connector.is_placeholder_token(args.gl_tk): 
-            main_logger.error("GitLab token provided via --gl-tk is a placeholder. Cannot scan GitLab.")
-            sys.exit(1)
+        auth_params_for_connector["token"] = _validate_cli_pat_token(
+            args.gl_tk, "gl-tk", "GitLab", clients.gitlab_connector.is_placeholder_token, main_logger
+        )
 
         targets_to_scan = get_targets_from_cli_or_env(args.groups, cfg.GITLAB_GROUPS_ENV, "GitLab groups", main_logger)
         if not targets_to_scan: sys.exit(0)
@@ -756,10 +774,10 @@ def main_cli():
                 sys.exit(1)
         elif args.az_tk:
             main_logger.info("Using Azure PAT from CLI.")
-            auth_params_for_connector = {"pat_token": args.az_tk}
-            if clients.azure_devops_connector.is_placeholder_token(args.az_tk): 
-                main_logger.error("Azure PAT provided via --az-tk is a placeholder. Cannot scan Azure DevOps.")
-                sys.exit(1)
+            pat = _validate_cli_pat_token(
+                args.az_tk, "az-tk", "Azure DevOps", clients.azure_devops_connector.is_placeholder_token, main_logger
+            )
+            auth_params_for_connector = {"pat_token": pat}
         else:
             main_logger.error("Azure DevOps scan requires either Service Principal details (--az-cid, --az-cs, --az-tid) or a PAT (--az-tk).")
             sys.exit(1)
@@ -808,11 +826,17 @@ def main_cli():
         main_logger.error(f"Error saving manager data: {save_err}", exc_info=True)
         overall_command_success = False 
 
+    script_end_time = time.time() # Record the end time of the script
+    total_duration_seconds = script_end_time - script_start_time
+    main_logger.info(f"Total script execution time: {total_duration_seconds:.2f} seconds.")
+
     if overall_command_success:
         main_logger.info(f"Command '{args.command}' completed successfully.")
+        main_logger.info("----------------------------------------------------------------------")
         sys.exit(0) 
     else:
         main_logger.error(f"Command '{args.command}' encountered errors. Please check logs.")
+        main_logger.info("----------------------------------------------------------------------")
         sys.exit(1) 
 
 if __name__ == "__main__":
