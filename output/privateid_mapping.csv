@@ -1,1 +1,14 @@
 PrivateID,RepositoryName,RepositoryURL,Organization,ContactEmails,DateAdded
+github_242826247,cloud,https://github.com/cdcent/cloud,cdcent,,2025-05-12T10:38:35.692015+00:00
+github_263986199,JScript,https://github.com/cdcent/JScript,cdcent,cvp3@cdc.gov;evp9@cdc.gov,2025-05-12T10:38:35.692134+00:00
+github_265300740,csels-datahub,https://github.com/cdcent/csels-datahub,"Center for Surveillance, Epidemiology, and Laboratory Services",sagnihotri@cdc.gov;sax5@cdc.gov,2025-05-12T10:38:35.693397+00:00
+gitlab_69325396,csels-hub,https://gitlab.com/cdcent/csels-hub,"Center for Surveillance, Epidemiology, and Laboratory Services",,2025-05-12T10:33:07.510581+00:00
+gitlab_69325503,ocio-netpro,https://gitlab.com/cdcent/ocio-netpro,CSELS,xx01@cdc.gov;xx11@cdc.gov,2025-05-12T10:33:07.500843+00:00
+gitlab_69325486,mynodejs,https://gitlab.com/cdcent/mynodejs,National Center for Chronic Disease Prevention and Health Promotion (NCCDPHP),,2025-05-12T10:33:07.500975+00:00
+github_254717441,eDOTnonInfer,https://github.com/cdcent/eDOTnonInfer,"National Center for HIV, Viral Hepatitis, STD, and TB Prevention",jsq7@cdc.gov,2025-05-12T10:38:35.692075+00:00
+github_269672664,case_privacy,https://github.com/cdcent/case_privacy,National Center for Immunization and Respiratory Diseases,brian.lee@cdc.gov,2025-05-12T10:38:35.696109+00:00
+github_265219956,OADCAutomatedTesting,https://github.com/cdcent/OADCAutomatedTesting,Office of the Associate Directory of Communications,cvp3@cdc.gov;evp9@cdc.gov,2025-05-12T10:38:35.693302+00:00
+github_268515353,TemplatePackage,https://github.com/cdcent/TemplatePackage,Office of the Associate Directory of Communications,buq3@cdc.gov;git@github.com;ova4@cdc.gov,2025-05-12T10:38:35.693443+00:00
+github_265253763,TPJekyll,https://github.com/cdcent/TPJekyll,Office of the Associate Directory of Communications,evp9@cdc.gov;idk1@cdc.gov,2025-05-12T10:38:35.693360+00:00
+github_213692182,enterprise_practices,https://github.com/cdcent/enterprise_practices,Office of the Chief Information Officer,github@cdc.gov;osr9@cdc.gov,2025-05-12T10:38:35.691789+00:00
+github_269667024,covid_data_catalog,https://github.com/cdcent/covid_data_catalog,Office of the Chief Operating Officer,allcdcwide@cdc.gov;brian.lee@cdc.gov;ntbdlexchdboffice365users@cdc.gov,2025-05-12T10:38:35.695921+00:00
