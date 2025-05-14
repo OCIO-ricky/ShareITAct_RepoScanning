@@ -12,6 +12,7 @@ import csv
 import os
 from datetime import datetime, timezone
 # from filelock import FileLock # Removed filelock import
+import threading # Added for lock
 import logging
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ class ExemptionLogger:
         self.template_path = template_path # Store template path (though not used in simplified header logic)
         # Removed lock file path definition
         # self.lock_file_path = f"{self.log_file_path}.lock"
+        self.lock = threading.Lock() # Initialize the lock
         self.fieldnames = self.EXPECTED_HEADER # Use class attribute
         # Counter for new exemptions logged during this run
         self.new_exemptions_logged_count = 0
@@ -130,34 +132,37 @@ class ExemptionLogger:
             'timestamp': datetime.now(timezone.utc).isoformat()
         }
         # lock = FileLock(self.lock_file_path) # Removed lock instantiation
+        
+        with self.lock: # Acquire lock before file operations
+            try:
+                logger.debug(f"log_exemption: Attempting to log for '{repo_name}'. Checking file '{self.log_file_path}' before open.")
+                # Log first line before appending
+                # This debug check might be less useful with locking, but kept for now
+                if os.path.exists(self.log_file_path):
+                     with open(self.log_file_path, 'r', encoding='utf-8') as check_file:
+                         logger.debug(f"log_exemption: First line before append for '{repo_name}': '{check_file.readline().strip()}'")
 
-        try:
-            logger.debug(f"log_exemption: Attempting to log for '{repo_name}'. Checking file '{self.log_file_path}' before open.")
-            # Log first line before appending
-            if os.path.exists(self.log_file_path):
-                 with open(self.log_file_path, 'r', encoding='utf-8') as check_file:
-                     logger.debug(f"log_exemption: First line before append for '{repo_name}': '{check_file.readline().strip()}'")
+                with open(self.log_file_path, 'a', newline='', encoding='utf-8') as csvfile:
+                    is_empty = csvfile.tell() == 0
+                    writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
+                    
+                    if is_empty: # This check might be redundant if _ensure_log_file_header always creates it
+                        writer.writeheader()
+                    writer.writerow(log_entry)
 
-            with open(self.log_file_path, 'a', newline='', encoding='utf-8') as csvfile:
-                # Check file position to see if it's empty (just created by 'a' mode)
-                is_empty = csvfile.tell() == 0
-                writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
-                
-                if is_empty:
-                    writer.writeheader() # Write header if file was empty/newly created
-                writer.writerow(log_entry)
+                self.logged_exemptions_by_private_id.add(private_id_value)
+                self.new_exemptions_logged_count += 1
+                logger.debug(f"Logged exemption for '{repo_name}'")
+                return True
+            except IOError as e:
+                logger.error(f"Error writing to log file {self.log_file_path}: {e}")
+                return False
+            except Exception as e:
+                logger.error(f"Unexpected error logging exemption for {repo_name}: {e}", exc_info=True)
+                return False
+        # Lock is released automatically when exiting 'with self.lock:' block
 
-            # Update in-memory set and counter only if write succeeds
-            self.logged_exemptions_by_private_id.add(private_id_value)
-            self.new_exemptions_logged_count += 1
-            logger.debug(f"Logged exemption for '{repo_name}'")
-            return True # Indicate logged successfully
-
-        except IOError as e:
-            logger.error(f"Error writing to log file {self.log_file_path}: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Unexpected error logging exemption for {repo_name}: {e}", exc_info=True)
+    def get_new_exemption_count(self):
             return False
 
     def get_new_exemption_count(self):

@@ -79,9 +79,11 @@ NON_CODE_LANGUAGES = [
 ]
 
 load_dotenv()
-AI_MAX_TOKENS = int(os.getenv('AI_MAX_TOKENS', 8000))
-AI_RETRY_LIMIT = int(os.getenv('AI_RETRY_LIMIT', 3))
-AI_RETRY_DELAY = int(os.getenv('AI_RETRY_DELAY', 5))
+# MAX_TOKENS_ENV is for input truncation, will be passed in
+# AI_TEMPERATURE_ENV will be passed in
+# AI_MODEL_NAME_ENV will be passed in
+# AI_MAX_OUTPUT_TOKENS_ENV will be passed in
+
 
 KNOWN_CDC_ORGANIZATIONS = {
     "cdc": "Centers for Disease Control and Prevention", "od": "Office of the Director",
@@ -115,10 +117,10 @@ KNOWN_CDC_ORGANIZATIONS = {
     "amd": "Office of Advanced Molecular Detection", "oamd": "Office of Advanced Molecular Detection",
 }
 
-AI_DELAY_ENABLED = float(os.getenv("AI_DELAY_ENABLED", 0.0))
+AI_DELAY_ENABLED = float(os.getenv("AI_DELAY_ENABLED", 0.0)) # This can stay as it's a direct operational setting
 logger.info(f"Using AI_DELAY_ENABLED value: {AI_DELAY_ENABLED}")
 
-AI_ORGANIZATION_ENABLED = os.getenv("AI_ORGANIZATION_ENABLED", "False").lower() == "true"
+AI_ORGANIZATION_ENABLED = os.getenv("AI_ORGANIZATION_ENABLED", "False").lower() == "true" # This can stay
 logger.info(f"AI Organization Inference Enabled: {AI_ORGANIZATION_ENABLED}")
 
 PRIVATE_CONTACT_EMAIL_DEFAULT = os.getenv("PRIVATE_REPO_CONTACT_EMAIL", "shareit@cdc.gov")
@@ -127,26 +129,27 @@ logger.info(f"Using Private Repo Contact Email: {PRIVATE_CONTACT_EMAIL_DEFAULT}"
 logger.info(f"Using Default Public Contact Email: {PUBLIC_CONTACT_EMAIL_DEFAULT}")
 
 # --- AI Configuration ---
-AI_ENABLED = False # Default to False, enable only if key is valid and library imported
+# This global flag will now reflect the combination of API key validity AND the passed-in config.
+_MODULE_AI_ENABLED_STATUS = False # Internal status reflecting API key validity and library import
 PLACEHOLDER_GOOGLE_API_KEY = "YOUR_GOOLE_API_KEY" # As requested
 
 if AI_LIBRARY_IMPORTED: # Only proceed if the google.generativeai library was successfully imported
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
     if not GOOGLE_API_KEY:
         logger.warning("GOOGLE_API_KEY environment variable not found. AI processing will be disabled for this module.")
-        # AI_ENABLED remains False
+        _MODULE_AI_ENABLED_STATUS = False
     elif GOOGLE_API_KEY == PLACEHOLDER_GOOGLE_API_KEY:
         logger.warning(f"GOOGLE_API_KEY is set to a placeholder value ('{PLACEHOLDER_GOOGLE_API_KEY}'). AI processing will be disabled for this module.")
-        # AI_ENABLED remains False
+        _MODULE_AI_ENABLED_STATUS = False
     else:
         try:
             if genai: # Ensure genai is not None (it wouldn't be if AI_LIBRARY_IMPORTED is True)
                 genai.configure(api_key=GOOGLE_API_KEY)
                 logger.info("Google Generative AI configured successfully with the provided API key.")
-                AI_ENABLED = True # AI is now fully enabled for use
+                _MODULE_AI_ENABLED_STATUS = True # Module *can* use AI if enabled by config
             else: # Should not happen if AI_LIBRARY_IMPORTED is True
                 logger.error("Google Generative AI library was marked as imported, but 'genai' module is None. AI processing disabled.")
-                # AI_ENABLED remains False
+                _MODULE_AI_ENABLED_STATUS = False
         except Exception as ai_config_err:
             # Check if the configuration error is due to an invalid API key
             err_str = str(ai_config_err).lower()
@@ -154,12 +157,11 @@ if AI_LIBRARY_IMPORTED: # Only proceed if the google.generativeai library was su
                 logger.error(f"Failed to configure Google Generative AI: API key is not valid. AI processing will be disabled. Error: {ai_config_err}")
             else:
                 logger.error(f"Failed to configure Google Generative AI with the provided API key: {ai_config_err}")
-            # AI_ENABLED remains False (explicitly, though it was already False)
+            _MODULE_AI_ENABLED_STATUS = False
 else:
     logger.info("Google Generative AI library not imported. AI processing will be disabled for this module.")
-    # AI_ENABLED remains False
-
-logger.info(f"Final AI processing status for exemption_processor: {AI_ENABLED}")
+    _MODULE_AI_ENABLED_STATUS = False
+logger.info(f"Module-level AI readiness (API key & library): {_MODULE_AI_ENABLED_STATUS}")
 
 
 # --- Marker Regular Expressions ---
@@ -176,7 +178,7 @@ EMAIL_FILTER_DOMAINS = ('.example.com', '.example.org')
 
 
 def _programmatic_org_from_repo_name(repo_name: str, current_org: str, default_org_identifiers: list[str]) -> str | None:
-    if not repo_name:
+    if not repo_name or not default_org_identifiers:
         return None
     can_override = any(current_org.lower() == default_id.lower() for default_id in default_org_identifiers)
     if not can_override and current_org and current_org.lower() != "unknownorg":
@@ -193,10 +195,15 @@ def _programmatic_org_from_repo_name(repo_name: str, current_org: str, default_o
             return full_name
     return None
 
-def _call_ai_for_organization(repo_data: dict) -> str | None:
-    global AI_ENABLED # Allow modification of the global flag
-
-    if not AI_ENABLED or not genai or not AI_ORGANIZATION_ENABLED: # Check AI_ORGANIZATION_ENABLED flag
+def _call_ai_for_organization(
+    repo_data: dict,
+    ai_model_name: str,
+    ai_temperature: float,
+    ai_max_output_tokens: int,
+    max_input_tokens_for_readme: int # This is from cfg.MAX_TOKENS_ENV
+) -> str | None:
+    global _MODULE_AI_ENABLED_STATUS 
+    if not _MODULE_AI_ENABLED_STATUS or not genai or not AI_ORGANIZATION_ENABLED: # Check AI_ORGANIZATION_ENABLED flag
         logger.debug("AI processing or AI organization inference is disabled. Skipping AI organization call.")
         return None
 
@@ -204,12 +211,14 @@ def _call_ai_for_organization(repo_data: dict) -> str | None:
     description_for_ai = repo_data.get('description', '')
     tags_list = repo_data.get('tags', [])
     tags_for_ai = ', '.join(tags_list) if tags_list else ''
-    readme_content_for_ai = repo_data.get('readme_content', '') or '' # Already handled by exemption_processor
+    readme_content_for_ai = repo_data.get('readme_content', '') or ''
     
-    max_readme_length_for_ai = AI_MAX_TOKENS - 1500
-    if len(readme_content_for_ai) > max_readme_length_for_ai:
-        readme_content_for_ai = readme_content_for_ai[:max_readme_length_for_ai] + "\n... [README Content Truncated]"
-        logger.warning(f"README content for AI organization analysis of '{repo_name_for_ai}' was truncated.")
+    # Use passed-in max_input_tokens_for_readme
+    # Reserve some tokens for the prompt structure and expected AI response
+    effective_max_readme_len = max_input_tokens_for_readme - 1500 
+    if len(readme_content_for_ai) > effective_max_readme_len:
+        readme_content_for_ai = readme_content_for_ai[:effective_max_readme_len] + "\n... [README Content Truncated]"
+        logger.warning(f"README content for AI organization analysis of '{repo_name_for_ai}' was truncated to fit token limit.")
 
     if not readme_content_for_ai.strip() and not description_for_ai.strip() and not repo_name_for_ai.strip():
         logger.debug(f"No significant text content (README/description/name) found for AI analysis of '{repo_name_for_ai}'. Skipping AI organization call.")
@@ -243,11 +252,14 @@ README Content (excerpt):
 Determine the organization based on the rules above.
     """
     try:
-        logger.info(f"Calling AI model to infer organization for repository '{repo_name_for_ai}'...")
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        logger.info(f"Calling AI model '{ai_model_name}' to infer organization for repository '{repo_name_for_ai}'...")
+        model = genai.GenerativeModel(ai_model_name) # Use passed model name
         response = model.generate_content(
             prompt,
-            generation_config=genai.types.GenerationConfig(temperature=0.1),
+            generation_config=genai.types.GenerationConfig(
+                temperature=ai_temperature, # Use passed temperature
+                max_output_tokens=ai_max_output_tokens # Use passed max output tokens
+            ),
         )
         ai_result_text = response.text.strip()
         logger.debug(f"AI raw response for '{repo_name_for_ai}': {ai_result_text}")
@@ -269,7 +281,7 @@ Determine the organization based on the rules above.
                 f"{ANSI_RED}Error during AI organization call for repository '{repo_name_for_ai}': API key is invalid or lacks permissions. "
                 f"Disabling AI for the rest of this run. Error: {ai_auth_err.code} {ai_auth_err.message}{ANSI_RESET}"
             )
-            AI_ENABLED = False
+            _MODULE_AI_ENABLED_STATUS = False # Disable at module level if key is bad
         else:
             logger.error(f"Authorization/Argument error during AI organization call for '{repo_name_for_ai}': {ai_auth_err}")
         return None
@@ -278,18 +290,24 @@ Determine the organization based on the rules above.
         # For other types of errors, we don't disable AI globally unless it's a clear API key issue.
         return None
     finally:
-        if AI_ENABLED and AI_DELAY_ENABLED > 0:
+        if _MODULE_AI_ENABLED_STATUS and AI_DELAY_ENABLED > 0: # Check module status
             logger.debug(f"Pausing for {AI_DELAY_ENABLED} seconds to respect AI rate limit...")
             time.sleep(AI_DELAY_ENABLED)
 
-def _call_ai_for_exemption(repo_data: dict) -> tuple[str | None, str | None]:
-    global AI_ENABLED # Allow modification of the global flag
+def _call_ai_for_exemption(
+    repo_data: dict,
+    ai_model_name: str,
+    ai_temperature: float,
+    ai_max_output_tokens: int,
+    max_input_tokens_for_combined_text: int # This is from cfg.MAX_TOKENS_ENV
+) -> tuple[str | None, str | None]:
+    global _MODULE_AI_ENABLED_STATUS
 
-    if not AI_ENABLED or not genai:
+    if not _MODULE_AI_ENABLED_STATUS or not genai:
         logger.debug("AI processing is disabled. Skipping AI exemption call.")
         return None, None
 
-    readme = repo_data.get('readme_content', '') or '' # readme_content is passed to exemption_processor
+    readme = repo_data.get('readme_content', '') or ''
     description = repo_data.get('description', '') or ''
     repo_name = repo_data.get('name', '')
 
@@ -297,11 +315,13 @@ def _call_ai_for_exemption(repo_data: dict) -> tuple[str | None, str | None]:
         logger.debug(f"No significant text content (README/description) found for AI exemption analysis of '{repo_name}'. Skipping AI call.")
         return None, None
 
-    max_input_length =  AI_MAX_TOKENS
+    # Use passed-in max_input_tokens_for_combined_text
+    # Reserve some tokens for the prompt structure and expected AI response
+    effective_max_input_len =  max_input_tokens_for_combined_text - 500 
     input_text = f"Repository Name: {repo_name}\nDescription: {description}\n\nREADME:\n{readme}"
-    if len(input_text) > max_input_length:
-        input_text = input_text[:max_input_length] + "\n... [Content Truncated]"
-        logger.warning(f"Input text for AI exemption analysis of '{repo_name}' was truncated.")
+    if len(input_text) > effective_max_input_len:
+        input_text = input_text[:effective_max_input_len] + "\n... [Content Truncated]"
+        logger.warning(f"Input text for AI exemption analysis of '{repo_name}' was truncated to fit token limit.")
 
     prompt = f"""
     Analyze the following repository information (name, description, README content)
@@ -334,11 +354,14 @@ def _call_ai_for_exemption(repo_data: dict) -> tuple[str | None, str | None]:
     Analysis Result:
     """
     try:
-        logger.debug(f"Calling AI model for exemption analysis for repository '{repo_name}'...")
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        logger.debug(f"Calling AI model '{ai_model_name}' for exemption analysis for repository '{repo_name}'...")
+        model = genai.GenerativeModel(ai_model_name) # Use passed model name
         response = model.generate_content(
             prompt,
-            generation_config=genai.types.GenerationConfig(temperature=0.1),
+            generation_config=genai.types.GenerationConfig(
+                temperature=ai_temperature, # Use passed temperature
+                max_output_tokens=ai_max_output_tokens # Use passed max output tokens
+            ),
         )
         ai_result_text = response.text.strip()
         logger.debug(f"AI raw response for exemption for '{repo_name}': {ai_result_text}")
@@ -366,7 +389,7 @@ def _call_ai_for_exemption(repo_data: dict) -> tuple[str | None, str | None]:
                 f"{ANSI_RED}Error during AI exemption call for repository '{repo_name}': API key is invalid or lacks permissions. "
                 f"Disabling AI for the rest of this run. Error: {ai_auth_err.code} {ai_auth_err.message}{ANSI_RESET}"
             )
-            AI_ENABLED = False
+            _MODULE_AI_ENABLED_STATUS = False # Disable at module level if key is bad
         else:
             logger.error(f"Authorization/Argument error during AI exemption call for '{repo_name}': {ai_auth_err}")
         return None, None
@@ -375,7 +398,7 @@ def _call_ai_for_exemption(repo_data: dict) -> tuple[str | None, str | None]:
         # For other types of errors, we don't disable AI globally
         return None, None
     finally:
-        if AI_ENABLED and AI_DELAY_ENABLED > 0:
+        if _MODULE_AI_ENABLED_STATUS and AI_DELAY_ENABLED > 0: # Check module status
             logger.debug(f"Pausing for {AI_DELAY_ENABLED} seconds to respect AI rate limit...")
             time.sleep(AI_DELAY_ENABLED)
 
@@ -479,7 +502,16 @@ def _parse_readme_for_organization(readme_content: str | None, repo_name: str) -
             return org_value
     return None
 
-def process_repository_exemptions(repo_data: dict, default_org_identifiers: list[str] | None = None) -> dict:
+def process_repository_exemptions(
+    repo_data: dict, 
+    default_org_identifiers: list[str] | None = None,
+    # New parameters from cfg:
+    ai_is_enabled_from_config: bool = False,
+    ai_model_name_from_config: str = "gemini-1.0-pro-latest", # Default if not passed
+    ai_temperature_from_config: float = 0.4, # Default if not passed
+    ai_max_output_tokens_from_config: int = 2048, # Default if not passed
+    ai_max_input_tokens_from_config: int = 15000 # Default if not passed
+) -> dict:
     initial_org_from_connector = repo_data.get('organization', 'UnknownOrg')
     repo_name = repo_data.get("name", "UnknownRepo")
     readme_content = repo_data.get("readme_content") # This is passed by connectors
@@ -493,6 +525,9 @@ def process_repository_exemptions(repo_data: dict, default_org_identifiers: list
     repo_data['permissions']['usageType'] = None # Clear before processing
     repo_data['permissions']['exemptionText'] = None
     
+    # Determine if AI should be attempted for this call based on passed config and module readiness
+    should_attempt_ai = ai_is_enabled_from_config and _MODULE_AI_ENABLED_STATUS
+
     actual_contact_emails = _get_combined_contact_emails(repo_data)
     repo_data['_private_contact_emails'] = actual_contact_emails
 
@@ -518,12 +553,18 @@ def process_repository_exemptions(repo_data: dict, default_org_identifiers: list
                 repo_data['organization'] = extracted_org_from_readme
 
     current_org_after_prog_readme = repo_data.get('organization', 'UnknownOrg').lower()
-    if is_empty_repo:
-        logger.info(f"Repository '{repo_name}' is marked as empty. Skipping AI organization inference.")
-    else:
-        if current_org_after_prog_readme in effective_default_org_ids:
+    if should_attempt_ai: # Only attempt AI if enabled by config and module is ready
+        if is_empty_repo:
+            logger.info(f"Repository '{repo_name}' is marked as empty. Skipping AI organization inference.")
+        elif current_org_after_prog_readme in effective_default_org_ids: # Check elif to avoid re-eval if empty
             logger.info(f"Organization for '{repo_name}' is default ('{repo_data.get('organization', '')}'). Attempting AI inference.")
-            ai_org = _call_ai_for_organization(repo_data) 
+            ai_org = _call_ai_for_organization(
+                repo_data,
+                ai_model_name=ai_model_name_from_config,
+                ai_temperature=ai_temperature_from_config,
+                ai_max_output_tokens=ai_max_output_tokens_from_config,
+                max_input_tokens_for_readme=ai_max_input_tokens_from_config
+            )
             if ai_org and ai_org.lower() != "none":
                 validated_ai_org = next((full_name for acronym, full_name in KNOWN_CDC_ORGANIZATIONS.items() if ai_org.lower() == full_name.lower() or ai_org.lower() == acronym.lower()), None)
                 if validated_ai_org and validated_ai_org.lower() != current_org_after_prog_readme:
@@ -533,6 +574,8 @@ def process_repository_exemptions(repo_data: dict, default_org_identifiers: list
                      logger.warning(f"AI suggested org '{ai_org}' for '{repo_name}', but not in known list. Discarding.")
         else:
             logger.info(f"Organization for '{repo_name}' is '{repo_data.get('organization', '')}', not calling AI for organization.")
+    else:
+        logger.debug(f"AI is disabled for organization inference for '{repo_name}' (config or module status).")
 
     # --- Contract Number ---
     if readme_content:
@@ -570,12 +613,18 @@ def process_repository_exemptions(repo_data: dict, default_org_identifiers: list
             exemption_applied = True
             logger.info(f"Repo '{repo_name}': Exempted due to sensitive keywords ({EXEMPT_BY_LAW}): {found_keywords}.")
 
-    if not exemption_applied :
+    if not exemption_applied and should_attempt_ai: # Only attempt AI if enabled and no prior exemption
         if is_empty_repo:
             logger.info(f"Repository '{repo_name}' is marked as empty. Skipping AI exemption analysis.")
         else:
             logger.debug(f"Repo '{repo_name}': No standard exemption. Calling AI for exemption analysis.")
-            ai_usage_type, ai_exemption_text = _call_ai_for_exemption(repo_data) 
+            ai_usage_type, ai_exemption_text = _call_ai_for_exemption(
+                repo_data,
+                ai_model_name=ai_model_name_from_config,
+                ai_temperature=ai_temperature_from_config,
+                ai_max_output_tokens=ai_max_output_tokens_from_config,
+                max_input_tokens_for_combined_text=ai_max_input_tokens_from_config
+            )
             if ai_usage_type:
                 repo_data['permissions']['usageType'] = ai_usage_type
                 repo_data['permissions']['exemptionText'] = ai_exemption_text
@@ -583,6 +632,8 @@ def process_repository_exemptions(repo_data: dict, default_org_identifiers: list
                 logger.info(f"Repo '{repo_name}': Exempted via AI analysis ({ai_usage_type}).")
     
     if not exemption_applied: # Default if no exemption applied
+        if not should_attempt_ai and not is_empty_repo: # Log if AI was skipped but could have run
+            logger.debug(f"AI was disabled for exemption analysis for '{repo_name}' (config or module status). Applying default usageType.")
         # Determine final usageType based on visibility and license if no exemption was applied
         visibility_for_rules = repo_data.get('repositoryVisibility', '').lower()
         # Treat 'internal' as 'private' for this rule application

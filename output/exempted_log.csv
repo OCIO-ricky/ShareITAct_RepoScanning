@@ -633,3 +633,10 @@ github_978792312,grasp-repo-templates,exemptNonCode,Non-code repository (languag
 github_978832160,jv-test,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-12T07:07:13.227898+00:00
 github_979982978,ocio-figma-infra,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-12T07:07:13.245290+00:00
 github_980836142,cdc-edso-powerautomate,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-12T07:07:13.263224+00:00
+gitlab_69325486,mynodejs,exemptByLaw,This specific module interfaces with classified national security systems.,2025-05-13T04:34:35.653247+00:00
+gitlab_69325396,csels-hub,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-13T04:34:35.674304+00:00
+github_489033672,ITF-SAVI-DUB-PPT,exemptByMissionSystem,"AI Suggestion: The repository generates a PowerPoint presentation summarizing COVID-19 data (cases, deaths, testing, vaccination, variants) for a global director's weekly update, a core public health function.",2025-05-14T06:22:05.761210+00:00
+github_963952414,ncezid-dfwed-mdb-cauris-cost-effectiveness,exemptByMissionSystem,"AI Suggestion: The repository develops a simulation model to analyze the cost-effectiveness of different screening strategies for *Candida auris* in healthcare facilities, directly supporting public health efforts in infection control.",2025-05-14T06:22:05.811001+00:00
+github_982314852,vaccine-publication-analysis,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-14T06:22:05.831812+00:00
+github_982977554,oamd-api-python-sdk,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-14T06:22:05.842560+00:00
+github_983061775,nccdphp-ddt-dprp-portal-master,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-14T06:22:05.861030+00:00

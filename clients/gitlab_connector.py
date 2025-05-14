@@ -9,14 +9,22 @@ and Git tags. It interacts with the GitLab API via the python-gitlab library.
 
 import os
 import logging
+import time
+import threading # For locks
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import base64
 from typing import List, Optional, Dict, Any
 from datetime import timezone, datetime 
+from utils.delay_calculator import calculate_dynamic_delay # Import the calculator
 from utils.labor_hrs_estimator import analyze_gitlab_repo_sync # Import the labor hrs estimator
 
 
 import gitlab # python-gitlab library
 from gitlab.exceptions import GitlabAuthenticationError, GitlabGetError, GitlabListError
+
+# ANSI escape codes for coloring output
+ANSI_YELLOW = "\x1b[33;1m"
+ANSI_RESET = "\x1b[0m"   # Reset to default color
 
 # Attempt to import the exemption processor
 try:
@@ -51,7 +59,7 @@ def is_placeholder_token(token: Optional[str]) -> bool:
     return not token or token == PLACEHOLDER_GITLAB_TOKEN
 
 
-def _get_readme_content_gitlab(project_obj) -> tuple[Optional[str], Optional[str]]:
+def _get_readme_content_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_delay_to_apply: float) -> tuple[Optional[str], Optional[str]]:
     """
     Fetches and decodes the README content for a given GitLab project object.
     Tries common README filenames. Returns content and URL.
@@ -60,7 +68,6 @@ def _get_readme_content_gitlab(project_obj) -> tuple[Optional[str], Optional[str
     if not project_obj.default_branch:
         logger.warning(f"Cannot fetch README for {project_obj.path_with_namespace}: No default branch set.")
         return None, None
-
     for readme_name in common_readme_names:
         try:
             readme_file = project_obj.files.get(file_path=readme_name, ref=project_obj.default_branch)
@@ -68,6 +75,9 @@ def _get_readme_content_gitlab(project_obj) -> tuple[Optional[str], Optional[str
             readme_content_str = readme_content_bytes.decode('utf-8', errors='replace')
             readme_url = f"{project_obj.web_url}/-/blob/{project_obj.default_branch}/{readme_name.lstrip('/')}"
             logger.debug(f"Successfully fetched README '{readme_name}' for {project_obj.path_with_namespace}")
+            if dynamic_delay_to_apply > 0:
+                logger.debug(f"GitLab applying SYNC post-API call delay (get README file): {dynamic_delay_to_apply:.2f}s")
+                time.sleep(dynamic_delay_to_apply)
             return readme_content_str, readme_url
         except GitlabGetError as e:
             if e.response_code == 404:
@@ -83,19 +93,21 @@ def _get_readme_content_gitlab(project_obj) -> tuple[Optional[str], Optional[str
     return None, None
 
 
-def _get_codeowners_content_gitlab(project_obj) -> Optional[str]:
+def _get_codeowners_content_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_delay_to_apply: float) -> Optional[str]:
     """Fetches CODEOWNERS content from standard locations in a GitLab project."""
     common_paths = ["CODEOWNERS", ".gitlab/CODEOWNERS", "docs/CODEOWNERS"]
     if not project_obj.default_branch:
         logger.warning(f"Cannot fetch CODEOWNERS for {project_obj.path_with_namespace}: No default branch set.")
         return None
-
     for path in common_paths:
         try:
             content_file = project_obj.files.get(file_path=path.lstrip('/'), ref=project_obj.default_branch)
             content_bytes = base64.b64decode(content_file.content)
             content_str = content_bytes.decode('utf-8', errors='replace')
             logger.debug(f"Successfully fetched CODEOWNERS from '{path}' for {project_obj.path_with_namespace}")
+            if dynamic_delay_to_apply > 0:
+                logger.debug(f"GitLab applying SYNC post-API call delay (get CODEOWNERS file): {dynamic_delay_to_apply:.2f}s")
+                time.sleep(dynamic_delay_to_apply)
             return content_str
         except GitlabGetError as e:
             if e.response_code == 404:
@@ -110,12 +122,15 @@ def _get_codeowners_content_gitlab(project_obj) -> Optional[str]:
     return None
 
 
-def _fetch_tags_gitlab(project_obj) -> List[str]:
+def _fetch_tags_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_delay_to_apply: float) -> List[str]:
     """Fetches Git tag names using the python-gitlab project object."""
     tag_names = []
     try:
         logger.debug(f"Fetching Git tags for project: {project_obj.path_with_namespace}")
         tags = project_obj.tags.list(all=True) 
+        if dynamic_delay_to_apply > 0:
+            logger.debug(f"GitLab applying SYNC post-API call delay (list tags): {dynamic_delay_to_apply:.2f}s")
+            time.sleep(dynamic_delay_to_apply)
         tag_names = [tag.name for tag in tags if tag.name]
         logger.debug(f"Found {len(tag_names)} Git tags for {project_obj.path_with_namespace}")
     except GitlabListError as e:
@@ -124,14 +139,158 @@ def _fetch_tags_gitlab(project_obj) -> List[str]:
         logger.error(f"Unexpected error fetching Git tags for {project_obj.path_with_namespace}: {e}", exc_info=True)
     return tag_names
 
+def _process_single_gitlab_project(
+    gl_instance: gitlab.Gitlab, # Pass the authenticated gitlab instance
+    project_stub_id: int, # Pass project ID to re-fetch full object
+    group_full_path: str, # For logging and context
+    token: Optional[str], # For labor hours estimator
+    effective_gitlab_url: str, # For labor hours estimator
+    hours_per_commit: Optional[float],
+    cfg_obj: Any, # Pass the Config object
+    inter_repo_adaptive_delay_seconds: float, # Inter-repository adaptive delay
+    dynamic_post_api_call_delay_seconds: float # Per-API call dynamic delay
+) -> Dict[str, Any]:
+    """
+    Processes a single GitLab project to extract its metadata.
+    This function is intended to be run in a separate thread.
+    """
+    repo_data: Dict[str, Any] = {}
+    project = None
+    try:
+        # Get full project object
+        project = gl_instance.projects.get(project_stub_id, lazy=False, statistics=True)
+        if dynamic_post_api_call_delay_seconds > 0:
+            logger.debug(f"GitLab applying SYNC post-API call delay (get project details): {dynamic_post_api_call_delay_seconds:.2f}s")
+            time.sleep(dynamic_post_api_call_delay_seconds)
+
+        repo_full_name = project.path_with_namespace
+        repo_data["name"] = project.path
+        repo_data["organization"] = group_full_path # Use the parent group path
+
+        logger.info(f"Processing repository: {repo_full_name}")
+        
+        if hasattr(project, 'forked_from_project') and project.forked_from_project:
+            logger.info(f"Skipping forked repository: {repo_full_name}")
+            repo_data["processing_status"] = "skipped_fork"
+            return repo_data
+
+        repo_data['_is_empty_repo'] = False
+        if project.empty_repo:
+            logger.info(f"Repository {repo_full_name} is marked as empty by GitLab API (project.empty_repo is True).")
+            repo_data['_is_empty_repo'] = True
+        elif hasattr(project, 'statistics') and project.statistics and project.statistics.get('commit_count', -1) == 0:
+            logger.info(f"Repository {repo_full_name} has 0 commits according to statistics, treating as effectively empty for content processing.")
+            repo_data['_is_empty_repo'] = True
+        
+        repo_description = project.description if project.description else ""
+        
+        visibility_status = project.visibility
+        if visibility_status not in ["public", "private", "internal"]:
+            logger.warning(f"Unknown visibility '{visibility_status}' for {repo_full_name}. Defaulting to 'private'.")
+            visibility_status = "private"
+
+        created_at_dt: Optional[datetime] = None
+        if project.created_at:
+            try:
+                created_at_dt = datetime.fromisoformat(project.created_at.replace('Z', '+00:00')).replace(tzinfo=timezone.utc)
+            except ValueError:
+                logger.warning(f"Could not parse created_at date string '{project.created_at}' for {repo_full_name}")
+
+        last_activity_at_dt: Optional[datetime] = None
+        if project.last_activity_at:
+            try:
+                last_activity_at_dt = datetime.fromisoformat(project.last_activity_at.replace('Z', '+00:00')).replace(tzinfo=timezone.utc)
+            except ValueError:
+                logger.warning(f"Could not parse last_activity_at date string '{project.last_activity_at}' for {repo_full_name}")
+        
+        all_languages_list = []
+        try:
+            languages_dict = project.languages()
+            if languages_dict:
+                all_languages_list = list(languages_dict.keys())
+            if dynamic_post_api_call_delay_seconds > 0:
+                logger.debug(f"GitLab applying SYNC post-API call delay (get languages): {dynamic_post_api_call_delay_seconds:.2f}s")
+                time.sleep(dynamic_post_api_call_delay_seconds)
+        except Exception as lang_err:
+            logger.warning(f"Could not fetch languages for {repo_full_name}: {lang_err}", exc_info=False)
+
+        readme_content, readme_html_url = _get_readme_content_gitlab(project, cfg_obj, dynamic_post_api_call_delay_seconds)
+        codeowners_content = _get_codeowners_content_gitlab(project, cfg_obj, dynamic_post_api_call_delay_seconds)
+        repo_topics = project.tag_list if hasattr(project, 'tag_list') else []
+        repo_git_tags = _fetch_tags_gitlab(project, cfg_obj, dynamic_post_api_call_delay_seconds)
+
+        licenses_list = []
+        if hasattr(project, 'license') and project.license and isinstance(project.license, dict):
+            license_entry = {"spdxID": project.license.get('key'), "name": project.license.get('name'), "URL": project.license.get('html_url')}
+            licenses_list.append({k: v for k, v in license_entry.items() if v})
+
+        repo_data.update({
+            "description": repo_description, "repositoryURL": project.web_url, "homepageURL": project.web_url,
+            "downloadURL": None, "vcs": "git", "repositoryVisibility": visibility_status,
+            "status": "development", "version": "N/A", "laborHours": 0, "languages": all_languages_list,
+            "tags": repo_topics,
+            "date": {"created": created_at_dt.isoformat() if created_at_dt else None, "lastModified": last_activity_at_dt.isoformat() if last_activity_at_dt else None},
+            "permissions": {"usageType": "openSource", "exemptionText": None, "licenses": licenses_list},
+            "contact": {}, "contractNumber": None, "readme_content": readme_content,
+            "_codeowners_content": codeowners_content, "repo_id": project.id, "readme_url": readme_html_url,
+            "_api_tags": repo_git_tags, "archived": project.archived
+        })
+        repo_data.setdefault('_is_empty_repo', False)
+
+        if hours_per_commit is not None:
+            logger.debug(f"Estimating labor hours for GitLab repo: {project.path_with_namespace}")
+            labor_df = analyze_gitlab_repo_sync(
+                project_id=str(project.id), token=token, 
+                hours_per_commit=hours_per_commit, 
+                gitlab_api_url=effective_gitlab_url,
+                cfg_obj=cfg_obj, # Pass cfg_obj for its own post-API call delays
+                num_repos_in_target=None # Labor estimator doesn't need this for its *own* calls, it gets it from cfg_obj
+            )
+            repo_data["laborHours"] = round(float(labor_df["EstimatedHours"].sum()), 2) if not labor_df.empty else 0.0
+            if repo_data["laborHours"] > 0: logger.info(f"Estimated labor hours for {project.path_with_namespace}: {repo_data['laborHours']}")
+        
+        if cfg_obj:
+            repo_data = exemption_processor.process_repository_exemptions(
+                repo_data,
+                default_org_identifiers=[group_full_path],
+                ai_is_enabled_from_config=cfg_obj.AI_ENABLED_ENV,
+                ai_model_name_from_config=cfg_obj.AI_MODEL_NAME_ENV,
+                ai_temperature_from_config=cfg_obj.AI_TEMPERATURE_ENV,
+                ai_max_output_tokens_from_config=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV,
+                ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV
+            )
+        else:
+            logger.warning(
+                f"cfg_obj not provided to _process_single_gitlab_project for {repo_full_name}. "
+                "Exemption processor will use its default AI parameter values."
+            )
+            repo_data = exemption_processor.process_repository_exemptions(
+                repo_data, default_org_identifiers=[group_full_path]
+            )
+        if inter_repo_adaptive_delay_seconds > 0: # This is the inter-repository adaptive delay
+            logger.debug(f"GitLab project {repo_full_name}: Applying INTER-REPO adaptive delay of {inter_repo_adaptive_delay_seconds:.2f}s")
+            time.sleep(inter_repo_adaptive_delay_seconds)
+
+        return repo_data
+
+    except GitlabGetError as p_get_err:
+        logger.error(f"GitLab API error getting full details for project ID {project_stub_id} (part of {group_full_path}): {p_get_err}. Skipping.", exc_info=False)
+        return {"name": project.path if project else f"ID_{project_stub_id}", "organization": group_full_path, "processing_error": f"GitLab API Error getting details: {p_get_err.error_message}"}
+    except Exception as e_proj:
+        logger.error(f"Unexpected error processing project ID {project_stub_id} (part of {group_full_path}): {e_proj}. Skipping.", exc_info=True)
+        return {"name": project.path if project else f"ID_{project_stub_id}", "organization": group_full_path, "processing_error": f"Unexpected Error: {e_proj}"}
 
 def fetch_repositories(
     token: Optional[str], 
     group_path: str, 
     processed_counter: List[int], 
+    processed_counter_lock: threading.Lock, # Added lock
     debug_limit: int | None = None, 
     gitlab_instance_url: str | None = None,
-    hours_per_commit: Optional[float] = None) -> list[dict]:
+    hours_per_commit: Optional[float] = None,
+    max_workers: int = 5, 
+    cfg_obj: Optional[Any] = None # Accept the cfg object
+) -> list[dict]:
     """
     Fetches repository (project) details from a specific GitLab group.
 
@@ -140,6 +299,7 @@ def fetch_repositories(
         group_path: The full path of the GitLab group (e.g., 'my-org/my-subgroup').
         processed_counter: Mutable list to track processed repositories for debug limit.
         debug_limit: Optional global limit for repositories to process.
+        processed_counter_lock: Lock for safely updating processed_counter.
         gitlab_instance_url: The base URL of the GitLab instance. Defaults to https://gitlab.com if None.
 
 
@@ -152,7 +312,7 @@ def fetch_repositories(
         effective_gitlab_url = "https://gitlab.com"
         logger.warning(f"No GitLab instance URL provided or it was empty. Using default: {effective_gitlab_url}")
     
-    logger.info(f"Attempting to fetch repositories for GitLab group: {group_path} on {effective_gitlab_url}")
+    logger.info(f"Attempting to fetch repositories CONCURRENTLY for GitLab group: {group_path} on {effective_gitlab_url} (max_workers: {max_workers})")
 
     if is_placeholder_token(token): # is_placeholder_token now takes token as arg
         logger.error("GitLab token is a placeholder or missing. Cannot fetch repositories.")
@@ -162,164 +322,104 @@ def fetch_repositories(
         return []
 
     processed_repo_list: List[Dict[str, Any]] = []
+    gl_instance = None # To hold the authenticated gitlab instance
 
     try:
-        gl = gitlab.Gitlab(effective_gitlab_url.strip('/'), private_token=token, timeout=30)
-        gl.auth() 
+        gl_instance = gitlab.Gitlab(effective_gitlab_url.strip('/'), private_token=token, timeout=30)
+        gl_instance.auth() 
         logger.info(f"Successfully connected and authenticated to GitLab instance: {effective_gitlab_url}")
 
-        group = gl.groups.get(group_path, lazy=False)
+        group = gl_instance.groups.get(group_path, lazy=False)
         logger.info(f"Successfully found GitLab group: {group.full_path} (ID: {group.id})")
 
-        projects_iterator = group.projects.list(all=True, include_subgroups=True, statistics=True, lazy=True)
-        project_count_for_group = 0
-
-        for proj_stub in projects_iterator:
-            if debug_limit is not None and processed_counter[0] >= debug_limit:
-                logger.info(f"Global debug limit ({debug_limit}) reached. Stopping repository fetching for {group_path}.")
-                break
-            
-            repo_data: Dict[str, Any] = {} 
+        # --- Get total project count for adaptive delay calculation ---
+        num_projects_in_target = 0
+        inter_repo_adaptive_delay_per_repo = 0.0 # For the delay *between* processing repos
+        all_project_stubs_for_count = [] # To store stubs if counted
+        if cfg_obj and cfg_obj.ADAPTIVE_DELAY_ENABLED_ENV:
             try:
-                # Get full project object
-                project = gl.projects.get(proj_stub.id, lazy=False, statistics=True)
-                repo_full_name = project.path_with_namespace
-                logger.info(f"Processing repository: {repo_full_name}")
-                project_count_for_group += 1
-                
-                if hasattr(project, 'forked_from_project') and project.forked_from_project:
-                    logger.info(f"Skipping forked repository: {repo_full_name}")
-                    continue
+                logger.info(f"GitLab: Counting projects in group '{group_path}' for adaptive delay...")
+                # List all projects to get a count.
+                # Using iterator=True and then list() is one way, or iterate and count.
+                all_project_stubs_for_count = list(group.projects.list(all=True, include_subgroups=True, statistics=False, lazy=True))
+                num_projects_in_target = len(all_project_stubs_for_count)
+                logger.info(f"GitLab: Found {num_projects_in_target} projects in group '{group_path}'.")
 
-                # Initialize _is_empty_repo flag
-                repo_data['_is_empty_repo'] = False
-                if project.empty_repo:
-                    logger.info(f"Repository {repo_full_name} is marked as empty by GitLab API (project.empty_repo is True).")
-                    repo_data['_is_empty_repo'] = True
-                # Additionally, check commit count if statistics are available and reliable
-                elif hasattr(project, 'statistics') and project.statistics and project.statistics.get('commit_count', -1) == 0:
-                    logger.info(f"Repository {repo_full_name} has 0 commits according to statistics, treating as effectively empty for content processing.")
-                    repo_data['_is_empty_repo'] = True
-                
-                repo_description = project.description if project.description else ""
-                
-                visibility_status = project.visibility
-                if visibility_status not in ["public", "private", "internal"]:
-                    logger.warning(f"Unknown visibility '{visibility_status}' for {repo_full_name}. Defaulting to 'private'.")
-                    visibility_status = "private"
+                if num_projects_in_target > cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV:
+                    excess_repos = num_projects_in_target - cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV
+                    scale_factor = 1 + (excess_repos / cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV)
+                    calculated_delay = cfg_obj.ADAPTIVE_DELAY_BASE_SECONDS_ENV * scale_factor
+                    inter_repo_adaptive_delay_per_repo = min(calculated_delay, cfg_obj.ADAPTIVE_DELAY_MAX_SECONDS_ENV)
+                if inter_repo_adaptive_delay_per_repo > 0:
+                        logger.info(f"{ANSI_YELLOW}GitLab: INTER-REPO adaptive delay calculated for group '{group_path}': {inter_repo_adaptive_delay_per_repo:.2f}s per project (based on {num_projects_in_target} projects).{ANSI_RESET}")
+            except Exception as count_err:
+                logger.warning(f"GitLab: Error counting projects in group '{group_path}' for adaptive delay: {count_err}. Proceeding without adaptive delay for this target.")
 
-                created_at_dt: Optional[datetime] = None
-                if project.created_at:
-                    try:
-                        created_at_dt = datetime.fromisoformat(project.created_at.replace('Z', '+00:00')).replace(tzinfo=timezone.utc)
-                    except ValueError:
-                        logger.warning(f"Could not parse created_at date string '{project.created_at}' for {repo_full_name}")
+        # Calculate dynamic POST-API-CALL delay for metadata calls within this target
+        dynamic_post_api_call_delay_seconds = 0.0
+        if cfg_obj:
+            base_delay = float(getattr(cfg_obj, 'GITLAB_POST_API_CALL_DELAY_SECONDS_ENV', os.getenv("GITLAB_POST_API_CALL_DELAY_SECONDS", "0.0")))
+            threshold = int(getattr(cfg_obj, 'DYNAMIC_DELAY_THRESHOLD_REPOS_ENV', os.getenv("DYNAMIC_DELAY_THRESHOLD_REPOS", "100")))
+            scale = float(getattr(cfg_obj, 'DYNAMIC_DELAY_SCALE_FACTOR_ENV', os.getenv("DYNAMIC_DELAY_SCALE_FACTOR", "1.5")))
+            max_d = float(getattr(cfg_obj, 'DYNAMIC_DELAY_MAX_SECONDS_ENV', os.getenv("DYNAMIC_DELAY_MAX_SECONDS", "1.0")))
+            
+            dynamic_post_api_call_delay_seconds = calculate_dynamic_delay(
+                base_delay_seconds=base_delay,
+                num_items=num_projects_in_target if num_projects_in_target > 0 else None, # Pass None if count failed or is 0
+                threshold_items=threshold, scale_factor=scale, max_delay_seconds=max_d
+            )
+            if dynamic_post_api_call_delay_seconds > 0:
+                 logger.info(f"{ANSI_YELLOW}GitLab: DYNAMIC POST-API-CALL delay for metadata in group '{group_path}' set to: {dynamic_post_api_call_delay_seconds:.2f}s (based on {num_projects_in_target} projects).{ANSI_RESET}")
 
-                last_activity_at_dt: Optional[datetime] = None
-                if project.last_activity_at:
-                    try:
-                        last_activity_at_dt = datetime.fromisoformat(project.last_activity_at.replace('Z', '+00:00')).replace(tzinfo=timezone.utc)
-                    except ValueError:
-                        logger.warning(f"Could not parse last_activity_at date string '{project.last_activity_at}' for {repo_full_name}")
-                
-                all_languages_list = []
-                try:
-                    languages_dict = project.languages() # This is a method call
-                    if languages_dict:
-                        all_languages_list = list(languages_dict.keys())
-                except Exception as lang_err:
-                    logger.warning(f"Could not fetch languages for {repo_full_name}: {lang_err}", exc_info=False)
+        project_count_for_group_submitted = 0
 
-                readme_content, readme_html_url = _get_readme_content_gitlab(project)
-                codeowners_content = _get_codeowners_content_gitlab(project)
-                repo_topics = project.tag_list if hasattr(project, 'tag_list') else [] # GitLab calls them 'tag_list' for topics
-                repo_git_tags = _fetch_tags_gitlab(project) # Actual Git tags
-
-                licenses_list = []
-                if hasattr(project, 'license') and project.license and isinstance(project.license, dict):
-                    license_name = project.license.get('name')
-                    spdx_id = project.license.get('key') 
-                    license_url = project.license.get('html_url') 
-
-                    license_entry = {}
-                    if spdx_id:
-                        license_entry["spdxID"] = spdx_id
-                    if license_name: 
-                        license_entry["name"] = license_name
-                    if license_url: # This is often the URL to the license file in the repo on GitLab
-                        license_entry["URL"] = license_url
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_project_name = {}
+            try:
+                projects_iterator = group.projects.list(all=True, include_subgroups=True, statistics=False, lazy=True) # statistics=False for stub
+                for proj_stub in projects_iterator:
+                    with processed_counter_lock:
+                        if debug_limit is not None and processed_counter[0] >= debug_limit:
+                            logger.info(f"Global debug limit ({debug_limit}) reached. Stopping further project submissions for {group_path}.")
+                            break
+                        processed_counter[0] += 1
                     
-                    if license_entry: 
-                        licenses_list.append(license_entry)
+                    project_count_for_group_submitted += 1
+                    future = executor.submit(
+                        _process_single_gitlab_project,
+                        gl_instance, # Pass the authenticated instance
+                        proj_stub.id,
+                        group.full_path,
+                        token,
+                        effective_gitlab_url,
+                        hours_per_commit,
+                        cfg_obj,
+                        inter_repo_adaptive_delay_per_repo, # Pass inter-repo adaptive delay
+                        dynamic_post_api_call_delay_seconds # Pass dynamic per-API call delay
+                    )
+                    future_to_project_name[future] = proj_stub.path_with_namespace
+            
+            except GitlabListError as gl_list_err:
+                logger.error(f"GitLab API error during initial project listing for group {group_path}. Processing submitted tasks. Details: {gl_list_err}")
+            except Exception as ex_iter:
+                logger.error(f"Unexpected error during initial project listing for group {group_path}: {ex_iter}. Processing submitted tasks.")
 
-                repo_data = {
-                    "name": project.path, # Name of the project within its namespace
-                    "organization": group.full_path, # Full path of the parent group
-                    "description": repo_description,
-                    "repositoryURL": project.web_url, 
-                    "homepageURL": project.web_url, 
-                    "downloadURL": None,
-                    "vcs": "git",
-                    "repositoryVisibility": visibility_status,
-                    "status": "development", 
-                    "version": "N/A",      
-                    "laborHours": 0,       
-                    "languages": all_languages_list,
-                    "tags": repo_topics,
-                    "date": {
-                        "created": created_at_dt.isoformat() if created_at_dt else None,
-                        "lastModified": last_activity_at_dt.isoformat() if last_activity_at_dt else None,
-                    },
-                    "permissions": {
-                        "usageType": "openSource", 
-                        "exemptionText": None,
-                        "licenses": licenses_list
-                    },
-                    "contact": {}, 
-                    "contractNumber": None, 
-                    "readme_content": readme_content,
-                    "_codeowners_content": codeowners_content,
-                    "repo_id": project.id, 
-                    "readme_url": readme_html_url, 
-                    "_api_tags": repo_git_tags, 
-                    "archived": project.archived,  
-                    "_is_empty_repo": repo_data.get('_is_empty_repo', False) # Ensure it's in repo_data
-                }
-                
-                if hours_per_commit is not None:
-                    logger.debug(f"Estimating labor hours for GitLab repo: {project.path_with_namespace}")
-                    try:
- 
-                        labor_df = analyze_gitlab_repo_sync(
-                            project_id=str(project.id), # Ensure project_id is a string
-                            token=token, # Still pass token for estimator's internal fallback
-                            hours_per_commit=hours_per_commit,
-                            gitlab_api_url=effective_gitlab_url,
-                            session=None # Let the estimator manage its own session
-                        )
-                        if not labor_df.empty:
-                            repo_data["laborHours"] = round(float(labor_df["EstimatedHours"].sum()), 2)
-                            logger.info(f"Estimated labor hours for {project.path_with_namespace}: {repo_data['laborHours']}")
+            for future in as_completed(future_to_project_name):
+                project_name_for_log = future_to_project_name[future]
+                try:
+                    project_data_result = future.result()
+                    if project_data_result:
+                        if project_data_result.get("processing_status") == "skipped_fork":
+                            pass # Already logged
                         else:
-                            repo_data["laborHours"] = 0.0
-                    except Exception as e_lh:
-                        logger.warning(f"Could not estimate labor hours for {project.path_with_namespace}: {e_lh}", exc_info=True)
-                        repo_data["laborHours"] = 0.0 # Default or None if preferred
+                            processed_repo_list.append(project_data_result)
+                except Exception as exc:
+                    logger.error(f"Project {project_name_for_log} generated an exception in its thread: {exc}", exc_info=True)
+                    processed_repo_list.append({"name": project_name_for_log.split('/')[-1], 
+                                                "organization": group.full_path, 
+                                                "processing_error": f"Thread execution failed: {exc}"})
 
-                # Pass default identifiers for organization context to exemption_processor
-                repo_data = exemption_processor.process_repository_exemptions(repo_data, default_org_identifiers=[group.full_path])
-                
-                processed_repo_list.append(repo_data)
-                processed_counter[0] += 1
-
-            except GitlabGetError as p_get_err: # Error fetching full project details
-                logger.error(f"GitLab API error getting full details for project stub {proj_stub.id} ({proj_stub.path_with_namespace}): {p_get_err}. Skipping.", exc_info=False)
-                processed_repo_list.append({"name": proj_stub.path, "organization": group.full_path, "processing_error": f"GitLab API Error getting details: {p_get_err.error_message}"})
-            except Exception as e_proj:
-                logger.error(f"Unexpected error processing project stub {proj_stub.id} ({proj_stub.path_with_namespace}): {e_proj}. Skipping.", exc_info=True)
-                processed_repo_list.append({"name": proj_stub.path, "organization": group.full_path, "processing_error": f"Unexpected Error: {e_proj}"})
-        
-        logger.info(f"Fetched and initiated processing for {project_count_for_group} projects from GitLab group: {group_path}")
+        logger.info(f"Finished processing for {project_count_for_group_submitted} projects from GitLab group: {group_path}. Collected {len(processed_repo_list)} results.")
 
     except GitlabAuthenticationError:
         logger.critical(f"GitLab authentication failed for URL {effective_gitlab_url}. Check token. Skipping GitLab scan for {group_path}.")
@@ -339,7 +439,7 @@ if __name__ == '__main__':
     # This is for direct testing of the connector, not via generate_codejson.py
     from dotenv import load_dotenv as load_dotenv_for_test # Alias to avoid conflict
     load_dotenv_for_test() # Load .env for test execution
-
+    
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     # For testing, get these from .env
@@ -355,12 +455,15 @@ if __name__ == '__main__':
     else:
         logger.info(f"--- Testing GitLab Connector for group: {test_group_path} on {test_gl_url_env} ---")
         counter = [0]
+        counter_lock = threading.Lock()
         repositories = fetch_repositories(
             token=test_gl_token, 
             group_path=test_group_path, 
             processed_counter=counter, 
+            processed_counter_lock=counter_lock,
             debug_limit=None, 
-            gitlab_instance_url=test_gl_url_env
+            gitlab_instance_url=test_gl_url_env,
+            cfg_obj=None
         )
 
         if repositories:

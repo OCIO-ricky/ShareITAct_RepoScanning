@@ -1,0 +1,31 @@
+The system now has two main types of dynamic delay mechanisms for preventing API rate limits errors, and they serve different, complementary purposes:
+
+1- Dynamic Per-API-Call Delay: This is controlled by the *_POST_API_CALL_DELAY_SECONDS (as base values) and the DYNAMIC_DELAY_* settings (for scaling). 
+This mechanism introduces a delay after each individual API call (or before, in the case of GitHub's ThrottledRequester for metadata). The delay amount 
+scales based on the total number of repositories in the current target (e.g., organization, group). Its goal is to throttle the raw rate of requests being 
+sent during the processing of a repository.
+
+2- Inter-Repository Adaptive Delay: This is controlled by the ADAPTIVE_DELAY_* settings. This mechanism introduces a delay after the entire processing of 
+a single repository is complete, but only if the total number of repositories in the current target exceeds ADAPTIVE_DELAY_THRESHOLD_REPOS. Its goal is 
+to provide a coarser-grained pacing when scanning very large targets, giving the APIs a more significant breather between the processing of entire repositories.
+
+Current Implementation:
+
+The connector modules (e.g., github_connector.py, gitlab_connector.py, azure_devops_connector.py) explicitly read the ADAPTIVE_DELAY_* settings from the 
+configuration object (cfg_obj). They use these settings to calculate an inter_repo_adaptive_delay_per_repo (or a similarly named variable).
+This calculated delay is then applied using time.sleep() within the _process_single_..._repository function after all metadata and labor hours estimation 
+for that specific repository have concluded.
+
+How they work together:
+
+Imagine processing a large GitHub organization:
+
+The dynamic per-API-call delay (using GITHUB_POST_API_CALL_DELAY_SECONDS and DYNAMIC_DELAY_*) will be active for each API call made by the PyGithub library 
+(via the ThrottledRequester) while fetching metadata for a repository. It will also be active for each API call made by labor_hrs_estimator.py when fetching 
+commit pages for that repository.
+Once all of that is done for one repository, if the organization is large enough to trigger the inter-repository adaptive delay (based on ADAPTIVE_DELAY_* 
+settings), an additional pause will occur before the system moves on to process the next repository in that same organization.
+
+Conclusion:
+
+Both are currently active and contribute to managing the load on the platform APIs, especially when dealing with large-scale scans. 

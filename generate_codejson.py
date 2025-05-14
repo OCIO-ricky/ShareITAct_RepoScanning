@@ -15,6 +15,7 @@ import time
 import re
 import argparse
 import sys
+import threading # For processed_counter_lock
 import glob
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv # Still useful for non-auth configs
@@ -55,6 +56,10 @@ INTERMEDIATE_FILE_PATTERN = "intermediate_*.json"
 CODE_JSON_SCHEMA_VERSION = "2.0"
 CODE_JSON_MEASUREMENT_TYPE = {"method": "projects"}
 
+# ANSI escape codes for coloring output (if not already defined globally)
+ANSI_RED = "\x1b[31;1m"  # Bold Red
+ANSI_RESET = "\x1b[0m"   # Reset to default color
+
 # --- Configuration Class ---
 class Config:
     def __init__(self):
@@ -76,6 +81,22 @@ class Config:
         
         self.EXEMPTION_LOG_FILEPATH = os.path.join(self.OUTPUT_DIR, self.EXEMPTION_LOG_FILENAME)
         self.PRIVATE_ID_FILEPATH = os.path.join(self.OUTPUT_DIR, self.PRIVATE_ID_FILENAME) # Reverted path
+
+        # --- AI Specific Configurations ---
+        self.AI_ENABLED_ENV = os.getenv("AI_ENABLED", "False").lower() == "true"
+        self.AI_MODEL_NAME_ENV = os.getenv("AI_MODEL_NAME", "gemini-1.0-pro-latest") # Default model
+        self.AI_MAX_OUTPUT_TOKENS_ENV = int(os.getenv("AI_MAX_OUTPUT_TOKENS", "2048")) # Default max tokens
+        self.MAX_TOKENS_ENV = int(os.getenv("MAX_TOKENS", "15000")) # For AI input truncation
+        self.AI_TEMPERATURE_ENV = float(os.getenv("AI_TEMPERATURE", "0.4")) # Default AI temperature
+
+        # --- Adaptive Delay Settings ---
+        self.ADAPTIVE_DELAY_ENABLED_ENV = os.getenv("ADAPTIVE_DELAY_ENABLED", "false").lower() == "true"
+        self.ADAPTIVE_DELAY_BASE_SECONDS_ENV = float(os.getenv("ADAPTIVE_DELAY_BASE_SECONDS", "0.1"))
+        self.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV = int(os.getenv("ADAPTIVE_DELAY_THRESHOLD_REPOS", "50"))
+        self.ADAPTIVE_DELAY_MAX_SECONDS_ENV = float(os.getenv("ADAPTIVE_DELAY_MAX_SECONDS", "2.0"))
+
+        # --- GitHub Specific API Call Throttling ---
+        self.GITHUB_API_CALL_DELAY_SECONDS_ENV = float(os.getenv("GITHUB_API_CALL_DELAY_SECONDS", "0.0"))
 
         self.INSTRUCTIONS_URL = os.getenv("INSTRUCTIONS_PDF_URL")
         self.EXEMPTED_NOTICE_URL = os.getenv("EXEMPTED_NOTICE_PDF_URL")
@@ -102,6 +123,15 @@ class Config:
                 self.HOURS_PER_COMMIT_ENV = None
         else:
             self.HOURS_PER_COMMIT_ENV = None
+        
+        try:
+            self.SCANNER_MAX_WORKERS_ENV = int(os.getenv("SCANNER_MAX_WORKERS", "5")) # Default to 5 workers
+            if self.SCANNER_MAX_WORKERS_ENV <= 0: # Ensure it's a positive number
+                self.SCANNER_MAX_WORKERS_ENV = 5 
+        except ValueError:
+            logging.getLogger(__name__).warning(f"Invalid SCANNER_MAX_WORKERS value in .env. Defaulting to 5.")
+            self.SCANNER_MAX_WORKERS_ENV = 5
+
 
 # --- Logging Setup ---
 def setup_global_logging(log_level=logging.INFO):
@@ -297,11 +327,12 @@ def process_and_finalize_repo_data_list(
                 # Ensure entry in mapping file (stores raw platform_repo_id and URL)
                 prefixed_repo_id_for_code_json = f"{platform.lower()}_{platform_repo_id}" # Create prefixed ID first
                 repo_id_mapping_mgr.get_or_create_mapping_entry(
-                    private_id_value=prefixed_repo_id_for_code_json, # Pass the prefixed ID
+                    platform_repo_id=platform_repo_id, # Pass the original platform_repo_id
+                    organization=org_name,
                     repo_name=repo_name, 
-                    organization=org_name, 
                     repository_url=repo_data.get('repositoryURL', ''), # Pass the URL
-                    contact_emails=private_emails_list
+                    contact_emails=private_emails_list,
+                    platform_prefix=platform.lower() # Pass the prefix
                 )
                 
                 # Create prefixed ID for code.json's privateID field
@@ -383,6 +414,7 @@ def scan_and_process_single_target(
     cfg: Config, 
     repo_id_mapping_mgr: RepoIdMappingManager, # Updated parameter name
     exemption_mgr: ExemptionLogger, 
+    processed_counter_lock: threading.Lock, # Added lock for the counter
     global_repo_counter: List[int], 
     limit_to_pass: Optional[int], 
     auth_params: Dict[str, Any], 
@@ -394,11 +426,12 @@ def scan_and_process_single_target(
     target_logger = setup_target_logger(target_logger_name, target_log_filename, cfg.OUTPUT_DIR)
     
     target_logger.info(f"--- Starting scan for {platform} target: {target_identifier} ---")
-    
+    if hours_per_commit is None or hours_per_commit == 0: hours_per_commit = None
+
     fetched_repos = []
     connector_success = False 
 
-    if limit_to_pass is not None and global_repo_counter[0] >= limit_to_pass:
+    if limit_to_pass is not None and global_repo_counter[0] >= limit_to_pass:        
         target_logger.warning(f"Global debug limit ({limit_to_pass}) reached. Skipping scan for {target_identifier}.")
         target_logger.info(f"--- Finished scan for {platform} target: {target_identifier} (Skipped due to limit) ---")
         return True 
@@ -409,9 +442,12 @@ def scan_and_process_single_target(
                 token=auth_params.get("token"), 
                 org_name=target_identifier, 
                 processed_counter=global_repo_counter, 
+                processed_counter_lock=processed_counter_lock,
                 debug_limit=limit_to_pass, 
                 github_instance_url=platform_url,
-                hours_per_commit=hours_per_commit         
+                hours_per_commit=hours_per_commit,
+                max_workers=cfg.SCANNER_MAX_WORKERS_ENV,
+                cfg_obj=cfg # Pass the cfg object
             )
             connector_success = True
         elif platform == "gitlab":
@@ -419,9 +455,12 @@ def scan_and_process_single_target(
                 token=auth_params.get("token"), 
                 group_path=target_identifier, 
                 processed_counter=global_repo_counter, 
+                processed_counter_lock=processed_counter_lock, # Added missing argument
                 debug_limit=limit_to_pass, 
-                gitlab_instance_url=platform_url, # Corrected param name
-                hours_per_commit=hours_per_commit          
+                gitlab_instance_url=platform_url, 
+                hours_per_commit=hours_per_commit,
+                max_workers=cfg.SCANNER_MAX_WORKERS_ENV,
+                cfg_obj=cfg # Pass the cfg object
             )
             connector_success = True
         elif platform == "azure":
@@ -436,9 +475,11 @@ def scan_and_process_single_target(
                 spn_tenant_id=auth_params.get("spn_tenant_id"),
                 organization_name=org_name, 
                 project_name=project_name, 
-                processed_counter=global_repo_counter, 
-                debug_limit=limit_to_pass,
-                hours_per_commit=hours_per_commit          
+                processed_counter=global_repo_counter,
+                processed_counter_lock=processed_counter_lock, # Added missing argument
+                debug_limit=limit_to_pass, 
+                hours_per_commit=hours_per_commit,
+                max_workers=cfg.SCANNER_MAX_WORKERS_ENV
             )
             connector_success = True
         else:
@@ -709,6 +750,7 @@ def main_cli():
 
     overall_command_success = True 
     global_repo_scan_counter = [0] 
+    global_repo_scan_counter_lock = threading.Lock() # Create the lock here
 
     # Determine repository processing limit (CLI > .env > no limit)
     limit_for_scans = None
@@ -737,11 +779,11 @@ def main_cli():
     elif cfg.HOURS_PER_COMMIT_ENV is not None: 
         hours_per_commit_for_scan = cfg.HOURS_PER_COMMIT_ENV
     
-    if hours_per_commit_for_scan is not None:
-        main_logger.info(f"Using .env: Labor hours estimation ENABLED. Hours per commit set to {hours_per_commit_for_scan}.")
+    if hours_per_commit_for_scan is not None and hours_per_commit_for_scan > 0:
+        source_msg = "CLI" if cli_hpc_val is not None else ".env"
+        main_logger.info(f"Labor hours estimation ENABLED. Hours per commit set to {hours_per_commit_for_scan} (Source: {source_msg}).")
     else: 
-        main_logger.info(f"Labor hours estimation DISABLED for this run (no valid hours_per_commit from CLI or .env).")
-
+        main_logger.info(f"{ANSI_RED}Labor hours estimation DISABLED for this run (no valid hours_per_commit from CLI or .env).{ANSI_RESET}")
     auth_params_for_connector: Dict[str, Any] = {}
 
     if args.command == "github":
@@ -771,7 +813,7 @@ def main_cli():
         
         main_logger.info(f"--- Starting GitHub Scan for {len(targets_to_scan)} {target_entity_name} ---")
         for target in targets_to_scan:
-            if not scan_and_process_single_target("github", target, cfg, repo_id_mapping_manager, exemption_manager, 
+            if not scan_and_process_single_target("github", target, cfg, repo_id_mapping_manager, exemption_manager, global_repo_scan_counter_lock,
                                                   global_repo_scan_counter, limit_for_scans, 
                                                   auth_params=auth_params_for_connector, platform_url=github_url_for_scan, hours_per_commit=hours_per_commit_for_scan):
                 overall_command_success = False 
@@ -794,7 +836,7 @@ def main_cli():
 
         main_logger.info(f"--- Starting GitLab Scan for {len(targets_to_scan)} Groups on {gitlab_url_for_scan} ---")
         for target in targets_to_scan:
-            if not scan_and_process_single_target("gitlab", target, cfg, repo_id_mapping_manager, exemption_manager, 
+            if not scan_and_process_single_target("gitlab", target, cfg, repo_id_mapping_manager, exemption_manager, global_repo_scan_counter_lock,
                                                   global_repo_scan_counter, limit_for_scans, 
                                                   auth_params=auth_params_for_connector, platform_url=gitlab_url_for_scan, hours_per_commit=hours_per_commit_for_scan):
                 overall_command_success = False 
@@ -842,7 +884,7 @@ def main_cli():
         
         main_logger.info(f"--- Starting Azure DevOps Scan for {len(targets_to_scan)} Targets ---")
         for target in targets_to_scan: 
-            if not scan_and_process_single_target("azure", target, cfg, repo_id_mapping_manager, exemption_manager, 
+            if not scan_and_process_single_target("azure", target, cfg, repo_id_mapping_manager, exemption_manager, global_repo_scan_counter_lock,
                                                   global_repo_scan_counter, limit_for_scans, 
                                                   auth_params=auth_params_for_connector, hours_per_commit=hours_per_commit_for_scan):
                 overall_command_success = False 
