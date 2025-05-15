@@ -252,7 +252,8 @@ def _process_single_azure_devops_repository(
                 organization=organization_name, project=project_name, repo_id=repo.id,
                 pat_token=pat_token_for_estimator, 
                 hours_per_commit=hours_per_commit,
-                cfg_obj=cfg_obj # Pass cfg_obj for its own post-API call delays
+                cfg_obj=cfg_obj, # Pass cfg_obj for its own post-API call delays
+                is_empty_repo=repo_data.get('_is_empty_repo', False)
             )
             repo_data["laborHours"] = round(float(labor_df["EstimatedHours"].sum()), 2) if not labor_df.empty else 0.0
             if repo_data["laborHours"] > 0: logger.info(f"Estimated labor hours for {repo.name}: {repo_data['laborHours']}")

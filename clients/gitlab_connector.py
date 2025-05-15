@@ -244,7 +244,8 @@ def _process_single_gitlab_project(
                 hours_per_commit=hours_per_commit, 
                 gitlab_api_url=effective_gitlab_url,
                 cfg_obj=cfg_obj, # Pass cfg_obj for its own post-API call delays
-                num_repos_in_target=None # Labor estimator doesn't need this for its *own* calls, it gets it from cfg_obj
+                num_repos_in_target=None, # Labor estimator doesn't need this for its *own* calls, it gets it from cfg_obj
+                is_empty_repo=repo_data.get('_is_empty_repo', False)
             )
             repo_data["laborHours"] = round(float(labor_df["EstimatedHours"].sum()), 2) if not labor_df.empty else 0.0
             if repo_data["laborHours"] > 0: logger.info(f"Estimated labor hours for {project.path_with_namespace}: {repo_data['laborHours']}")

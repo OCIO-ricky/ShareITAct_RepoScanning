@@ -32,6 +32,9 @@ import aiohttp
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+ANSI_RED = "\033[91m"
+ANSI_RESET = "\033[0m"
+
 # Attempt to import the GitHubRateLimitHandler
 try:
     from .rate_limit_handler import GitHubRateLimitHandler
@@ -78,7 +81,7 @@ def _get_azure_devops_auth_header_val(pat_token: str) -> Optional[str]:
         # The PAT itself is used as the password with an empty username for Basic Auth
         return "Basic " + base64.b64encode(f":{pat_token}".encode()).decode()
     except Exception as e:
-        logger.error(f"Failed to encode Azure DevOps PAT: {e}", exc_info=True)
+        logger.error(f"{ANSI_RED}Failed to encode Azure DevOps PAT: {e}{ANSI_RESET}", exc_info=True)
         return None
 
 def _parse_github_link_header(link_header: Optional[str]) -> Dict[str, str]:
@@ -163,14 +166,14 @@ async def _fetch_all_commit_pages_async(
                                 logger.warning(f"This 403 for {platform_identifier_for_log} occurred despite rate limit handling. Headers might be stale or another issue.")
                             return [] # Return empty list, effectively stopping further processing for this repo
                     except Exception: # Includes JSONDecodeError or if error_data is not a dict
-                        logger.error(f"HTTP error 403 (but not a recognized rate limit message) for {platform_identifier_for_log} from {next_page_url}: {error_text}")
+                        logger.error(f"{ANSI_RED}HTTP error 403 (but not a recognized rate limit message) for {platform_identifier_for_log} from {next_page_url}: {error_text}{ANSI_RESET}")
                     page_data = None # Ensure page_data is None to skip processing
                     break # Stop fetching for this repo on 403
                 
                 response.raise_for_status() # Raise for other 4xx/5xx errors
                 if 'application/json' not in response.headers.get('Content-Type', '').lower():
                     error_text = await response.text()
-                    logger.error(f"Unexpected content type '{response.headers.get('Content-Type')}' for {platform_identifier_for_log} from {next_page_url}. Response: {error_text[:200]}")
+                    logger.error(f"{ANSI_RED}Unexpected content type '{response.headers.get('Content-Type')}' for {platform_identifier_for_log} from {next_page_url}. Response: {error_text[:200]}{ANSI_RESET}")
                     page_data = None
                     break
 
@@ -183,20 +186,28 @@ async def _fetch_all_commit_pages_async(
                 
                 all_raw_commits.extend(page_items)
                 next_page_url = get_next_url_fn(response, page_items)
-        except aiohttp.ClientResponseError as e: # Handles raise_for_status()
-            logger.error(f"AIOHTTP ClientResponseError ({e.status}) fetching commits for {platform_identifier_for_log} from {next_page_url}: {e.message}", exc_info=False)
+        except aiohttp.ClientResponseError as e:  # Handles raise_for_status()
+            if e.status == 409 and platform_identifier_for_log.startswith("GitHub repository:"):
+                logger.warning(
+                    f"AIOHTTP ClientResponseError (409 Conflict) fetching commits for {platform_identifier_for_log} "
+                    f"from {next_page_url}: {e.message}. This often indicates an empty repository."
+                )
+            else:  # For other ClientResponseErrors (e.g., 404, other 4xx, 5xx, or 409 for non-GitHub)
+                logger.error(
+                    f"{ANSI_RED}AIOHTTP ClientResponseError ({e.status}) fetching commits for {platform_identifier_for_log} from {next_page_url}: {e.message}{ANSI_RESET}", exc_info=False
+                )
             page_data = None
             break
         except aiohttp.ClientError as e:
-            logger.error(f"AIOHTTP Client error fetching commits for {platform_identifier_for_log} from {next_page_url}: {e}", exc_info=True)
+            logger.error(f"{ANSI_RED}AIOHTTP Client error fetching commits for {platform_identifier_for_log} from {next_page_url}: {e}{ANSI_RESET}", exc_info=True)
             page_data = None
             break
         except asyncio.TimeoutError:
-            logger.error(f"Timeout error fetching commits for {platform_identifier_for_log} from {next_page_url}", exc_info=True)
+            logger.error(f"{ANSI_RED}Timeout error fetching commits for {platform_identifier_for_log} from {next_page_url}{ANSI_RESET}", exc_info=True)
             page_data = None
             break
         except Exception as e: # Catch broader exceptions like JSONDecodeError (aiohttp.ContentTypeError)
-            logger.error(f"Error processing page for {platform_identifier_for_log} from {next_page_url}: {e}", exc_info=True)
+            logger.error(f"{ANSI_RED}Error processing page for {platform_identifier_for_log} from {next_page_url}: {e}{ANSI_RESET}", exc_info=True)
             page_data = None
             break
         finally: # This block will execute after try/except, before next iteration or exit
@@ -278,13 +289,13 @@ def _fetch_all_commit_pages_sync( # This function is kept for potential future u
                         return []
                 except ValueError: 
                     pass 
-            logger.error(f"HTTP error fetching commits for {platform_identifier_for_log} from {next_page_url}: {e.response.status_code} - {e.response.text}")
+            logger.error(f"{ANSI_RED}HTTP error fetching commits for {platform_identifier_for_log} from {next_page_url}: {e.response.status_code} - {e.response.text}{ANSI_RESET}")
             break 
         except requests.exceptions.RequestException as e:
-            logger.error(f"Request error fetching commits for {platform_identifier_for_log} from {next_page_url}: {e}", exc_info=True)
+            logger.error(f"{ANSI_RED}Request error fetching commits for {platform_identifier_for_log} from {next_page_url}: {e}{ANSI_RESET}", exc_info=True)
             break
         except ValueError as e: # JSONDecodeError
-            logger.error(f"Error decoding JSON for {platform_identifier_for_log} from {next_page_url}: {e}", exc_info=True)
+            logger.error(f"{ANSI_RED}Error decoding JSON for {platform_identifier_for_log} from {next_page_url}: {e}{ANSI_RESET}", exc_info=True)
             break
     
     for commit_item_json in all_raw_commits:
@@ -327,7 +338,7 @@ def _run_commit_fetching_asynchronously(
     try:
         return asyncio.run(_main_async_logic())
     except RuntimeError as e:
-        logger.error(f"RuntimeError during asyncio.run for {platform_identifier_for_log}: {e}. This might happen if called from an already running async event loop without proper nesting.", exc_info=True)
+        logger.error(f"{ANSI_RED}RuntimeError during asyncio.run for {platform_identifier_for_log}: {e}. This might happen if called from an already running async event loop without proper nesting.{ANSI_RESET}", exc_info=True)
         return [] 
 
 # --- Analysis Functions ---
@@ -362,11 +373,11 @@ def analyze_local_git(repo_path: str, hours_per_commit: float = 0.5) -> pd.DataF
                 logger.warning(f"Malformed git log line in {repo_path}: '{line}'. Skipping.")
     
     except FileNotFoundError:
-        logger.error(f"Git command not found or '{repo_path}' is not a valid directory. Ensure Git is installed and in PATH.")
+        logger.error(f"{ANSI_RED}Git command not found or '{repo_path}' is not a valid directory. Ensure Git is installed and in PATH.{ANSI_RESET}")
     except subprocess.CalledProcessError as e:
-        logger.error(f"Error running 'git log' in '{repo_path}': {e.stderr or e.stdout or e}")
+        logger.error(f"{ANSI_RED}Error running 'git log' in '{repo_path}': {e.stderr or e.stdout or e}{ANSI_RESET}")
     except Exception as e:
-        logger.error(f"Unexpected error analyzing local git repo '{repo_path}': {e}", exc_info=True)
+        logger.error(f"{ANSI_RED}Unexpected error analyzing local git repo '{repo_path}':{ANSI_RESET} {e}", exc_info=True)
 
     if not records:
         logger.info(f"No commit records found or parsed for local repo: {repo_path}")
@@ -381,16 +392,22 @@ def analyze_github_repo_sync(
     github_api_url: str = "https://api.github.com",
     session: Optional[requests.Session] = None, # This session is for synchronous calls if any were needed
     cfg_obj: Optional[Any] = None, 
-    num_repos_in_target: Optional[int] = None # For dynamic delay in commit fetching
+    num_repos_in_target: Optional[int] = None, # For dynamic delay in commit fetching
+    is_empty_repo: bool = False # Added to proactively skip empty repos
 ) -> pd.DataFrame:
     """Estimate labor hours from a GitHub repo using its API (asynchronously for commit fetching)."""
     platform_identifier = f"GitHub repository: {owner}/{repo}"
-    logger.info(f"Analyzing {platform_identifier} using API: {github_api_url}")
+
+    if is_empty_repo:
+        logger.info(f"Repository {platform_identifier} is marked as empty. Skipping labor hours estimation.")
+        return _create_summary_dataframe([], 0.0)
 
     if hours_per_commit is None:
         logger.info(f"hours_per_commit is None for GitHub repo {owner}/{repo}. "
                       "Skipping labor hours estimation and returning empty DataFrame.")
         return _create_summary_dataframe([], 0.0)
+    
+    logger.info(f"Analyzing {platform_identifier} for labor hours using API: {github_api_url}")
     
     # --- GitHub Rate Limit Handling ---
     active_rate_limit_handler = None
@@ -477,16 +494,22 @@ def analyze_gitlab_repo_sync(
     gitlab_api_url: str = "https://gitlab.com",
     session: Optional[requests.Session] = None, 
     cfg_obj: Optional[Any] = None,
-    num_repos_in_target: Optional[int] = None # For dynamic delay in commit fetching
+    num_repos_in_target: Optional[int] = None, # For dynamic delay in commit fetching
+    is_empty_repo: bool = False # Added to proactively skip empty repos
 ) -> pd.DataFrame:
     """Estimate labor hours from a GitLab repo using its API (asynchronously for commit fetching)."""
     platform_identifier = f"GitLab project ID: {project_id}"
-    logger.info(f"Analyzing {platform_identifier} using API: {gitlab_api_url}")
+
+    if is_empty_repo:
+        logger.info(f"Repository {platform_identifier} is marked as empty. Skipping labor hours estimation.")
+        return _create_summary_dataframe([], 0.0)
 
     if hours_per_commit is None:
         logger.info(f"hours_per_commit is None for {platform_identifier}. "
                       "Skipping labor hours estimation and returning empty DataFrame.")
         return _create_summary_dataframe([], 0.0)
+
+    logger.info(f"Analyzing {platform_identifier} for labor hours using API: {gitlab_api_url}")
 
     _session_managed_internally = False 
     if session is None:
@@ -555,16 +578,22 @@ def analyze_azure_devops_repo_sync(
     azure_devops_api_url: str = "https://dev.azure.com",
     session: Optional[requests.Session] = None, 
     cfg_obj: Optional[Any] = None,
-    num_repos_in_target: Optional[int] = None # For dynamic delay in commit fetching
+    num_repos_in_target: Optional[int] = None, # For dynamic delay in commit fetching
+    is_empty_repo: bool = False # Added to proactively skip empty repos
 ) -> pd.DataFrame:
     """Estimate labor hours from Azure DevOps repo using its API (asynchronously for commit fetching)."""
     platform_identifier = f"Azure DevOps repository: {organization}/{project}/{repo_id}"
-    logger.info(f"Analyzing {platform_identifier} using API: {azure_devops_api_url}")
     
+    if is_empty_repo:
+        logger.info(f"Repository {platform_identifier} is marked as empty. Skipping labor hours estimation.")
+        return _create_summary_dataframe([], 0.0)
+
     if hours_per_commit is None:
         logger.info(f"hours_per_commit is None for Azure DevOps repo {organization}/{project}/{repo_id}. "
                       "Skipping labor hours estimation and returning empty DataFrame.")
         return _create_summary_dataframe([], 0.0)
+
+    logger.info(f"Analyzing {platform_identifier} for labor hours using API: {azure_devops_api_url}")
 
     _session_managed_internally = False 
     if session is None:

@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 # ANSI escape codes for coloring output (optional, for emphasis in logs)
 ANSI_YELLOW = "\x1b[33;1m"
+ANSI_GREEN = "\x1b[32;1m"
 ANSI_RESET = "\x1b[0m"
 
 class GitHubRateLimitHandler:
@@ -51,11 +52,11 @@ class GitHubRateLimitHandler:
                 if self.remaining is not None and self.reset_time is not None:
                     reset_dt_utc = datetime.fromtimestamp(self.reset_time, tz=timezone.utc)
                     logger.debug(
-                        f"GitHub Rate Limit: Remaining={self.remaining}, Limit={self.limit}, "
-                        f"ResetAt={reset_dt_utc.isoformat()}"
+                        f"{ANSI_YELLOW}GitHub Rate Limit: Remaining={self.remaining}, Limit={self.limit}, "
+                        f"ResetAt={reset_dt_utc.isoformat()}.{ANSI_RESET}"
                     )
                 else:
-                    logger.debug(f"GitHub Rate Limit: Headers not fully populated. Current state: Remaining={self.remaining}, Limit={self.limit}, ResetTime={self.reset_time}")
+                    logger.debug(f"{ANSI_YELLOW}GitHub Rate Limit: Headers not fully populated. Current state: Remaining={self.remaining}, Limit={self.limit}, ResetTime={self.reset_time}{ANSI_RESET}")
 
             except (ValueError, TypeError) as e:
                 logger.warning(f"Could not parse GitHub rate limit headers: {e}. Headers: {headers}")
@@ -107,6 +108,6 @@ class GitHubRateLimitHandler:
                     else: # If limit was never known, set remaining to a safe high number or None
                         self.remaining = None # Forces re-check on next header update
                     logger.info(
-                        f"Finished sleep for GitHub rate limit. Assuming limits are refreshed (New est. remaining: {self.remaining})."
+                        f"{ANSI_GREEN}Finished sleep for GitHub rate limit. Assuming limits are refreshed (New est. remaining: {self.remaining}).{ANSI_RESET}"
                     )
  

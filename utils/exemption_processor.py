@@ -154,9 +154,9 @@ if AI_LIBRARY_IMPORTED: # Only proceed if the google.generativeai library was su
             # Check if the configuration error is due to an invalid API key
             err_str = str(ai_config_err).lower()
             if "api key" in err_str and ("invalid" in err_str or "not valid" in err_str):
-                logger.error(f"Failed to configure Google Generative AI: API key is not valid. AI processing will be disabled. Error: {ai_config_err}")
+                logger.error(f"{ANSI_RED}Failed to configure Google Generative AI: API key is not valid. AI processing will be disabled.{ANSI_RESET} Error: {ai_config_err}")
             else:
-                logger.error(f"Failed to configure Google Generative AI with the provided API key: {ai_config_err}")
+                logger.error(f"{ANSI_RED}Failed to configure Google Generative AI with the provided API key: {ai_config_err}{ANSI_RESET}")
             _MODULE_AI_ENABLED_STATUS = False
 else:
     logger.info("Google Generative AI library not imported. AI processing will be disabled for this module.")

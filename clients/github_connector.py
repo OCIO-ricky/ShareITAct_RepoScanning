@@ -24,6 +24,7 @@ from github import (
 
 # ANSI escape codes for coloring output
 ANSI_YELLOW = "\x1b[33;1m"
+ANSI_RED = "\x1b[31;1m"
 ANSI_RESET = "\x1b[0m"   # Reset to default color
 
 # Attempt to import the exemption processor
@@ -135,13 +136,13 @@ def _get_codeowners_content_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos
             continue
         except GithubException as e:
             if e.status == 404 and isinstance(e.data, dict) and e.data.get('message') == 'This repository is empty.':
-                logger.info(f"Fetching CODEOWNERS from '{location}' for {repo_obj.full_name} failed: GitHub API indicates repository is empty.")
+                logger.info(f"Fetching CODEOWNERS from '{location}' for {repo_obj.full_name} failed: {ANSI_YELLOW}GitHub API indicates repository is empty.{ANSI_RESET}")
                 return None, True # Signal empty repo error
             else:
-                logger.error(f"GitHub API warning fetching CODEOWNERS from '{location}' for {repo_obj.full_name}: {e.status} {getattr(e, 'data', str(e))}", exc_info=False)
+                logger.error(f"{ANSI_RED}GitHub API warning fetching CODEOWNERS from '{location}' for {repo_obj.full_name}{ANSI_RESET}: {e.status} {getattr(e, 'data', str(e))}", exc_info=False)
                 return None, False # Stop if other API error, not an empty repo error
         except Exception as e:
-            logger.error(f"Unexpected error decoding CODEOWNERS from '{location}' for {repo_obj.full_name}: {e}", exc_info=True)
+            logger.error(f"{ANSI_RED}Unexpected error decoding CODEOWNERS from '{location}' for {repo_obj.full_name}:{ANSI_RESET} {e}", exc_info=True)
             return None, False
     logger.debug(f"No CODEOWNERS file found in standard locations for {repo_obj.full_name}")
     return None, False
@@ -156,11 +157,11 @@ def _fetch_tags_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos_in_target: 
         tag_names = [tag.name for tag in tags if tag.name]
         logger.debug(f"Found {len(tag_names)} tags for {repo_obj.full_name}")
     except RateLimitExceededException:
-        logger.error(f"Rate limit exceeded while fetching tags for {repo_obj.full_name}. Skipping tags for this repo.")
+        logger.error(f"{ANSI_YELLOW}GitHub API Rate limit exceeded while fetching tags for {repo_obj.full_name}. Skipping tags for this repo.{ANSI_RESET}")
     except GithubException as e:
-        logger.error(f"GitHub API warning fetching tags for {repo_obj.full_name}: {e.status} {getattr(e, 'data', str(e))}", exc_info=False)
+        logger.error(f"{ANSI_RED}GitHub API warning fetching tags for {repo_obj.full_name}: {e.status} {ANSI_RESET}{getattr(e, 'data', str(e))}", exc_info=False)
     except Exception as e: # Catch other potential errors like network issues during this specific call
-        logger.error(f"Unexpected error fetching tags for {repo_obj.full_name}: {e}", exc_info=True)
+        logger.error(f"{ANSI_RED}Unexpected error fetching tags for {repo_obj.full_name}: {e}{ANSI_RESET}", exc_info=True)
     return tag_names
 
 def _process_single_github_repository(
@@ -288,7 +289,8 @@ def _process_single_github_repository(
                     github_api_url=github_instance_url or "https://api.github.com",
                     session=None,
                     cfg_obj=cfg_obj,
-                    num_repos_in_target=num_repos_in_target 
+                    num_repos_in_target=num_repos_in_target,
+                    is_empty_repo=repo_data.get('_is_empty_repo', False)
                 )
                 if not labor_df.empty:
                     repo_data["laborHours"] = round(float(labor_df["EstimatedHours"].sum()), 2)
