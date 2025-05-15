@@ -828,6 +828,7 @@ github_836394280,cdc-edso-gh-runners,https://github.com/cdcent/cdc-edso-gh-runne
 github_819579447,cdc-edso-gh-stats,https://github.com/cdcent/cdc-edso-gh-stats,Centers for Disease Control and Prevention,,2025-05-14T06:22:05.797487+00:00
 github_858283487,cdc-edso-helm-charts,https://github.com/cdcent/cdc-edso-helm-charts,Centers for Disease Control and Prevention,,2025-05-14T06:22:05.801030+00:00
 github_843017575,cdc-edso-iac,https://github.com/cdcent/cdc-edso-iac,Centers for Disease Control and Prevention,,2025-05-14T06:22:05.800240+00:00
+github_983605128,cdc-edso-image-repos,https://github.com/cdcent/cdc-edso-image-repos,Centers for Disease Control and Prevention,,2025-05-15T04:32:27.320456+00:00
 github_902547911,cdc-edso-jit-runner,https://github.com/cdcent/cdc-edso-jit-runner,Centers for Disease Control and Prevention,,2025-05-14T06:22:05.804467+00:00
 github_966215966,cdc-edso-jitr-arch,https://github.com/cdcent/cdc-edso-jitr-arch,Centers for Disease Control and Prevention,,2025-05-14T06:22:05.820819+00:00
 github_826963105,cdc-edso-platform,https://github.com/cdcent/cdc-edso-platform,Centers for Disease Control and Prevention,,2025-05-14T06:22:05.798419+00:00
@@ -1019,7 +1020,7 @@ github_971594266,nccdphp-od-nccd-edav-api,https://github.com/cdcent/nccdphp-od-n
 github_971576951,nccdphp-od-nccd-proxy,https://github.com/cdcent/nccdphp-od-nccd-proxy,National Center for Chronic Disease Prevention and Health Promotion,anl5@cdc.gov;pcv8@cdc.gov,2025-05-14T06:22:05.826194+00:00
 github_971583962,nccdphp-od-nccd-sams-api,https://github.com/cdcent/nccdphp-od-nccd-sams-api,National Center for Chronic Disease Prevention and Health Promotion,anl5@cdc.gov;pcv8@cdc.gov,2025-05-14T06:22:05.827408+00:00
 github_971569588,nccdphp-od-nccd-shared-golang-azblob-util,https://github.com/cdcent/nccdphp-od-nccd-shared-golang-azblob-util,National Center for Chronic Disease Prevention and Health Promotion,anl5@cdc.gov;pcv8@cdc.gov,2025-05-14T06:22:05.825688+00:00
-github_971569809,nccdphp-od-nccd-shared-golang-dprp-middw,https://github.com/cdcent/nccdphp-od-nccd-shared-golang-dprp-middw,National Center for Chronic Disease Prevention and Health Promotion,anl5@cdc.gov;pcv8@cdc.gov;token@git.cdc.gov.com,2025-05-14T06:22:05.825721+00:00
+github_971569809,nccdphp-od-nccd-shared-golang-dprp-middw,https://github.com/cdcent/nccdphp-od-nccd-shared-golang-dprp-middw,National Center for Chronic Disease Prevention and Health Promotion,anl5@cdc.gov;pcv8@cdc.gov;token@github.com,2025-05-15T04:32:27.099743+00:00
 github_971569914,nccdphp-od-nccd-shared-golang-go-logging,https://github.com/cdcent/nccdphp-od-nccd-shared-golang-go-logging,National Center for Chronic Disease Prevention and Health Promotion,anl5@cdc.gov;pcv8@cdc.gov;token@git.cdc.gov.com,2025-05-14T06:22:05.825795+00:00
 github_971577620,nccdphp-od-nccd-shared-golang-httpf,https://github.com/cdcent/nccdphp-od-nccd-shared-golang-httpf,National Center for Chronic Disease Prevention and Health Promotion,anl5@cdc.gov;pcv8@cdc.gov,2025-05-14T06:22:05.826411+00:00
 github_971569703,nccdphp-od-nccd-shared-golang-kv-account-util,https://github.com/cdcent/nccdphp-od-nccd-shared-golang-kv-account-util,National Center for Chronic Disease Prevention and Health Promotion,anl5@cdc.gov;pcv8@cdc.gov,2025-05-14T06:22:05.825756+00:00
@@ -1128,6 +1129,16 @@ github_376137419,ncipc-wisqars-sas-dataviz,https://github.com/cdcent/ncipc-wisqa
 github_376132782,ncipc-wisqars-sas-jsp-cgi,https://github.com/cdcent/ncipc-wisqars-sas-jsp-cgi,National Center for Injury Prevention and Control,,2025-05-14T06:22:05.752861+00:00
 github_376134731,ncipc-wisqars-sas-mvpiccs,https://github.com/cdcent/ncipc-wisqars-sas-mvpiccs,National Center for Injury Prevention and Control,,2025-05-14T06:22:05.753002+00:00
 github_545458547,NCIPC_AutoML_Proj,https://github.com/cdcent/NCIPC_AutoML_Proj,National Center for Injury Prevention and Control,,2025-05-14T06:22:05.775226+00:00
+github_983579731,ncbddd-dbdid-setnet-birth-defects-nlp,https://github.com/cdcent/ncbddd-dbdid-setnet-birth-defects-nlp,National Center on Birth Defects and Developmental Disabilities,,2025-05-15T04:32:27.286505+00:00
+github_983578576,ncbddd-dbdid-setnet-cmv-data-status,https://github.com/cdcent/ncbddd-dbdid-setnet-cmv-data-status,National Center on Birth Defects and Developmental Disabilities,anl5@cdc.gov;pcv8@cdc.gov,2025-05-15T04:32:27.154538+00:00
+github_983577468,ncbddd-dbdid-setnet-cmv-dataset-creation,https://github.com/cdcent/ncbddd-dbdid-setnet-cmv-dataset-creation,National Center on Birth Defects and Developmental Disabilities,anl5@cdc.gov;pcv8@cdc.gov,2025-05-15T04:32:27.173862+00:00
+github_983583683,ncbddd-dbdid-setnet-geospatial,https://github.com/cdcent/ncbddd-dbdid-setnet-geospatial,National Center on Birth Defects and Developmental Disabilities,,2025-05-15T04:32:27.302784+00:00
+github_983579080,ncbddd-dbdid-setnet-hepc-data-status,https://github.com/cdcent/ncbddd-dbdid-setnet-hepc-data-status,National Center on Birth Defects and Developmental Disabilities,anl5@cdc.gov;pcv8@cdc.gov,2025-05-15T04:32:27.211128+00:00
+github_983578786,ncbddd-dbdid-setnet-hepc-dataset-creation,https://github.com/cdcent/ncbddd-dbdid-setnet-hepc-dataset-creation,National Center on Birth Defects and Developmental Disabilities,anl5@cdc.gov;pcv8@cdc.gov,2025-05-15T04:32:27.193697+00:00
+github_983578934,ncbddd-dbdid-setnet-hepc-logic-checks,https://github.com/cdcent/ncbddd-dbdid-setnet-hepc-logic-checks,National Center on Birth Defects and Developmental Disabilities,anl5@cdc.gov;pcv8@cdc.gov,2025-05-15T04:32:27.193747+00:00
+github_983579596,ncbddd-dbdid-setnet-syphilis-data-status,https://github.com/cdcent/ncbddd-dbdid-setnet-syphilis-data-status,National Center on Birth Defects and Developmental Disabilities,anl5@cdc.gov;pcv8@cdc.gov,2025-05-15T04:32:27.269341+00:00
+github_983579311,ncbddd-dbdid-setnet-syphilis-dataset-creation,https://github.com/cdcent/ncbddd-dbdid-setnet-syphilis-dataset-creation,National Center on Birth Defects and Developmental Disabilities,anl5@cdc.gov;pcv8@cdc.gov,2025-05-15T04:32:27.229815+00:00
+github_983579434,ncbddd-dbdid-setnet-syphilis-logic-checks,https://github.com/cdcent/ncbddd-dbdid-setnet-syphilis-logic-checks,National Center on Birth Defects and Developmental Disabilities,anl5@cdc.gov;pcv8@cdc.gov,2025-05-15T04:32:27.247964+00:00
 github_971561896,ncbddd-dhds-dhds-ui,https://github.com/cdcent/ncbddd-dhds-dhds-ui,National Center on Birth Defects and Developmental Disabilities,anl5@cdc.gov;pcv8@cdc.gov,2025-05-14T06:22:05.824793+00:00
 github_690282210,NCBDDD-EHDI,https://github.com/cdcent/NCBDDD-EHDI,National Center on Birth Defects and Developmental Disabilities,,2025-05-14T06:22:05.786241+00:00
 github_823195088,niosh-dcas-nocts,https://github.com/cdcent/niosh-dcas-nocts,National Institute for Occupational Safety and Health,,2025-05-14T06:22:05.797992+00:00
@@ -1197,6 +1208,7 @@ github_845579016,oamd-dsg-prototyping,https://github.com/cdcent/oamd-dsg-prototy
 github_861962631,oamd-infra-base-images,https://github.com/cdcent/oamd-infra-base-images,Office of Advanced Molecular Detection,,2025-05-14T06:22:05.801244+00:00
 github_878509538,oamd-infra-dockerfiles,https://github.com/cdcent/oamd-infra-dockerfiles,Office of Advanced Molecular Detection,,2025-05-14T06:22:05.803058+00:00
 github_823757615,oamd-infra-gh-actions,https://github.com/cdcent/oamd-infra-gh-actions,Office of Advanced Molecular Detection,,2025-05-14T06:22:05.798154+00:00
+github_983560313,oamd-infra-spoke-terraform,https://github.com/cdcent/oamd-infra-spoke-terraform,Office of Advanced Molecular Detection,,2025-05-15T04:32:27.135312+00:00
 github_796725707,oamd-infra-terraform,https://github.com/cdcent/oamd-infra-terraform,Office of Advanced Molecular Detection,,2025-05-14T06:22:05.795259+00:00
 github_866667653,oamd-infra-test-app,https://github.com/cdcent/oamd-infra-test-app,Office of Advanced Molecular Detection,,2025-05-14T06:22:05.801811+00:00
 github_935034433,oamd-infra-test-terraform,https://github.com/cdcent/oamd-infra-test-terraform,Office of Advanced Molecular Detection,,2025-05-14T06:22:05.807878+00:00
