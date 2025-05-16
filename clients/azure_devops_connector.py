@@ -208,6 +208,12 @@ def _process_single_azure_devops_repository(
                 # Ensure the current (and matching) SHA is in the data for consistency
                 repo_data_to_process[azure_cache_config["commit_sha_field"]] = current_commit_sha
                 
+                # Ensure 'repo_id' is present, mapping from 'id' if necessary
+ #               if "repo_id" not in repo_data_to_process and "id" in repo_data_to_process:
+ #                   logger.debug(f"CACHE HIT {repo_full_name}: Mapping 'id' ({repo_data_to_process['id']}) to 'repo_id' from cached data.")
+ #                   repo_data_to_process["repo_id"] = repo_data_to_process["id"]
+                    # repo_data_to_process.pop("id", None) # Optionally remove the old 'id' field
+
                 # Re-process exemptions to apply current logic/AI models, even on cached data
                 default_ids_for_exemption_cache = [organization_name]
                 if project_name and project_name.lower() != organization_name.lower():
