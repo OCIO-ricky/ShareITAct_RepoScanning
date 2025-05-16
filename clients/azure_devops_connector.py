@@ -21,6 +21,8 @@ from utils.labor_hrs_estimator import _create_summary_dataframe # Import the lab
 
 ANSI_YELLOW = "\x1b[33;1m"
 ANSI_RESET = "\x1b[0m"
+ANSI_RED = "\x1b[31;1m" # Added for consistency in warning messages
+
 
 # --- Try importing Azure DevOps SDK ---
 try:
@@ -397,31 +399,61 @@ def fetch_repositories(
             return []
 
         connection = Connection(base_url=organization_url, creds=credentials)
+        # --- SSL Verification Control ---
+        disable_ssl_env = os.getenv("DISABLE_SSL_VERIFICATION", "false").lower()
+        if disable_ssl_env == "true":
+            connection.session.verify = False # Disable SSL verification for the requests session
+            logger.warning(f"{ANSI_RED}SECURITY WARNING: SSL certificate verification is DISABLED for Azure DevOps connections due to DISABLE_SSL_VERIFICATION=true.{ANSI_RESET}")
+            logger.warning(f"{ANSI_YELLOW}This should ONLY be used for trusted internal environments. Do NOT use in production with public-facing services.{ANSI_RESET}")
+        # --- End SSL Verification Control ---
+
         git_client: GitClient = connection.clients.get_git_client()
         core_client: CoreClient = connection.clients.get_core_client()
 
         logger.info(f"Successfully established connection to Azure DevOps organization: {organization_name} using {auth_method}.")
 
-        # --- Get total repository count for adaptive delay calculation ---
-        num_repos_in_target = 0
+        # --- Determine num_repos_in_target for adaptive delay and dynamic intra-repo delays ---
+        num_repos_in_target_for_delay_calc = 0
         inter_repo_adaptive_delay_per_repo = 0.0 # For the delay *between* processing repos
-        all_repo_stubs_for_count = [] # To store stubs if counted
-        if cfg_obj and cfg_obj.ADAPTIVE_DELAY_ENABLED_ENV:
-            try:
-                logger.info(f"Azure DevOps: Counting repositories in project '{organization_name}/{project_name}' for adaptive delay...")
-                all_repo_stubs_for_count = list(git_client.get_repositories(project=project_name))
-                num_repos_in_target = len(all_repo_stubs_for_count)
-                logger.info(f"Azure DevOps: Found {num_repos_in_target} repositories in project '{organization_name}/{project_name}'.")
+        live_repo_list_materialized = None # To store the live list if fetched for count
 
-                if num_repos_in_target > cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV:
-                    excess_repos = num_repos_in_target - cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV
-                    scale_factor = 1 + (excess_repos / cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV)
-                    calculated_delay = cfg_obj.ADAPTIVE_DELAY_BASE_SECONDS_ENV * scale_factor
-                    inter_repo_adaptive_delay_per_repo = min(calculated_delay, cfg_obj.ADAPTIVE_DELAY_MAX_SECONDS_ENV)
+        cached_repo_count_for_target = 0
+        if previous_scan_cache: # Check if cache was loaded and is not empty
+            azure_id_field = PLATFORM_CACHE_CONFIG.get("azure", {}).get("id_field", "repo_id")
+            valid_cached_repos = [
+                r_data for r_id, r_data in previous_scan_cache.items()
+                if isinstance(r_data, dict) and r_data.get(azure_id_field) is not None
+            ]
+            cached_repo_count_for_target = len(valid_cached_repos)
+            if cached_repo_count_for_target > 0:
+                logger.info(f"CACHE: Found {cached_repo_count_for_target} valid repos in cache for project '{organization_name}/{project_name}'.")
+                num_repos_in_target_for_delay_calc = cached_repo_count_for_target
+                logger.info(f"ADAPTIVE DELAY/PROCESSING: Using cached count ({num_repos_in_target_for_delay_calc}) as total items estimate for target project '{organization_name}/{project_name}'.")
+
+        if num_repos_in_target_for_delay_calc == 0: # If cache was empty or not used for count
+            try:
+                logger.info(f"ADAPTIVE DELAY/PROCESSING: Cache empty or not used for count. Fetching live repository list for project '{organization_name}/{project_name}' to get count.")
+                # This is an API call
+                live_repo_list_materialized = list(git_client.get_repositories(project=project_name))
+                num_repos_in_target_for_delay_calc = len(live_repo_list_materialized)
+                logger.info(f"ADAPTIVE DELAY/PROCESSING: Using live API count ({num_repos_in_target_for_delay_calc}) as total items estimate for target project '{organization_name}/{project_name}'.")
+            except Exception as e_live_count:
+                logger.warning(f"Azure DevOps: Error fetching live repository list for project '{organization_name}/{project_name}' to get count: {e_live_count}. num_repos_in_target_for_delay_calc will be 0.", exc_info=True)
+                num_repos_in_target_for_delay_calc = 0 # Fallback
+
+        # --- Calculate inter-repo adaptive delay if enabled ---
+        if cfg_obj and cfg_obj.ADAPTIVE_DELAY_ENABLED_ENV and num_repos_in_target_for_delay_calc > 0:
+            if num_repos_in_target_for_delay_calc > cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV:
+                excess_repos = num_repos_in_target_for_delay_calc - cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV
+                scale_factor = 1 + (excess_repos / cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV)
+                calculated_delay = cfg_obj.ADAPTIVE_DELAY_BASE_SECONDS_ENV * scale_factor
+                inter_repo_adaptive_delay_per_repo = min(calculated_delay, cfg_obj.ADAPTIVE_DELAY_MAX_SECONDS_ENV)
                 if inter_repo_adaptive_delay_per_repo > 0:
-                        logger.info(f"{ANSI_YELLOW}Azure DevOps: INTER-REPO adaptive delay calculated for project '{organization_name}/{project_name}': {inter_repo_adaptive_delay_per_repo:.2f}s per repo (based on {num_repos_in_target} repos).{ANSI_RESET}")
-            except Exception as count_err:
-                logger.warning(f"Azure DevOps: Error counting repositories in project '{organization_name}/{project_name}' for adaptive delay: {count_err}. Proceeding without adaptive delay for this target.")
+                    logger.info(f"{ANSI_YELLOW}Azure DevOps: INTER-REPO adaptive delay calculated for project '{organization_name}/{project_name}': {inter_repo_adaptive_delay_per_repo:.2f}s per repo (based on {num_repos_in_target_for_delay_calc} repos).{ANSI_RESET}")
+        elif cfg_obj and cfg_obj.ADAPTIVE_DELAY_ENABLED_ENV and num_repos_in_target_for_delay_calc == 0:
+            logger.info(f"Azure DevOps: Adaptive delay enabled but num_repos_in_target_for_delay_calc is 0 for project '{organization_name}/{project_name}'. No inter-repo adaptive delay will be applied.")
+        elif cfg_obj: # Adaptive delay is configured but disabled
+            logger.info(f"Azure DevOps: Adaptive delay is disabled by configuration for project '{organization_name}/{project_name}'.")
 
         # Calculate dynamic POST-API-CALL delay for metadata calls within this target
         dynamic_post_api_call_delay_seconds = 0.0
@@ -433,19 +465,21 @@ def fetch_repositories(
             
             dynamic_post_api_call_delay_seconds = calculate_dynamic_delay(
                 base_delay_seconds=base_delay,
-                num_items=num_repos_in_target if num_repos_in_target > 0 else None,
+                num_items=num_repos_in_target_for_delay_calc if num_repos_in_target_for_delay_calc > 0 else None,
                 threshold_items=threshold, scale_factor=scale, max_delay_seconds=max_d
             )
             if dynamic_post_api_call_delay_seconds > 0:
-                 logger.info(f"{ANSI_YELLOW}Azure DevOps: DYNAMIC POST-API-CALL delay for metadata in project '{organization_name}/{project_name}' set to: {dynamic_post_api_call_delay_seconds:.2f}s (based on {num_repos_in_target} projects).{ANSI_RESET}")
+                 logger.info(f"{ANSI_YELLOW}Azure DevOps: DYNAMIC POST-API-CALL delay for metadata in project '{organization_name}/{project_name}' set to: {dynamic_post_api_call_delay_seconds:.2f}s (based on {num_repos_in_target_for_delay_calc} projects).{ANSI_RESET}")
 
         repo_count_for_project_submitted = 0
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_repo_name = {}
             try:
-                repositories_iterator: List[GitRepository] = git_client.get_repositories(project=project_name)
-                if dynamic_post_api_call_delay_seconds > 0 and repositories_iterator: # Apply delay after the listing call if it was successful
+                # Use the materialized list if available (from live count), otherwise get fresh iterator
+                repositories_iterator: List[GitRepository] = live_repo_list_materialized if live_repo_list_materialized is not None \
+                                                            else git_client.get_repositories(project=project_name)
+                if dynamic_post_api_call_delay_seconds > 0 and repositories_iterator and live_repo_list_materialized is None: # Apply delay only if we just fetched the list live
                     logger.debug(f"Azure DevOps applying SYNC post-API call delay (get_repositories list): {dynamic_post_api_call_delay_seconds:.2f}s")
                     time.sleep(dynamic_post_api_call_delay_seconds)
 

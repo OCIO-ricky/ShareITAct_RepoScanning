@@ -602,6 +602,10 @@ def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> boo
         # The 'privateID' field (now containing prefixed repo_id) comes from the intermediate file.
         # No need to generate or modify it here.
         main_logger.debug(f"Repo {updated_project_data.get('name')}: Using privateID '{updated_project_data.get('privateID')}' from intermediate file.")
+
+       # Remove _is_empty_repo and lastCommitSHA if they exist
+        updated_project_data.pop("_is_empty_repo", None)
+        updated_project_data.pop("lastCommitSHA", None) # Assuming the key is exactly "lastCommitSHA"
         
         processed_projects_for_final_catalog.append(updated_project_data)
 

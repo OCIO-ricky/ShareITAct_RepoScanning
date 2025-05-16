@@ -447,63 +447,84 @@ def fetch_repositories(
     previous_scan_cache: Dict[str, Dict] = {}
     if previous_scan_output_file:
         logger.info(f"Attempting to load previous GitHub scan data for '{org_name}' from: {previous_scan_output_file}")
-        previous_scan_cache = load_previous_scan_data(previous_scan_output_file, "github")
+        # Ensure previous_scan_cache is a dict, even if load_previous_scan_data returns None or wrong type
+        loaded_cache = load_previous_scan_data(previous_scan_output_file, "github")
+        if isinstance(loaded_cache, dict):
+            previous_scan_cache = loaded_cache
+        else:
+            logger.warning(f"CACHE: load_previous_scan_data did not return a dict for {previous_scan_output_file}. Cache will be empty.")
     else:
         logger.info(f"No previous scan output file provided for GitHub org '{org_name}'. Full scan for all repos in this org.")
-
-    num_repos_in_target = 0
-    inter_repo_adaptive_delay_per_repo = 0.0
-    organization_obj_for_iteration = None
-
-    if cfg_obj and cfg_obj.ADAPTIVE_DELAY_ENABLED_ENV:
-        try:
-            logger.info(f"GitHub: Counting repositories in '{org_name}' for adaptive delay...")
-            temp_gh_for_count_url = None
-            if github_instance_url:
-                temp_gh_for_count_url = github_instance_url.rstrip('/') + "/api/v3" if not github_instance_url.endswith("/api/v3") else github_instance_url
-            
-            effective_base_url_for_count = temp_gh_for_count_url if temp_gh_for_count_url else "https://api.github.com"
-            temp_gh_for_count = Github(base_url=effective_base_url_for_count, login_or_token=token, timeout=30)
-            
-            organization_obj_for_iteration = temp_gh_for_count.get_organization(org_name)
-            
-            all_repo_stubs_for_count = list(organization_obj_for_iteration.get_repos(type='all'))
-            num_repos_in_target = len(all_repo_stubs_for_count)
-            logger.info(f"GitHub: Found {num_repos_in_target} repositories in '{org_name}'.")
-
-            if num_repos_in_target > cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV:
-                excess_repos = num_repos_in_target - cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV
-                scale_factor = 1 + (excess_repos / cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV) 
-                calculated_delay = cfg_obj.ADAPTIVE_DELAY_BASE_SECONDS_ENV * scale_factor
-                inter_repo_adaptive_delay_per_repo = min(calculated_delay, cfg_obj.ADAPTIVE_DELAY_MAX_SECONDS_ENV)
-            if inter_repo_adaptive_delay_per_repo > 0:
-                logger.info(f"{ANSI_YELLOW}GitHub: INTER-REPO adaptive delay calculated for '{org_name}': {inter_repo_adaptive_delay_per_repo:.2f}s per repo (based on {num_repos_in_target} repos).{ANSI_RESET}")
-            elif num_repos_in_target > 0 :
-                logger.info(f"GitHub: Adaptive delay not applied for '{org_name}' (num_repos: {num_repos_in_target}, threshold: {cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV}).")
-        except Exception as count_err:
-            logger.warning(f"GitHub: Error counting repositories in '{org_name}' for adaptive delay (details in platform log). Proceeding without adaptive delay for this target.")
-            platform_logger_name = f"clients.github.{org_name.replace('.', '_')}"
-            platform_specific_logger = logging.getLogger(platform_logger_name)
-            if platform_specific_logger.hasHandlers():
-                platform_specific_logger.error(f"Detailed error counting repositories in '{org_name}' for adaptive delay:", exc_info=True)
-    elif cfg_obj:
-        logger.info(f"GitHub: Adaptive delay is disabled by configuration for '{org_name}'.")
 
     try:
         gh_url_for_org_processing = None
         if github_instance_url:
             gh_url_for_org_processing = github_instance_url.rstrip('/') + "/api/v3" if not github_instance_url.endswith("/api/v3") else github_instance_url
+ 
+        ssl_verify_flag = True # Default to True (verify SSL)
+        disable_ssl_env = os.getenv("DISABLE_SSL_VERIFICATION", "false").lower()
+        if disable_ssl_env == "true":
+            ssl_verify_flag = False
+            logger.warning(f"{ANSI_RED}SECURITY WARNING: SSL certificate verification is DISABLED for GitHub connections due to DISABLE_SSL_VERIFICATION=true.{ANSI_RESET}")
+            logger.warning(f"{ANSI_YELLOW}This should ONLY be used for trusted internal environments. Do NOT use in production with public-facing services.{ANSI_RESET}")
         
         # Ensure base_url is always a string, defaulting to public GitHub API if gh_url_for_org_processing is None
         effective_base_url_for_gh = gh_url_for_org_processing if gh_url_for_org_processing else "https://api.github.com"
-        gh = Github(login_or_token=token, base_url=effective_base_url_for_gh, timeout=30)
-        if not organization_obj_for_iteration:
-            apply_dynamic_github_delay(cfg_obj, num_repos_in_target) # Delay before get_organization
-            organization_obj_for_iteration = gh.get_organization(org_name)
+        gh = Github(login_or_token=token, base_url=effective_base_url_for_gh, verify=ssl_verify_flag, timeout=30)
+        # Fetch the organization object once. It will be used for iterating repos.
+        # The num_repos_in_target for this initial call to apply_dynamic_github_delay is not yet known from cache/live.
+        # Passing None will result in base_delay or 0 if base_delay is 0.
+        apply_dynamic_github_delay(cfg_obj, None) 
+        organization_obj_for_iteration = gh.get_organization(org_name)
         logger.info(f"Successfully configured GitHub client for organization: {org_name}.")
     except Exception as e:
         logger.critical(f"Failed to initialize GitHub client for org '{org_name}': {e}", exc_info=True)
         return []
+
+    # --- Determine num_repos_in_target for adaptive delay and dynamic intra-repo delays ---
+    num_repos_in_target = 0 
+    inter_repo_adaptive_delay_per_repo = 0.0
+    live_repo_list_materialized = None # To store the live list if fetched for count
+
+    cached_repo_count_for_target = 0
+    if previous_scan_cache: # Check if cache was loaded and is not empty
+        github_id_field = PLATFORM_CACHE_CONFIG.get("github", {}).get("id_field", "repo_id")
+        valid_cached_repos = [
+            r_data for r_id, r_data in previous_scan_cache.items() 
+            if isinstance(r_data, dict) and r_data.get(github_id_field) is not None
+        ]
+        cached_repo_count_for_target = len(valid_cached_repos)
+        if cached_repo_count_for_target > 0:
+            logger.info(f"CACHE: Found {cached_repo_count_for_target} valid repos in cache for '{org_name}'.")
+            num_repos_in_target = cached_repo_count_for_target
+            logger.info(f"ADAPTIVE DELAY/PROCESSING: Using cached count ({num_repos_in_target}) as total items estimate for target '{org_name}'.")
+
+    if num_repos_in_target == 0: # If cache was empty or not used
+        try:
+            logger.info(f"ADAPTIVE DELAY/PROCESSING: Cache empty or not used for count. Fetching live repository list for '{org_name}' to get count.")
+            apply_dynamic_github_delay(cfg_obj, None) # Delay before get_repos list
+            live_repo_list_materialized = list(organization_obj_for_iteration.get_repos(type='all'))
+            num_repos_in_target = len(live_repo_list_materialized)
+            logger.info(f"ADAPTIVE DELAY/PROCESSING: Using live API count ({num_repos_in_target}) as total items estimate for target '{org_name}'.")
+        except Exception as e_live_count:
+            logger.warning(f"GitHub: Error fetching live repository list for '{org_name}' to get count: {e_live_count}. num_repos_in_target will be 0.", exc_info=True)
+            num_repos_in_target = 0 # Fallback if live counting fails
+
+    # --- Calculate inter-repo adaptive delay if enabled ---
+    if cfg_obj and cfg_obj.ADAPTIVE_DELAY_ENABLED_ENV and num_repos_in_target > 0:
+        if num_repos_in_target > cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV:
+            excess_repos = num_repos_in_target - cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV
+            scale_factor = 1 + (excess_repos / cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV) 
+            calculated_delay = cfg_obj.ADAPTIVE_DELAY_BASE_SECONDS_ENV * scale_factor
+            inter_repo_adaptive_delay_per_repo = min(calculated_delay, cfg_obj.ADAPTIVE_DELAY_MAX_SECONDS_ENV)
+        if inter_repo_adaptive_delay_per_repo > 0:
+            logger.info(f"{ANSI_YELLOW}GitHub: INTER-REPO adaptive delay calculated for '{org_name}': {inter_repo_adaptive_delay_per_repo:.2f}s per repo (based on {num_repos_in_target} repos).{ANSI_RESET}")
+        elif num_repos_in_target > 0 : 
+            logger.info(f"GitHub: Adaptive delay not applied for '{org_name}' (num_repos: {num_repos_in_target}, threshold: {cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV}).")
+    elif cfg_obj and cfg_obj.ADAPTIVE_DELAY_ENABLED_ENV and num_repos_in_target == 0:
+        logger.info(f"GitHub: Adaptive delay enabled but num_repos_in_target is 0 for '{org_name}'. No inter-repo adaptive delay will be applied.")
+    elif cfg_obj: # Adaptive delay is configured but disabled
+        logger.info(f"GitHub: Adaptive delay is disabled by configuration for '{org_name}'.")
 
     processed_repo_list: List[Dict[str, Any]] = []
     repo_count_for_org_processed_or_submitted = 0
@@ -511,8 +532,8 @@ def fetch_repositories(
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_repo_name = {}
         try:
-            apply_dynamic_github_delay(cfg_obj, num_repos_in_target) # Delay before get_repos
-            iterable_repos = organization_obj_for_iteration.get_repos(type='all')
+            # Use the materialized list if available, otherwise iterate from the org object
+            iterable_repos = live_repo_list_materialized if live_repo_list_materialized is not None else organization_obj_for_iteration.get_repos(type='all')
 
             for repo_stub in iterable_repos:
                 with processed_counter_lock:

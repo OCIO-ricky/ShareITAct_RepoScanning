@@ -40,6 +40,17 @@ from dotenv import load_dotenv
 import time
 from typing import List, Optional, Dict, Any
 
+
+# --- SSL Verification Control & urllib3 Warning Suppression ---
+import warnings
+try:
+    from urllib3.exceptions import InsecureRequestWarning
+except ImportError:
+    # Define a dummy if urllib3 is not available, though it's a deep dependency of requests
+    class InsecureRequestWarning(Warning): # type: ignore
+        pass
+
+
 # --- Try importing the AI library ---
 try:
     import google.generativeai as genai
@@ -54,8 +65,9 @@ logger = logging.getLogger(__name__)
 logger.info(f"Initial AI library import status (google.generativeai): {AI_LIBRARY_IMPORTED}")
 
 # ANSI escape codes for coloring output
-ANSI_RED = "\x1b[31;1m"  # Bold Red
-ANSI_RESET = "\x1b[0m"   # Reset to default color
+ANSI_RED = "\x1b[31;1m"
+ANSI_YELLOW = "\x1b[33;1m"
+ANSI_RESET = "\x1b[0m"
 
 # --- Define Exemption Codes as Constants ---
 EXEMPT_BY_LAW = "exemptByLaw"
@@ -133,6 +145,21 @@ logger.info(f"Using Default Public Contact Email: {PUBLIC_CONTACT_EMAIL_DEFAULT}
 _MODULE_AI_ENABLED_STATUS = False # Internal status reflecting API key validity and library import
 PLACEHOLDER_GOOGLE_API_KEY = "YOUR_GOOLE_API_KEY" # As requested
 
+# --- SSL Verification Check and urllib3 Warning Suppression (Module Level) ---
+DISABLE_SSL_ENV = os.getenv("DISABLE_SSL_VERIFICATION", "false").lower()
+if DISABLE_SSL_ENV == "true":
+    logger.warning(f"{ANSI_RED}SECURITY WARNING: Global DISABLE_SSL_VERIFICATION is true.{ANSI_RESET}")
+    logger.warning(f"{ANSI_YELLOW}This may suppress urllib3 InsecureRequestWarnings if the AI client or its auth libraries use HTTPS (non-gRPC) for some operations.{ANSI_RESET}")
+    logger.warning(f"{ANSI_YELLOW}IMPORTANT: This flag DOES NOT disable SSL/TLS certificate verification for gRPC calls made by the Google AI SDK.{ANSI_RESET}")
+    logger.warning(f"{ANSI_YELLOW}If you encounter 'CERTIFICATE_VERIFY_FAILED' errors specifically from Google AI services, you must ensure your system's trust store includes the necessary CA certificates for Google's domains (or any intercepting proxy).{ANSI_RESET}")
+    logger.warning(f"{ANSI_YELLOW}As a consequence of DISABLE_SSL_VERIFICATION=true, AI-driven exemption and organization processing will be SKIPPED to avoid potential SSL errors with AI services.{ANSI_RESET}")
+    try:
+        warnings.filterwarnings('ignore', category=InsecureRequestWarning)
+        logger.info("Suppressed urllib3.exceptions.InsecureRequestWarning globally due to DISABLE_SSL_VERIFICATION=true.")
+    except Exception as e_warn_filter:
+        logger.warning(f"Could not suppress InsecureRequestWarning: {e_warn_filter}")
+
+
 if AI_LIBRARY_IMPORTED: # Only proceed if the google.generativeai library was successfully imported
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
     if not GOOGLE_API_KEY:
@@ -204,7 +231,7 @@ def _call_ai_for_organization(
 ) -> str | None:
     global _MODULE_AI_ENABLED_STATUS 
     if not _MODULE_AI_ENABLED_STATUS or not genai or not AI_ORGANIZATION_ENABLED: # Check AI_ORGANIZATION_ENABLED flag
-        logger.debug("AI processing or AI organization inference is disabled. Skipping AI organization call.")
+        logger.debug("AI processing, AI organization inference, or SSL verification is disabled. Skipping AI organization call.")
         return None
 
     repo_name_for_ai = repo_data.get('name', '')
@@ -214,6 +241,10 @@ def _call_ai_for_organization(
     readme_content_for_ai = repo_data.get('readme_content', '') or ''
     
     # Use passed-in max_input_tokens_for_readme
+    if DISABLE_SSL_ENV == "true":
+        logger.warning(f"AI organization call for '{repo_name_for_ai}' skipped because DISABLE_SSL_VERIFICATION is true.")
+        return None
+
     # Reserve some tokens for the prompt structure and expected AI response
     effective_max_readme_len = max_input_tokens_for_readme - 1500 
     if len(readme_content_for_ai) > effective_max_readme_len:
@@ -302,9 +333,14 @@ def _call_ai_for_exemption(
     max_input_tokens_for_combined_text: int # This is from cfg.MAX_TOKENS_ENV
 ) -> tuple[str | None, str | None]:
     global _MODULE_AI_ENABLED_STATUS
+    repo_name_for_log = repo_data.get('name', 'UnknownRepo') # For logging
 
     if not _MODULE_AI_ENABLED_STATUS or not genai:
         logger.debug("AI processing is disabled. Skipping AI exemption call.")
+        return None, None
+
+    if DISABLE_SSL_ENV == "true":
+        logger.warning(f"AI exemption call for '{repo_name_for_log}' skipped because DISABLE_SSL_VERIFICATION is true.")
         return None, None
 
     readme = repo_data.get('readme_content', '') or ''
@@ -558,7 +594,7 @@ def process_repository_exemptions(
     current_permissions['exemptionText'] = None
     
     # Determine if AI should be attempted for this call based on passed config and module readiness
-    should_attempt_ai = ai_is_enabled_from_config and _MODULE_AI_ENABLED_STATUS
+    should_attempt_ai = ai_is_enabled_from_config and _MODULE_AI_ENABLED_STATUS and (DISABLE_SSL_ENV != "true")
 
     actual_contact_emails = _get_combined_contact_emails(processed_repo_data)
     processed_repo_data['_private_contact_emails'] = actual_contact_emails
@@ -605,7 +641,7 @@ def process_repository_exemptions(
                 elif not validated_ai_org:
                      logger.warning(f"AI suggested org '{ai_org}' for '{repo_name}', but not in known list. Discarding.")
         else:
-            logger.info(f"Organization for '{repo_name}' is '{processed_repo_data.get('organization', '')}', not calling AI for organization.")
+            logger.info(f"Organization for '{repo_name}' is '{processed_repo_data.get('organization', '')}' (or SSL verification disabled), not calling AI for organization.")
     else:
         logger.debug(f"AI is disabled for organization inference for '{repo_name}' (config or module status).")
 
@@ -664,7 +700,7 @@ def process_repository_exemptions(
                 logger.info(f"Repo '{repo_name}': Exempted via AI analysis ({ai_usage_type}).")
     
     if not exemption_applied: # Default if no exemption applied
-        if not should_attempt_ai and not is_empty_repo: # Log if AI was skipped but could have run
+        if not should_attempt_ai and not is_empty_repo and (DISABLE_SSL_ENV != "true"): # Log if AI was skipped but could have run (and SSL wasn't the reason)
             logger.debug(f"AI was disabled for exemption analysis for '{repo_name}' (config or module status). Applying default usageType.")
         # Determine final usageType based on visibility and license if no exemption was applied
         visibility_for_rules = processed_repo_data.get('repositoryVisibility', '').lower()
@@ -744,4 +780,3 @@ def process_repository_exemptions(
 
 
     return processed_repo_data
-

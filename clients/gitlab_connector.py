@@ -383,6 +383,14 @@ def fetch_repositories(
         logger.warning("GitLab group path not provided. Skipping GitLab scan.")
         return []
 
+    ssl_verify_flag = True # Default to True (verify SSL)
+    disable_ssl_env = os.getenv("DISABLE_SSL_VERIFICATION", "false").lower()
+    if disable_ssl_env == "true":
+        ssl_verify_flag = False
+        logger.warning(f"{ANSI_RED}SECURITY WARNING: SSL certificate verification is DISABLED for GitLab connections due to DISABLE_SSL_VERIFICATION=true.{ANSI_RESET}")
+        logger.warning(f"{ANSI_YELLOW}This should ONLY be used for trusted internal environments. Do NOT use in production with public-facing services.{ANSI_RESET}")
+
+
     # --- Load Previous Scan Data for Caching ---
     previous_scan_cache: Dict[str, Dict] = {}
     if previous_scan_output_file:
@@ -395,35 +403,55 @@ def fetch_repositories(
     gl_instance = None # To hold the authenticated gitlab instance
 
     try:
-        gl_instance = gitlab.Gitlab(effective_gitlab_url.strip('/'), private_token=token, timeout=30)
+        gl_instance = gitlab.Gitlab(effective_gitlab_url.strip('/'), private_token=token, timeout=30, ssl_verify=ssl_verify_flag)
         gl_instance.auth() 
         logger.info(f"Successfully connected and authenticated to GitLab instance: {effective_gitlab_url}")
 
         group = gl_instance.groups.get(group_path, lazy=False)
         logger.info(f"Successfully found GitLab group: {group.full_path} (ID: {group.id})")
 
-        # --- Get total project count for adaptive delay calculation ---
-        num_projects_in_target = 0
+        # --- Determine num_projects_in_target for adaptive delay and dynamic intra-repo delays ---
+        num_projects_in_target_for_delay_calc = 0
         inter_repo_adaptive_delay_per_repo = 0.0 # For the delay *between* processing repos
-        all_project_stubs_for_count = [] # To store stubs if counted
-        if cfg_obj and cfg_obj.ADAPTIVE_DELAY_ENABLED_ENV:
-            try:
-                logger.info(f"GitLab: Counting projects in group '{group_path}' for adaptive delay...")
-                # List all projects to get a count.
-                # Using iterator=True and then list() is one way, or iterate and count.
-                all_project_stubs_for_count = list(group.projects.list(all=True, include_subgroups=True, statistics=False, lazy=True))
-                num_projects_in_target = len(all_project_stubs_for_count)
-                logger.info(f"GitLab: Found {num_projects_in_target} projects in group '{group_path}'.")
+        live_project_stubs_materialized = None # To store the live list if fetched for count
 
-                if num_projects_in_target > cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV:
-                    excess_repos = num_projects_in_target - cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV
-                    scale_factor = 1 + (excess_repos / cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV)
-                    calculated_delay = cfg_obj.ADAPTIVE_DELAY_BASE_SECONDS_ENV * scale_factor
-                    inter_repo_adaptive_delay_per_repo = min(calculated_delay, cfg_obj.ADAPTIVE_DELAY_MAX_SECONDS_ENV)
+        cached_project_count_for_target = 0
+        if previous_scan_cache: # Check if cache was loaded and is not empty
+            gitlab_id_field = PLATFORM_CACHE_CONFIG.get("gitlab", {}).get("id_field", "repo_id")
+            valid_cached_projects = [
+                proj_data for proj_id, proj_data in previous_scan_cache.items()
+                if isinstance(proj_data, dict) and proj_data.get(gitlab_id_field) is not None
+            ]
+            cached_project_count_for_target = len(valid_cached_projects)
+            if cached_project_count_for_target > 0:
+                logger.info(f"CACHE: Found {cached_project_count_for_target} valid projects in cache for group '{group_path}'.")
+                num_projects_in_target_for_delay_calc = cached_project_count_for_target
+                logger.info(f"ADAPTIVE DELAY/PROCESSING: Using cached count ({num_projects_in_target_for_delay_calc}) as total items estimate for target group '{group_path}'.")
+
+        if num_projects_in_target_for_delay_calc == 0: # If cache was empty or not used for count
+            try:
+                logger.info(f"ADAPTIVE DELAY/PROCESSING: Cache empty or not used for count. Fetching live project list for group '{group_path}' to get count.")
+                # This is an API call
+                live_project_stubs_materialized = list(group.projects.list(all=True, include_subgroups=True, statistics=False, lazy=True))
+                num_projects_in_target_for_delay_calc = len(live_project_stubs_materialized)
+                logger.info(f"ADAPTIVE DELAY/PROCESSING: Using live API count ({num_projects_in_target_for_delay_calc}) as total items estimate for target group '{group_path}'.")
+            except Exception as e_live_count:
+                logger.warning(f"GitLab: Error fetching live project list for group '{group_path}' to get count: {e_live_count}. num_projects_in_target_for_delay_calc will be 0.", exc_info=True)
+                num_projects_in_target_for_delay_calc = 0 # Fallback
+
+        # --- Calculate inter-repo adaptive delay if enabled ---
+        if cfg_obj and cfg_obj.ADAPTIVE_DELAY_ENABLED_ENV and num_projects_in_target_for_delay_calc > 0:
+            if num_projects_in_target_for_delay_calc > cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV:
+                excess_repos = num_projects_in_target_for_delay_calc - cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV
+                scale_factor = 1 + (excess_repos / cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV)
+                calculated_delay = cfg_obj.ADAPTIVE_DELAY_BASE_SECONDS_ENV * scale_factor
+                inter_repo_adaptive_delay_per_repo = min(calculated_delay, cfg_obj.ADAPTIVE_DELAY_MAX_SECONDS_ENV)
                 if inter_repo_adaptive_delay_per_repo > 0:
-                        logger.info(f"{ANSI_YELLOW}GitLab: INTER-REPO adaptive delay calculated for group '{group_path}': {inter_repo_adaptive_delay_per_repo:.2f}s per project (based on {num_projects_in_target} projects).{ANSI_RESET}")
-            except Exception as count_err:
-                logger.warning(f"GitLab: Error counting projects in group '{group_path}' for adaptive delay: {count_err}. Proceeding without adaptive delay for this target.")
+                    logger.info(f"{ANSI_YELLOW}GitLab: INTER-REPO adaptive delay calculated for group '{group_path}': {inter_repo_adaptive_delay_per_repo:.2f}s per project (based on {num_projects_in_target_for_delay_calc} projects).{ANSI_RESET}")
+        elif cfg_obj and cfg_obj.ADAPTIVE_DELAY_ENABLED_ENV and num_projects_in_target_for_delay_calc == 0:
+            logger.info(f"GitLab: Adaptive delay enabled but num_projects_in_target_for_delay_calc is 0 for group '{group_path}'. No inter-repo adaptive delay will be applied.")
+        elif cfg_obj: # Adaptive delay is configured but disabled
+            logger.info(f"GitLab: Adaptive delay is disabled by configuration for group '{group_path}'.")
 
         # Calculate dynamic POST-API-CALL delay for metadata calls within this target
         dynamic_post_api_call_delay_seconds = 0.0
@@ -435,18 +463,20 @@ def fetch_repositories(
             
             dynamic_post_api_call_delay_seconds = calculate_dynamic_delay(
                 base_delay_seconds=base_delay,
-                num_items=num_projects_in_target if num_projects_in_target > 0 else None, # Pass None if count failed or is 0
+                num_items=num_projects_in_target_for_delay_calc if num_projects_in_target_for_delay_calc > 0 else None,
                 threshold_items=threshold, scale_factor=scale, max_delay_seconds=max_d
             )
             if dynamic_post_api_call_delay_seconds > 0:
-                 logger.info(f"{ANSI_YELLOW}GitLab: DYNAMIC POST-API-CALL delay for metadata in group '{group_path}' set to: {dynamic_post_api_call_delay_seconds:.2f}s (based on {num_projects_in_target} projects).{ANSI_RESET}")
+                 logger.info(f"{ANSI_YELLOW}GitLab: DYNAMIC POST-API-CALL delay for metadata in group '{group_path}' set to: {dynamic_post_api_call_delay_seconds:.2f}s (based on {num_projects_in_target_for_delay_calc} projects).{ANSI_RESET}")
 
         project_count_for_group_submitted = 0
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_project_name = {}
             try:
-                projects_iterator = group.projects.list(all=True, include_subgroups=True, statistics=False, lazy=True) # statistics=False for stub
+                # Use the materialized list if available (from live count), otherwise get fresh iterator
+                projects_iterator = live_project_stubs_materialized if live_project_stubs_materialized is not None \
+                                    else group.projects.list(all=True, include_subgroups=True, statistics=False, lazy=True)
                 for proj_stub in projects_iterator:
                     with processed_counter_lock:
                         if debug_limit is not None and processed_counter[0] >= debug_limit:

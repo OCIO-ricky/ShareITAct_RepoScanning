@@ -18,12 +18,11 @@ services:
       - AI_ENABLED=true
       # Add any other .env variables your script needs
     volumes:
-      - ./output_github:/app/output 
+      - ./output:/app/output 
       - ./logs:/app/logs 
       - .env:/app/.env
     command: >
-      python generate_codejson.py 
-      --platform github
+      python generate_codejson.py github
  
   scan-gitlab:
     build: .
@@ -35,12 +34,11 @@ services:
       - AI_ENABLED=${AI_ENABLED:-true}
       - SCANNER_MAX_WORKERS=4
     volumes:
-      - ./output_gitlab:/app/output
+      - ./output:/app/output
       - ./logs:/app/logs 
       - .env:/app/.env
     command: >
-      python generate_codejson.py 
-      --platform gitlab 
+      python generate_codejson.py gitlab 
 
   # scan-azure:
   #   build: .
@@ -52,12 +50,11 @@ services:
   #     - AI_ENABLED=true}
   #     - SCANNER_MAX_WORKERS=4
   #   volumes:
-  #     - ./output_azure:/app/output
+  #     - ./output:/app/output
   #     - ./logs:/app/logs
   #     - .env:/app/.env
   #   command: >
-  #     python generate_codejson.py 
-  #     --platform azure 
+  #     python generate_codejson.py azure 
 
 
 # -------------------------
