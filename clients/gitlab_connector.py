@@ -180,6 +180,12 @@ def _process_single_gitlab_project(
                     repo_data_to_process = cached_repo_entry.copy()
                     # Ensure the current (and matching) SHA is in the data for consistency
                     repo_data_to_process[gitlab_cache_config["commit_sha_field"]] = current_commit_sha
+
+                    # Ensure 'repo_id' is present, mapping from 'id' if necessary for older cached formats
+                    if "repo_id" not in repo_data_to_process and "id" in repo_data_to_process:
+                        logger.debug(f"CACHE HIT {project.path_with_namespace}: Mapping 'id' ({repo_data_to_process['id']}) to 'repo_id' from cached data.")
+                        repo_data_to_process["repo_id"] = repo_data_to_process["id"]
+                        repo_data_to_process.pop("id", None) 
                     
                     # Re-process exemptions to apply current logic/AI models, even on cached data
                     if cfg_obj:

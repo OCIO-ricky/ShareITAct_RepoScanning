@@ -162,8 +162,6 @@ class ExemptionLogger:
                 return False
         # Lock is released automatically when exiting 'with self.lock:' block
 
-    def get_new_exemption_count(self):
-            return False
 
     def get_new_exemption_count(self):
         """Returns the count of new exemptions logged during this run."""
