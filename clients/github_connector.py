@@ -198,16 +198,16 @@ def _process_single_github_repository(
         A dictionary containing processed metadata for the repository.
     """
     repo_full_name = repo.full_name
-    # logger.info(f"Processing repository: {repo_full_name}") # Logging is handled by cache hit/miss logic
     repo_data: Dict[str, Any] = {"name": repo.name, "organization": org_name}
     github_cache_config = PLATFORM_CACHE_CONFIG["github"] # Get GitHub specific cache keys
+    repo_id_str = str(repo.id) # Use the live repository's ID as the key
     # --- Caching Logic ---
     if current_commit_sha: # Only attempt cache hit if we have a current SHA to compare
-        cached_repo_entry = previous_scan_cache.get(repo_full_name)
+        cached_repo_entry = previous_scan_cache.get(repo_id_str)
         if cached_repo_entry:
             cached_commit_sha = cached_repo_entry.get(github_cache_config["commit_sha_field"])
             if cached_commit_sha and current_commit_sha == cached_commit_sha:
-                logger.info(f"CACHE HIT: GitHub repo '{repo_full_name}' (SHA: {current_commit_sha}) has not changed. Using cached data.")
+                logger.info(f"CACHE HIT: GitHub repo '{repo_full_name}' (ID: {repo_id_str}, SHA: {current_commit_sha}) has not changed. Using cached data.")
                 
                 # Start with the cached data
                 repo_data_to_process = cached_repo_entry.copy()
@@ -223,7 +223,7 @@ def _process_single_github_repository(
                         ai_temperature_from_config=cfg_obj.AI_TEMPERATURE_ENV, ai_max_output_tokens_from_config=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV,
                         ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV)
                 return repo_data_to_process # Return cached and re-processed data
-    logger.info(f"CACHE MISS or no current SHA: Processing repository: {repo_full_name} with full data fetch.")
+    logger.info(f"CACHE MISS or no current SHA: Processing repository: {repo_full_name} (ID: {repo_id_str}) with full data fetch.")
 
     try:
         if repo.fork:

@@ -1,5 +1,39 @@
 [
     {
+        "name": "ocio-netpro",
+        "organization": "Office of the Chief Information Officer",
+        "_is_empty_repo": false,
+        "description": "This repository serves as a personal sandbox for technical testing and proof-of-concept (PoC) activities.\r\nIt is intended for experimenting with new frameworks, validating scripts, evaluating cloud deployment patterns, and exploring integration workfl",
+        "repositoryURL": "https://github.com/CDCGov/ShareIT-Act/instructions.pdf",
+        "homepageURL": "https://gitlab.com/cdcent/ocio-netpro",
+        "vcs": "git",
+        "repositoryVisibility": "private",
+        "status": "development",
+        "version": "1.0.0",
+        "laborHours": 2.0,
+        "languages": [
+            "C#"
+        ],
+        "tags": [
+            "python",
+            "visualization"
+        ],
+        "date": {
+            "created": "2025-04-27T03:19:32.371000+00:00",
+            "lastModified": "2025-05-03T00:13:23.098000+00:00"
+        },
+        "permissions": {
+            "usageType": "governmentWideReuse",
+            "licenses": []
+        },
+        "contact": {
+            "email": "shareit@cdc.gov"
+        },
+        "id": 69325503,
+        "readme_url": "https://gitlab.com/cdcent/ocio-netpro/-/blob/master/README.md",
+        "lastCommitSHA": "fffe871b23630105f02a20112b0b2ffaedac301e"
+    },
+    {
         "name": "mynodejs",
         "organization": "National Center for Chronic Disease Prevention and Health Promotion (NCCDPHP)",
         "_is_empty_repo": false,
@@ -35,40 +69,6 @@
         "id": 69325486,
         "readme_url": "https://gitlab.com/cdcent/mynodejs/-/blob/master/README.md",
         "lastCommitSHA": "b09686e018f2b86f59f6a425e2894d7faae292d6"
-    },
-    {
-        "name": "ocio-netpro",
-        "organization": "Office of the Chief Information Officer",
-        "_is_empty_repo": false,
-        "description": "This repository serves as a personal sandbox for technical testing and proof-of-concept (PoC) activities.\r\nIt is intended for experimenting with new frameworks, validating scripts, evaluating cloud deployment patterns, and exploring integration workfl",
-        "repositoryURL": "https://github.com/CDCGov/ShareIT-Act/instructions.pdf",
-        "homepageURL": "https://gitlab.com/cdcent/ocio-netpro",
-        "vcs": "git",
-        "repositoryVisibility": "private",
-        "status": "development",
-        "version": "1.0.0",
-        "laborHours": 2.0,
-        "languages": [
-            "C#"
-        ],
-        "tags": [
-            "python",
-            "visualization"
-        ],
-        "date": {
-            "created": "2025-04-27T03:19:32.371000+00:00",
-            "lastModified": "2025-05-03T00:13:23.098000+00:00"
-        },
-        "permissions": {
-            "usageType": "governmentWideReuse",
-            "licenses": []
-        },
-        "contact": {
-            "email": "shareit@cdc.gov"
-        },
-        "id": 69325503,
-        "readme_url": "https://gitlab.com/cdcent/ocio-netpro/-/blob/master/README.md",
-        "lastCommitSHA": "fffe871b23630105f02a20112b0b2ffaedac301e"
     },
     {
         "name": "csels-hub",
