@@ -11,8 +11,8 @@ services:
     container_name: scanner-github-instance
     environment:
       # These environment variables will override any values from the .env file
-      - GITHUB_TOKEN=${"YOUR_GITHUB_PAT"}
-      - GOOGLE_API_KEY=${YOUR_GOOGLE_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GITHUB_ORGS=cdcent,cdcgov
       - SCANNER_MAX_WORKERS=3
       - AI_ENABLED=true
@@ -29,9 +29,9 @@ services:
     build: .
     container_name: scanner-gitlab-instance
     environment:
-      - GITLAB_TOKEN=${"YOUR_GITLAB_PAT"}
+      - GITLAB_TOKEN=${GITLAB_TOKEN}
       - GITLAB_GROUPS=cdcent
-      - GOOGLE_API_KEY=${YOUR_GOOGLE_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - AI_ENABLED=${AI_ENABLED:-true}
       - SCANNER_MAX_WORKERS=4
     volumes:
@@ -46,9 +46,9 @@ services:
   #   build: .
   #   container_name: scanner-azure-instance
   #   environment:
-  #     - AZURE_DEVOPS_TOKEN=${YOUR_AZURE_DEVOPS_PAT}
+  #     - AZURE_DEVOPS_TOKEN=${AZURE_DEVOPS_TOKEN}
   #     - AZURE_DEVOPS_TARGETS="MyAzureOrg/ProjectA,MyAzureOrg/ProjectB"
-  #     - GOOGLE_API_KEY=${YOUR_GOOGLE_API_KEY}
+  #     - GOOGLE_API_KEY=${GOOGLE_API_KEY}
   #     - AI_ENABLED=true}
   #     - SCANNER_MAX_WORKERS=4
   #   volumes:
