@@ -16,6 +16,7 @@ import base64
 from typing import List, Dict, Optional, Any, Tuple
 from datetime import timezone, datetime
 from utils.delay_calculator import calculate_dynamic_delay # Import the calculator
+from utils.caching import load_previous_scan_data, PLATFORM_CACHE_CONFIG
 from utils.labor_hrs_estimator import _create_summary_dataframe # Import the labor hrs estimator
 
 ANSI_YELLOW = "\x1b[33;1m"
@@ -180,16 +181,47 @@ def _process_single_azure_devops_repository(
     hours_per_commit: Optional[float],
     cfg_obj: Any, # Pass the Config object
     inter_repo_adaptive_delay_seconds: float, # Inter-repository adaptive delay
-    dynamic_post_api_call_delay_seconds: float # Per-API call dynamic delay
+    dynamic_post_api_call_delay_seconds: float, # Per-API call dynamic delay
+    # --- Parameters for Caching ---
+    previous_scan_cache: Dict[str, Dict],
+    current_commit_sha: Optional[str]
 ) -> Dict[str, Any]:
     """
     Processes a single Azure DevOps repository to extract its metadata.
     This function is intended to be run in a separate thread.
     """
     repo_full_name = f"{organization_name}/{project_name}/{repo.name}"
+    repo_id_str = str(repo.id) # Key for caching
     repo_data: Dict[str, Any] = {"name": repo.name, "organization": organization_name, "_azure_project_name": project_name}
+    azure_cache_config = PLATFORM_CACHE_CONFIG["azure"]
 
-    logger.info(f"Processing repository: {repo_full_name}")
+    # --- Caching Logic ---
+    if current_commit_sha: # Only attempt cache hit if we have a current SHA to compare
+        cached_repo_entry = previous_scan_cache.get(repo_id_str)
+        if cached_repo_entry:
+            cached_commit_sha = cached_repo_entry.get(azure_cache_config["commit_sha_field"])
+            if cached_commit_sha and current_commit_sha == cached_commit_sha:
+                logger.info(f"CACHE HIT: Azure DevOps repo '{repo_full_name}' (ID: {repo_id_str}, SHA: {current_commit_sha}) has not changed. Using cached data.")
+                
+                # Start with the cached data
+                repo_data_to_process = cached_repo_entry.copy()
+                # Ensure the current (and matching) SHA is in the data for consistency
+                repo_data_to_process[azure_cache_config["commit_sha_field"]] = current_commit_sha
+                
+                # Re-process exemptions to apply current logic/AI models, even on cached data
+                default_ids_for_exemption_cache = [organization_name]
+                if project_name and project_name.lower() != organization_name.lower():
+                    default_ids_for_exemption_cache.append(project_name)
+                if cfg_obj:
+                    repo_data_to_process = exemption_processor.process_repository_exemptions(
+                        repo_data_to_process, default_org_identifiers=default_ids_for_exemption_cache,
+                        ai_is_enabled_from_config=cfg_obj.AI_ENABLED_ENV, ai_model_name_from_config=cfg_obj.AI_MODEL_NAME_ENV,
+                        ai_temperature_from_config=cfg_obj.AI_TEMPERATURE_ENV, ai_max_output_tokens_from_config=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV,
+                        ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV)
+                return repo_data_to_process # Return cached and re-processed data
+
+    logger.info(f"CACHE MISS or no current SHA: Processing Azure DevOps repo: {repo_full_name} (ID: {repo_id_str}) with full data fetch.")
+
     try:
         if repo.is_fork and repo.parent_repository:
             parent_info = "unknown parent"
@@ -236,10 +268,16 @@ def _process_single_azure_devops_repository(
             "date": {"created": created_at_iso, "lastModified": pushed_at_iso},
             "permissions": {"usageType": "openSource", "exemptionText": None, "licenses": []},
             "contact": {}, "contractNumber": None, "readme_content": readme_content_str,
-            "_codeowners_content": codeowners_content_str, "repo_id": repo.id, "readme_url": readme_html_url,
+            "_codeowners_content": codeowners_content_str,
+            "repo_id": repo.id, # Add repo_id back
+            "readme_url": readme_html_url, 
             "_api_tags": repo_git_tags, "archived": repo.is_disabled if hasattr(repo, 'is_disabled') else False
         })
         repo_data.setdefault('_is_empty_repo', False)
+        # Store the current commit SHA for the next scan's cache, if available
+        if current_commit_sha:
+            repo_data[azure_cache_config["commit_sha_field"]] = current_commit_sha
+
 
         default_ids_for_exemption = [organization_name]
         if project_name and project_name.lower() != organization_name.lower():
@@ -301,7 +339,8 @@ def fetch_repositories(
     debug_limit: Optional[int] = None, 
     hours_per_commit: Optional[float] = None,
     max_workers: int = 5, 
-    cfg_obj: Optional[Any] = None # Accept the cfg object
+    cfg_obj: Optional[Any] = None, # Accept the cfg object
+    previous_scan_output_file: Optional[str] = None # For caching
 ) -> list[dict]:
     """
     Fetches repository details from a specific Azure DevOps project.
@@ -311,6 +350,14 @@ def fetch_repositories(
     if not AZURE_SDK_AVAILABLE:
         logger.error("Azure DevOps SDK not available. Skipping Azure DevOps scan.")
         return []
+
+    # --- Load Previous Scan Data for Caching ---
+    previous_scan_cache: Dict[str, Dict] = {}
+    if previous_scan_output_file:
+        logger.info(f"Attempting to load previous Azure DevOps scan data for '{organization_name}/{project_name}' from: {previous_scan_output_file}")
+        previous_scan_cache = load_previous_scan_data(previous_scan_output_file, "azure")
+    else:
+        logger.info(f"No previous scan output file provided for Azure DevOps target '{organization_name}/{project_name}'. Full scan for all repos in this target.")
 
     azure_devops_api_url = os.getenv("AZURE_DEVOPS_API_URL", "https://dev.azure.com").strip('/')
     organization_url = f"{azure_devops_api_url}/{organization_name}"
@@ -403,6 +450,28 @@ def fetch_repositories(
                             break
                         processed_counter[0] += 1
                     
+                    # --- Get current commit SHA for caching comparison ---
+                    current_commit_sha_for_cache = None
+                    repo_stub_full_name_for_log = f"{organization_name}/{project_name}/{repo_stub.name}"
+                    try:
+                        if repo_stub.size == 0: # Proactive check if size is available and 0
+                             logger.info(f"Repo {repo_stub_full_name_for_log} has size 0. Cannot get current commit SHA for caching.")
+                        elif repo_stub.default_branch:
+                            # This is an API call
+                            if dynamic_post_api_call_delay_seconds > 0: # Delay before this critical API call
+                                logger.debug(f"Azure DevOps applying SYNC post-API call delay (get_commits for SHA): {dynamic_post_api_call_delay_seconds:.2f}s")
+                                time.sleep(dynamic_post_api_call_delay_seconds)
+                            
+                            search_criteria = {'itemVersion.version': repo_stub.default_branch, '$top': 1}
+                            commits = git_client.get_commits(repository_id=repo_stub.id, project=project_name, search_criteria=search_criteria, top=1)
+                            if commits:
+                                current_commit_sha_for_cache = commits[0].commit_id
+                                logger.debug(f"Successfully fetched current commit SHA '{current_commit_sha_for_cache}' for default branch '{repo_stub.default_branch}' of {repo_stub_full_name_for_log}.")
+                    except AzureDevOpsServiceError as e_sha_fetch:
+                        logger.warning(f"Azure DevOps API error fetching current commit SHA for {repo_stub_full_name_for_log}: {e_sha_fetch}. Proceeding without SHA for caching.")
+                    except Exception as e_sha_unexpected:
+                        logger.error(f"Unexpected error fetching current commit SHA for {repo_stub_full_name_for_log}: {e_sha_unexpected}. Proceeding without SHA for caching.", exc_info=True)
+
                     repo_count_for_project_submitted += 1
                     future = executor.submit(
                         _process_single_azure_devops_repository,
@@ -418,7 +487,9 @@ def fetch_repositories(
                         hours_per_commit,
                         cfg_obj,
                         inter_repo_adaptive_delay_per_repo, # Pass inter-repo adaptive delay
-                        dynamic_post_api_call_delay_seconds # Pass dynamic per-API call delay
+                        dynamic_post_api_call_delay_seconds, # Pass dynamic per-API call delay
+                        previous_scan_cache=previous_scan_cache, # Pass cache
+                        current_commit_sha=current_commit_sha_for_cache # Pass current SHA
                     )
                     future_to_repo_name[future] = f"{organization_name}/{project_name}/{repo_stub.name}"
             
@@ -504,7 +575,8 @@ if __name__ == '__main__':
             processed_counter=counter, 
             processed_counter_lock=counter_lock, 
             debug_limit=None,
-            cfg_obj=None # For this direct test, cfg_obj is None.
+            cfg_obj=None, # For this direct test, cfg_obj is None.
+            previous_scan_output_file=None # No cache for direct test
         )
         
         if repositories:

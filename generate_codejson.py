@@ -424,6 +424,11 @@ def scan_and_process_single_target(
     target_logger_name = f"{platform}.{target_identifier.replace('/', '_').replace('.', '_')}"
     target_log_filename = f"{platform}_{target_identifier.replace('/', '_').replace('.', '_')}.log"
     target_logger = setup_target_logger(target_logger_name, target_log_filename, cfg.OUTPUT_DIR)
+
+    # --- Determine the path for the previous scan's intermediate file for this specific target ---
+    # This will be used as the cache input for the current scan of this target.
+    previous_intermediate_filename = f"intermediate_{platform}_{target_identifier.replace('/', '_').replace('.', '_')}.json"
+    previous_intermediate_filepath = os.path.join(cfg.OUTPUT_DIR, previous_intermediate_filename)
     
     target_logger.info(f"--- Starting scan for {platform} target: {target_identifier} ---")
     if hours_per_commit is None or hours_per_commit == 0: hours_per_commit = None
@@ -447,7 +452,8 @@ def scan_and_process_single_target(
                 github_instance_url=platform_url,
                 hours_per_commit=hours_per_commit,
                 max_workers=cfg.SCANNER_MAX_WORKERS_ENV,
-                cfg_obj=cfg # Pass the cfg object
+                cfg_obj=cfg, # Pass the cfg object
+                previous_scan_output_file=previous_intermediate_filepath # Pass path to previous intermediate file
             )
             connector_success = True
         elif platform == "gitlab":
@@ -455,12 +461,13 @@ def scan_and_process_single_target(
                 token=auth_params.get("token"), 
                 group_path=target_identifier, 
                 processed_counter=global_repo_counter, 
-                processed_counter_lock=processed_counter_lock, # Added missing argument
+                processed_counter_lock=processed_counter_lock, 
                 debug_limit=limit_to_pass, 
                 gitlab_instance_url=platform_url, 
                 hours_per_commit=hours_per_commit,
                 max_workers=cfg.SCANNER_MAX_WORKERS_ENV,
-                cfg_obj=cfg # Pass the cfg object
+                cfg_obj=cfg, # Pass the cfg object
+                previous_scan_output_file=previous_intermediate_filepath # Pass path to previous intermediate file
             )
             connector_success = True
         elif platform == "azure":
@@ -645,14 +652,30 @@ def parse_azure_targets_from_string_list(raw_target_list: List[str], default_org
     return parsed_targets
 
 # --- CLI Helper for Token Validation ---
-def _validate_cli_pat_token(token_value: Optional[str], cli_arg_name: str, platform_name: str, placeholder_check_func, main_logger: logging.Logger) -> str:
-    if not token_value:
-        main_logger.error(f"--{cli_arg_name} ({platform_name} PAT) is required for {platform_name} scans.")
+def _get_and_validate_token(
+    cli_token_value: Optional[str], 
+    env_var_name: str, 
+    cli_arg_name: str, 
+    platform_name: str, 
+    placeholder_check_func: callable, 
+    main_logger: logging.Logger
+) -> str:
+    token_to_use = None
+    source = ""
+    if cli_token_value:
+        token_to_use = cli_token_value
+        source = f"--{cli_arg_name} CLI argument"
+    elif os.getenv(env_var_name):
+        token_to_use = os.getenv(env_var_name)
+        source = f"{env_var_name} environment variable"
+    if not token_to_use:
+        main_logger.error(f"{platform_name} PAT not found. Please provide it via --{cli_arg_name} or the {env_var_name} environment variable.")
         sys.exit(1)
-    if placeholder_check_func(token_value):
-        main_logger.error(f"{platform_name} PAT provided via --{cli_arg_name} is a placeholder. Cannot scan {platform_name}.")
+    if placeholder_check_func(token_to_use):
+        main_logger.error(f"{platform_name} PAT provided via {source} is a placeholder. Cannot scan {platform_name}.")
         sys.exit(1)
-    return token_value
+    main_logger.info(f"Using {platform_name} token from {source}.")
+    return token_to_use
 
 # --- Helper for Time Formatting ---
 def format_duration(total_seconds: float) -> str:
@@ -791,8 +814,14 @@ def main_cli():
         targets_to_scan = []
         target_entity_name = "Public GitHub.com organizations"
         
-        auth_params_for_connector["token"] = _validate_cli_pat_token(
-            args.gh_tk, "gh-tk", "GitHub", clients.github_connector.is_placeholder_token, main_logger
+        # Get GitHub token: CLI > ENV
+        auth_params_for_connector["token"] = _get_and_validate_token(
+            cli_token_value=args.gh_tk,
+            env_var_name="GITHUB_TOKEN",
+            cli_arg_name="gh-tk",
+            platform_name="GitHub",
+            placeholder_check_func=clients.github_connector.is_placeholder_token,
+            main_logger=main_logger
         )
 
         if args.github_ghes_url:
@@ -823,8 +852,14 @@ def main_cli():
         main_logger.info("--- GitHub Scan Command Finished ---")
     
     elif args.command == "gitlab":
-        auth_params_for_connector["token"] = _validate_cli_pat_token(
-            args.gl_tk, "gl-tk", "GitLab", clients.gitlab_connector.is_placeholder_token, main_logger
+        # Get GitLab token: CLI > ENV
+        auth_params_for_connector["token"] = _get_and_validate_token(
+            cli_token_value=args.gl_tk,
+            env_var_name="GITLAB_TOKEN",
+            cli_arg_name="gl-tk",
+            platform_name="GitLab",
+            placeholder_check_func=clients.gitlab_connector.is_placeholder_token,
+            main_logger=main_logger
         )
 
         targets_to_scan = get_targets_from_cli_or_env(args.groups, cfg.GITLAB_GROUPS_ENV, "GitLab groups", main_logger)
@@ -846,25 +881,35 @@ def main_cli():
         main_logger.info("--- GitLab Scan Command Finished ---")
 
     elif args.command == "azure":
-        if args.az_cid and args.az_cs and args.az_tid:
-            main_logger.info("Using Azure Service Principal credentials from CLI.")
-            auth_params_for_connector = {
-                "spn_client_id": args.az_cid,
-                "spn_client_secret": args.az_cs,
-                "spn_tenant_id": args.az_tid
-            }
-            if clients.azure_devops_connector.are_spn_details_placeholders(args.az_cid, args.az_cs, args.az_tid):
-                main_logger.error("One or more Azure Service Principal CLI arguments are placeholders. Cannot scan Azure DevOps.")
+        # Azure DevOps can use PAT or Service Principal
+        # Prioritize SPN from CLI if all parts are present, then PAT from CLI, then fallbacks to ENV for each.
+        
+        # Check for SPN details from CLI first
+        spn_cid_cli = getattr(args, 'az_cid', None)
+        spn_cs_cli = getattr(args, 'az_cs', None)
+        spn_tid_cli = getattr(args, 'az_tid', None)
+
+        if spn_cid_cli and spn_cs_cli and spn_tid_cli:
+            if clients.azure_devops_connector.are_spn_details_placeholders(spn_cid_cli, spn_cs_cli, spn_tid_cli):
+                main_logger.error("One or more Azure Service Principal CLI arguments are placeholders. Cannot scan Azure DevOps with SPN from CLI.")
                 sys.exit(1)
-        elif args.az_tk:
-            main_logger.info("Using Azure PAT from CLI.")
-            pat = _validate_cli_pat_token(
-                args.az_tk, "az-tk", "Azure DevOps", clients.azure_devops_connector.is_placeholder_token, main_logger
+            main_logger.info("Using Azure Service Principal credentials from CLI arguments.")
+            auth_params_for_connector = {
+                "spn_client_id": spn_cid_cli,
+                "spn_client_secret": spn_cs_cli,
+                "spn_tenant_id": spn_tid_cli
+            }
+        else: # Fallback to PAT (CLI then ENV) or SPN from ENV
+            pat_token_from_cli = getattr(args, 'az_tk', None)
+            auth_params_for_connector["pat_token"] = _get_and_validate_token(
+                cli_token_value=pat_token_from_cli,
+                env_var_name="AZURE_DEVOPS_TOKEN",
+                cli_arg_name="az-tk",
+                platform_name="Azure DevOps",
+                placeholder_check_func=clients.azure_devops_connector.is_placeholder_token,
+                main_logger=main_logger
             )
-            auth_params_for_connector = {"pat_token": pat}
-        else:
-            main_logger.error("Azure DevOps scan requires either Service Principal details (--az-cid, --az-cs, --az-tid) or a PAT (--az-tk).")
-            sys.exit(1)
+            # Note: If SPN details are also in .env, the connector logic will prioritize SPN if all parts are valid there.
 
         raw_targets_list = []
         if args.targets:

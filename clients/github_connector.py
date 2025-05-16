@@ -15,6 +15,7 @@ import threading # For locks
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional, Any
 from utils.delay_calculator import calculate_dynamic_delay # Import the calculator
+from utils.caching import load_previous_scan_data, PLATFORM_CACHE_CONFIG
 from datetime import timezone
 from utils.labor_hrs_estimator import analyze_github_repo_sync # Import the estimator
 
@@ -172,10 +173,13 @@ def _process_single_github_repository(
     hours_per_commit: Optional[float],
     cfg_obj: Any, # Pass the Config object
     inter_repo_adaptive_delay_seconds: float, # Inter-repository adaptive delay
-    num_repos_in_target: Optional[int] # Pass the count for dynamic delay
+    num_repos_in_target: Optional[int], # Pass the count for dynamic delay
+    # --- Parameters for Caching ---
+    previous_scan_cache: Dict[str, Dict],
+    current_commit_sha: Optional[str] 
 ) -> Dict[str, Any]:
     """
-    Processes a single GitHub repository to extract its metadata.
+    Processes a single GitHub repository to extract its metadata. # KEEP
     This function is intended to be run in a separate thread.
 
     Args:
@@ -187,18 +191,94 @@ def _process_single_github_repository(
         cfg_obj: The configuration object from generate_codejson.py.
         inter_repo_adaptive_delay_seconds: Calculated inter-repo delay to sleep after processing.
         num_repos_in_target: Total number of repos in the current org, for dynamic delay calculation.
+        previous_scan_cache: Dictionary of previously scanned repositories' data.
+        current_commit_sha: The current commit SHA of the repository's default branch.
 
     Returns:
         A dictionary containing processed metadata for the repository.
     """
     repo_full_name = repo.full_name
-    logger.info(f"Processing repository: {repo_full_name}")
+    # logger.info(f"Processing repository: {repo_full_name}") # Logging is handled by cache hit/miss logic
     repo_data: Dict[str, Any] = {"name": repo.name, "organization": org_name}
+    github_cache_config = PLATFORM_CACHE_CONFIG["github"] # Get GitHub specific cache keys
+    # --- Caching Logic ---
+    if current_commit_sha: # Only attempt cache hit if we have a current SHA to compare
+        cached_repo_entry = previous_scan_cache.get(repo_full_name)
+        if cached_repo_entry:
+            cached_commit_sha = cached_repo_entry.get(github_cache_config["commit_sha_field"])
+            if cached_commit_sha and current_commit_sha == cached_commit_sha:
+                logger.info(f"CACHE HIT: GitHub repo '{repo_full_name}' (SHA: {current_commit_sha}) has not changed. Using cached data.")
+                
+                # Start with the cached data
+                repo_data_to_process = cached_repo_entry.copy()
+                # Ensure the current (and matching) SHA is in the data for consistency
+                repo_data_to_process[github_cache_config["commit_sha_field"]] = current_commit_sha
+                
+                # Re-process exemptions to apply current logic/AI models, even on cached data
+                # Note: privateID mapping happens in generate_codejson.py after this.
+                if cfg_obj:
+                    repo_data_to_process = exemption_processor.process_repository_exemptions(
+                        repo_data_to_process, default_org_identifiers=[org_name],
+                        ai_is_enabled_from_config=cfg_obj.AI_ENABLED_ENV, ai_model_name_from_config=cfg_obj.AI_MODEL_NAME_ENV,
+                        ai_temperature_from_config=cfg_obj.AI_TEMPERATURE_ENV, ai_max_output_tokens_from_config=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV,
+                        ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV)
+                return repo_data_to_process # Return cached and re-processed data
+    logger.info(f"CACHE MISS or no current SHA: Processing repository: {repo_full_name} with full data fetch.")
 
     try:
         if repo.fork:
             logger.info(f"Skipping forked repository: {repo_full_name}")
             repo_data["processing_status"] = "skipped_fork"
+            return repo_data
+
+        # --- Early check for problematic repository (empty or no default branch access) ---
+        is_problematic_for_content_fetch = False
+        problem_reason = ""
+
+        if repo.size == 0:
+            is_problematic_for_content_fetch = True
+            problem_reason = "size is 0"
+        elif not repo.default_branch: # Check if the repo_stub itself indicates no default branch
+            is_problematic_for_content_fetch = True
+            problem_reason = "no default_branch attribute on repo object"
+        elif current_commit_sha is None: # Implies get_branch(repo.default_branch) failed
+            is_problematic_for_content_fetch = True
+            problem_reason = f"current_commit_sha is None (default branch '{repo.default_branch}' likely not found or empty)"
+
+        if is_problematic_for_content_fetch:
+            logger.info(f"Repository {repo_full_name} is problematic for content fetching ({problem_reason}). Skipping detailed content fetching.")
+            repo_data['_is_empty_repo'] = True
+            # Populate minimal required fields and then return
+            repo_data.update({
+                "description": repo.description or "", 
+                "repositoryURL": repo.html_url, 
+                "vcs": "git",
+                "repositoryVisibility": "public" if not repo.private else "private", # Basic visibility
+                "status": "development", 
+                "version": "N/A", 
+                "laborHours": 0, 
+                "languages": [], 
+                "tags": [],
+                "date": {"created": repo.created_at.replace(tzinfo=timezone.utc).isoformat() if repo.created_at else None,
+                         "lastModified": repo.pushed_at.replace(tzinfo=timezone.utc).isoformat() if repo.pushed_at else None},
+                "permissions": {"usageType": "openSource", 
+                                "exemptionText": None, 
+                                "licenses": []},
+                "contact": {}, 
+                "repo_id": repo.id, 
+#                "fullName": repo_full_name, 
+                "archived": repo.archived
+            })
+            if current_commit_sha: # Should be None if truly empty, but for consistency
+                repo_data[github_cache_config["commit_sha_field"]] = current_commit_sha
+            
+            # Still run exemption processor for potential name/description based rules
+            if cfg_obj:
+                repo_data = exemption_processor.process_repository_exemptions(
+                    repo_data, default_org_identifiers=[org_name],
+                    ai_is_enabled_from_config=cfg_obj.AI_ENABLED_ENV, ai_model_name_from_config=cfg_obj.AI_MODEL_NAME_ENV,
+                    ai_temperature_from_config=cfg_obj.AI_TEMPERATURE_ENV, ai_max_output_tokens_from_config=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV,
+                    ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV)
             return repo_data
 
         created_at_dt = repo.created_at.replace(tzinfo=timezone.utc) if repo.created_at else None
@@ -251,6 +331,7 @@ def _process_single_github_repository(
             "repositoryURL": repo.html_url,
             "homepageURL": repo.homepage or "", 
             "downloadURL": None, 
+            "readme_url": readme_html_url, 
             "vcs": "git",
             "repositoryVisibility": repo_visibility,
             "status": "development", 
@@ -272,12 +353,15 @@ def _process_single_github_repository(
             "readme_content": readme_content_str,
             "_codeowners_content": codeowners_content_str,
             "repo_id": repo.id, 
-            "readme_url": readme_html_url, 
+#            "fullName": repo_full_name, 
             "_api_tags": repo_git_tags, 
             "archived": repo.archived,
         })
         repo_data.setdefault('_is_empty_repo', False)
-        
+         # Store the current commit SHA for the next scan's cache, if available
+        if current_commit_sha:
+            repo_data[github_cache_config["commit_sha_field"]] = current_commit_sha
+       
         if hours_per_commit is not None:
             logger.debug(f"Estimating labor hours for GitHub repo: {repo.full_name}")
             try:
@@ -345,7 +429,8 @@ def fetch_repositories(
     debug_limit: int | None = None, 
     github_instance_url: str | None = None, 
     hours_per_commit: Optional[float] = None,
-    max_workers: int = 5, 
+    max_workers: int = 5,
+    previous_scan_output_file: Optional[str] = None, # For caching
     cfg_obj: Optional[Any] = None 
 ) -> list[dict]:
     """
@@ -357,6 +442,14 @@ def fetch_repositories(
     if is_placeholder_token(token):
         logger.error("GitHub token is a placeholder or missing. Cannot fetch repositories.")
         return []
+
+    # --- Load Previous Scan Data for Caching ---
+    previous_scan_cache: Dict[str, Dict] = {}
+    if previous_scan_output_file:
+        logger.info(f"Attempting to load previous GitHub scan data for '{org_name}' from: {previous_scan_output_file}")
+        previous_scan_cache = load_previous_scan_data(previous_scan_output_file, "github")
+    else:
+        logger.info(f"No previous scan output file provided for GitHub org '{org_name}'. Full scan for all repos in this org.")
 
     num_repos_in_target = 0
     inter_repo_adaptive_delay_per_repo = 0.0
@@ -429,16 +522,43 @@ def fetch_repositories(
                     processed_counter[0] += 1 
                 
                 repo_count_for_org_processed_or_submitted +=1
+                # --- Get current commit SHA for caching comparison ---
+                current_commit_sha_for_cache = None
+                repo_stub_full_name = repo_stub.full_name # For logging
+                try:
+                    # Optimization: don't fetch SHA for already skipped types or if no default branch
+                    if not repo_stub.archived and not repo_stub.fork and repo_stub.default_branch:
+                        # This is an API call to get the specific branch details
+                        apply_dynamic_github_delay(cfg_obj, num_repos_in_target) # Delay before this critical API call
+                        branch_obj = repo_stub.get_branch(repo_stub.default_branch)
+                        current_commit_sha_for_cache = branch_obj.commit.sha
+                        logger.debug(f"Successfully fetched current commit SHA '{current_commit_sha_for_cache}' for default branch '{repo_stub.default_branch}' of {repo_stub_full_name}.")
+                    elif not repo_stub.default_branch:
+                        logger.warning(f"Repo {repo_stub_full_name} has no default branch. Cannot get current commit SHA for caching.")
+                except GithubException as e_sha_fetch:
+                    if e_sha_fetch.status == 404 and isinstance(e_sha_fetch.data, dict) and e_sha_fetch.data.get('message') == 'This repository is empty.':
+                        logger.info(f"Repo {repo_stub_full_name} is empty (confirmed by get_branch). Cannot get current commit SHA for caching.")
+                    elif e_sha_fetch.status == 409: # Can indicate empty or no default branch
+                        logger.info(f"Repo {repo_stub_full_name} likely empty or no default branch (409 on get_branch). Cannot get current commit SHA for caching.")
+                    elif isinstance(e_sha_fetch, RateLimitExceededException):
+                        logger.error(f"GitHub API Rate limit exceeded while fetching current commit SHA for {repo_stub_full_name}. Will proceed without SHA, likely causing cache miss.")
+                    else:
+                        logger.warning(f"GitHub API error fetching current commit SHA for {repo_stub_full_name}: {e_sha_fetch.status} {getattr(e_sha_fetch, 'data', str(e_sha_fetch))}. Proceeding without SHA for caching.")
+                except Exception as e_sha_unexpected:
+                    logger.error(f"Unexpected error fetching current commit SHA for {repo_stub_full_name}: {e_sha_unexpected}. Proceeding without SHA for caching.", exc_info=True)
+
                 future = executor.submit(
                     _process_single_github_repository,
                     repo_stub, 
-                    org_name,
-                    token,
-                    github_instance_url,
-                    hours_per_commit,
-                    cfg_obj, 
-                    inter_repo_adaptive_delay_per_repo,
-                    num_repos_in_target 
+                    org_name=org_name,
+                    token=token,
+                    github_instance_url=github_instance_url,
+                    hours_per_commit=hours_per_commit,
+                    cfg_obj=cfg_obj,  
+                    inter_repo_adaptive_delay_seconds=inter_repo_adaptive_delay_per_repo,
+                    num_repos_in_target=num_repos_in_target,
+                    previous_scan_cache=previous_scan_cache, # Pass cache
+                    current_commit_sha=current_commit_sha_for_cache # Pass current SHA
                 )
                 future_to_repo_name[future] = repo_stub.full_name
         
@@ -492,7 +612,8 @@ if __name__ == '__main__':
             processed_counter=counter, 
             processed_counter_lock=counter_lock,
             debug_limit=None, 
-            github_instance_url=test_ghes_url_env
+            github_instance_url=test_ghes_url_env,
+            previous_scan_output_file=None # No cache for direct test
         )
 
         if repositories:

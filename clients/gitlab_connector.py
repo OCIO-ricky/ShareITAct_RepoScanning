@@ -16,6 +16,7 @@ import base64
 from typing import List, Optional, Dict, Any
 from datetime import timezone, datetime 
 from utils.delay_calculator import calculate_dynamic_delay # Import the calculator
+from utils.caching import load_previous_scan_data, PLATFORM_CACHE_CONFIG
 from utils.labor_hrs_estimator import analyze_gitlab_repo_sync # Import the labor hrs estimator
 
 
@@ -46,6 +47,7 @@ except ImportError:
             # Mock processor also removes these if the real one does
             repo_data.pop('readme_content', None)
             repo_data.pop('_codeowners_content', None)
+            repo_data.pop('is_empty_repo', None)
             return repo_data
     exemption_processor = MockExemptionProcessor()
 
@@ -148,17 +150,49 @@ def _process_single_gitlab_project(
     hours_per_commit: Optional[float],
     cfg_obj: Any, # Pass the Config object
     inter_repo_adaptive_delay_seconds: float, # Inter-repository adaptive delay
-    dynamic_post_api_call_delay_seconds: float # Per-API call dynamic delay
+    dynamic_post_api_call_delay_seconds: float, # Per-API call dynamic delay
+    # --- Parameters for Caching ---
+    previous_scan_cache: Dict[str, Dict],
+    current_commit_sha: Optional[str]
 ) -> Dict[str, Any]:
     """
     Processes a single GitLab project to extract its metadata.
     This function is intended to be run in a separate thread.
     """
     repo_data: Dict[str, Any] = {}
-    project = None
+    project: Optional[gitlab.objects.Project] = None # Type hint for clarity
+    gitlab_cache_config = PLATFORM_CACHE_CONFIG["gitlab"]
+
     try:
         # Get full project object
         project = gl_instance.projects.get(project_stub_id, lazy=False, statistics=True)
+        project_id_str = str(project.id) # Key for caching
+
+        # --- Caching Logic ---
+        if current_commit_sha: # Only attempt cache hit if we have a current SHA to compare
+            cached_repo_entry = previous_scan_cache.get(project_id_str)
+            if cached_repo_entry:
+                cached_commit_sha = cached_repo_entry.get(gitlab_cache_config["commit_sha_field"])
+                if cached_commit_sha and current_commit_sha == cached_commit_sha:
+                    logger.info(f"CACHE HIT: GitLab project '{project.path_with_namespace}' (ID: {project_id_str}, SHA: {current_commit_sha}) has not changed. Using cached data.")
+                    
+                    # Start with the cached data
+                    repo_data_to_process = cached_repo_entry.copy()
+                    # Ensure the current (and matching) SHA is in the data for consistency
+                    repo_data_to_process[gitlab_cache_config["commit_sha_field"]] = current_commit_sha
+                    
+                    # Re-process exemptions to apply current logic/AI models, even on cached data
+                    if cfg_obj:
+                        repo_data_to_process = exemption_processor.process_repository_exemptions(
+                            repo_data_to_process, default_org_identifiers=[group_full_path],
+                            ai_is_enabled_from_config=cfg_obj.AI_ENABLED_ENV, ai_model_name_from_config=cfg_obj.AI_MODEL_NAME_ENV,
+                            ai_temperature_from_config=cfg_obj.AI_TEMPERATURE_ENV, ai_max_output_tokens_from_config=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV,
+                            ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV)
+                    return repo_data_to_process # Return cached and re-processed data
+        
+        logger.info(f"CACHE MISS or no current SHA: Processing GitLab project: {project.path_with_namespace} (ID: {project_id_str}) with full data fetch.")
+
+
         if dynamic_post_api_call_delay_seconds > 0:
             logger.debug(f"GitLab applying SYNC post-API call delay (get project details): {dynamic_post_api_call_delay_seconds:.2f}s")
             time.sleep(dynamic_post_api_call_delay_seconds)
@@ -167,7 +201,7 @@ def _process_single_gitlab_project(
         repo_data["name"] = project.path
         repo_data["organization"] = group_full_path # Use the parent group path
 
-        logger.info(f"Processing repository: {repo_full_name}")
+        # logger.info(f"Processing repository: {repo_full_name}") # Already logged above with cache status
         
         if hasattr(project, 'forked_from_project') and project.forked_from_project:
             logger.info(f"Skipping forked repository: {repo_full_name}")
@@ -225,17 +259,35 @@ def _process_single_gitlab_project(
             licenses_list.append({k: v for k, v in license_entry.items() if v})
 
         repo_data.update({
-            "description": repo_description, "repositoryURL": project.web_url, "homepageURL": project.web_url,
-            "downloadURL": None, "vcs": "git", "repositoryVisibility": visibility_status,
-            "status": "development", "version": "N/A", "laborHours": 0, "languages": all_languages_list,
+            "description": repo_description, 
+            "repositoryURL": project.web_url, 
+            "homepageURL": project.web_url,
+            "downloadURL": None, 
+            "readme_url": readme_html_url, 
+            "vcs": "git", 
+            "repositoryVisibility": visibility_status,
+            "status": "development", 
+            "version": "N/A", 
+            "laborHours": 0, 
+            "languages": all_languages_list,
             "tags": repo_topics,
             "date": {"created": created_at_dt.isoformat() if created_at_dt else None, "lastModified": last_activity_at_dt.isoformat() if last_activity_at_dt else None},
-            "permissions": {"usageType": "openSource", "exemptionText": None, "licenses": licenses_list},
-            "contact": {}, "contractNumber": None, "readme_content": readme_content,
-            "_codeowners_content": codeowners_content, "repo_id": project.id, "readme_url": readme_html_url,
-            "_api_tags": repo_git_tags, "archived": project.archived
+            "permissions": {"usageType": "openSource", 
+                            "exemptionText": None, 
+                            "licenses": licenses_list},
+            "contact": {}, 
+            "contractNumber": None, 
+            "readme_content": readme_content,
+            "_codeowners_content": codeowners_content,
+            "repo_id": project.id, 
+            "_api_tags": repo_git_tags, 
+            "archived": project.archived
         })
         repo_data.setdefault('_is_empty_repo', False)
+        # Store the current commit SHA for the next scan's cache, if available
+        if current_commit_sha:
+            repo_data[gitlab_cache_config["commit_sha_field"]] = current_commit_sha
+
 
         if hours_per_commit is not None:
             logger.debug(f"Estimating labor hours for GitLab repo: {project.path_with_namespace}")
@@ -275,11 +327,13 @@ def _process_single_gitlab_project(
         return repo_data
 
     except GitlabGetError as p_get_err:
-        logger.error(f"GitLab API error getting full details for project ID {project_stub_id} (part of {group_full_path}): {p_get_err}. Skipping.", exc_info=False)
-        return {"name": project.path if project else f"ID_{project_stub_id}", "organization": group_full_path, "processing_error": f"GitLab API Error getting details: {p_get_err.error_message}"}
+        project_path_for_error = project.path if project else f"ID_{project_stub_id}"
+        logger.error(f"GitLab API error getting full details for project {project_path_for_error} (ID: {project_stub_id}, part of {group_full_path}): {p_get_err}. Skipping.", exc_info=False)
+        return {"name": project_path_for_error, "organization": group_full_path, "processing_error": f"GitLab API Error getting details: {p_get_err.error_message}"}
     except Exception as e_proj:
-        logger.error(f"Unexpected error processing project ID {project_stub_id} (part of {group_full_path}): {e_proj}. Skipping.", exc_info=True)
-        return {"name": project.path if project else f"ID_{project_stub_id}", "organization": group_full_path, "processing_error": f"Unexpected Error: {e_proj}"}
+        project_path_for_error = project.path if project else f"ID_{project_stub_id}"
+        logger.error(f"Unexpected error processing project {project_path_for_error} (ID: {project_stub_id}, part of {group_full_path}): {e_proj}. Skipping.", exc_info=True)
+        return {"name": project_path_for_error, "organization": group_full_path, "processing_error": f"Unexpected Error: {e_proj}"}
 
 def fetch_repositories(
     token: Optional[str], 
@@ -290,7 +344,8 @@ def fetch_repositories(
     gitlab_instance_url: str | None = None,
     hours_per_commit: Optional[float] = None,
     max_workers: int = 5, 
-    cfg_obj: Optional[Any] = None # Accept the cfg object
+    cfg_obj: Optional[Any] = None, # Accept the cfg object
+    previous_scan_output_file: Optional[str] = None # For caching
 ) -> list[dict]:
     """
     Fetches repository (project) details from a specific GitLab group.
@@ -321,6 +376,14 @@ def fetch_repositories(
     if not group_path:
         logger.warning("GitLab group path not provided. Skipping GitLab scan.")
         return []
+
+    # --- Load Previous Scan Data for Caching ---
+    previous_scan_cache: Dict[str, Dict] = {}
+    if previous_scan_output_file:
+        logger.info(f"Attempting to load previous GitLab scan data for group '{group_path}' from: {previous_scan_output_file}")
+        previous_scan_cache = load_previous_scan_data(previous_scan_output_file, "gitlab")
+    else:
+        logger.info(f"No previous scan output file provided for GitLab group '{group_path}'. Full scan for all projects in this group.")
 
     processed_repo_list: List[Dict[str, Any]] = []
     gl_instance = None # To hold the authenticated gitlab instance
@@ -385,6 +448,33 @@ def fetch_repositories(
                             break
                         processed_counter[0] += 1
                     
+                    # --- Get current commit SHA for caching comparison ---
+                    current_commit_sha_for_cache = None
+                    project_stub_path_with_namespace = proj_stub.path_with_namespace # For logging
+                    try:
+                        # Need to get the full project object to access default_branch and commits
+                        # This is an API call.
+                        if dynamic_post_api_call_delay_seconds > 0: # Delay before this critical API call
+                            logger.debug(f"GitLab applying SYNC post-API call delay (get project for SHA): {dynamic_post_api_call_delay_seconds:.2f}s")
+                            time.sleep(dynamic_post_api_call_delay_seconds)
+                        
+                        project_for_sha = gl_instance.projects.get(proj_stub.id, lazy=False) # Get full object
+                        if project_for_sha.empty_repo:
+                            logger.info(f"Project {project_stub_path_with_namespace} is empty. Cannot get current commit SHA for caching.")
+                        elif project_for_sha.default_branch:
+                            # Another API call to get commits
+                            if dynamic_post_api_call_delay_seconds > 0: # Delay before this critical API call
+                                logger.debug(f"GitLab applying SYNC post-API call delay (get commits for SHA): {dynamic_post_api_call_delay_seconds:.2f}s")
+                                time.sleep(dynamic_post_api_call_delay_seconds)
+                            commits = project_for_sha.commits.list(ref_name=project_for_sha.default_branch, per_page=1, get_all=False)
+                            if commits:
+                                current_commit_sha_for_cache = commits[0].id
+                                logger.debug(f"Successfully fetched current commit SHA '{current_commit_sha_for_cache}' for default branch '{project_for_sha.default_branch}' of {project_stub_path_with_namespace}.")
+                    except GitlabGetError as e_sha_fetch: # Covers project get or commit list
+                        logger.warning(f"GitLab API error fetching current commit SHA for {project_stub_path_with_namespace}: {e_sha_fetch}. Proceeding without SHA for caching.")
+                    except Exception as e_sha_unexpected:
+                        logger.error(f"Unexpected error fetching current commit SHA for {project_stub_path_with_namespace}: {e_sha_unexpected}. Proceeding without SHA for caching.", exc_info=True)
+
                     project_count_for_group_submitted += 1
                     future = executor.submit(
                         _process_single_gitlab_project,
@@ -396,7 +486,9 @@ def fetch_repositories(
                         hours_per_commit,
                         cfg_obj,
                         inter_repo_adaptive_delay_per_repo, # Pass inter-repo adaptive delay
-                        dynamic_post_api_call_delay_seconds # Pass dynamic per-API call delay
+                        dynamic_post_api_call_delay_seconds, # Pass dynamic per-API call delay
+                        previous_scan_cache=previous_scan_cache, # Pass cache
+                        current_commit_sha=current_commit_sha_for_cache # Pass current SHA
                     )
                     future_to_project_name[future] = proj_stub.path_with_namespace
             
@@ -464,7 +556,8 @@ if __name__ == '__main__':
             processed_counter_lock=counter_lock,
             debug_limit=None, 
             gitlab_instance_url=test_gl_url_env,
-            cfg_obj=None
+            cfg_obj=None,
+            previous_scan_output_file=None # No cache for direct test
         )
 
         if repositories:

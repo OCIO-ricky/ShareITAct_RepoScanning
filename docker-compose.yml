@@ -13,7 +13,7 @@ services:
       # These environment variables will override any values from the .env file
       - GITHUB_TOKEN=${"YOUR_GITHUB_PAT"}
       - GOOGLE_API_KEY=${YOUR_GOOGLE_API_KEY}
-      - GITHUB_ORGS=CDCent,CDCgov
+      - GITHUB_ORGS=cdcent,cdcgov
       - SCANNER_MAX_WORKERS=3
       - AI_ENABLED=true
       # Add any other .env variables your script needs
