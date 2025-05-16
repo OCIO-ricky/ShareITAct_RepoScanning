@@ -656,3 +656,39 @@ github_983579731,ncbddd-dbdid-setnet-birth-defects-nlp,exemptNonCode,Non-code re
 github_983583683,ncbddd-dbdid-setnet-geospatial,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-15T04:32:27.302807+00:00
 NoPlatformRepoID-gitlab-National Center for Chronic Disease Prevention and Health Promotion (NCCDPHP)-mynodejs,mynodejs,exemptByLaw,This specific module interfaces with classified national security systems.,2025-05-16T02:43:31.943227+00:00
 "NoPlatformRepoID-gitlab-Center for Surveillance, Epidemiology, and Laboratory Services-csels-hub",csels-hub,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T02:43:31.952583+00:00
+github_349496842,CBS-actions-checkout,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.133656+00:00
+github_608350636,data-exchange-upload,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.147987+00:00
+github_627044401,data-exchange-hl7,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.168240+00:00
+github_467548289,cdc-coe-reengineering,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.184154+00:00
+github_572594553,Legionella_DBD-legionellaNotebook,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.207233+00:00
+github_470265183,cdc-coe-devops-helloworld,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.229563+00:00
+github_472362325,hl7-structural-validator,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.245301+00:00
+github_648653772,data-exchange-portal,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.268542+00:00
+github_651212110,cdh-ml-end-to-end-poc,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.298316+00:00
+github_494114756,cdc-coe-logger,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.305798+00:00
+github_392440076,xlr-hl7pipline-notebook,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.324377+00:00
+github_470578957,Epi-Info-Web-Survey-Core,exemptByMissionSystem,"AI Suggestion: The repository migrates Epi Info Web Survey source code, a system likely used for public health data collection and analysis, thus supporting a core public health mission.  The modernization effort suggests improvements to a critical system.",2025-05-16T06:01:20.342063+00:00
+github_528910967,mpx-area-charts,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.363883+00:00
+github_376134731,ncipc-wisqars-sas-mvpiccs,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.379975+00:00
+github_528911863,mpx-combo-charts,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.419780+00:00
+github_472413459,hl7-validator-ui,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.436397+00:00
+github_467569125,cdc-coe-oadc-infra,exemptByAgencySystem,"AI Suggestion: The repository manages CDC internal cloud infrastructure (""OADC Cloud infrastructure"") and uses internal CDC domain names (e.g., `.cdc.gov`), indicating it's not publicly accessible.",2025-05-16T06:01:20.468753+00:00
+github_272777016,pageinfo-app,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.479984+00:00
+github_705945067,cfa-forecasttools,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.522106+00:00
+github_706354050,cfa-childhood-immunization-demand-calculator,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.531525+00:00
+github_741098523,testtest,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.575779+00:00
+github_741665472,cfa_azure,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.584006+00:00
+github_764370060,cfa-azure-test,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.627381+00:00
+github_781674815,saphire-dcm,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.648656+00:00
+github_782021591,data-exchange-routing-connectors,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.657463+00:00
+github_794571140,ELIMS-TDCRS,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.678759+00:00
+github_803895965,cfa-sim-wrapper,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.708489+00:00
+github_821573800,saphire-pub,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.728161+00:00
+github_821574391,saphire-demos,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.736939+00:00
+github_830324004,cfa-azure-function-qa,exemptByCIO,"AI Suggestion: The repository manages Azure resources (Function Apps, Key Vault, Blob Storage) using service principal credentials, which requires careful access control and security review by the CIO.  The README also shows examples of handling sensitive data (connection strings).",2025-05-16T06:01:20.765746+00:00
+github_838231228,ext-edav-gh-runners,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:20.783861+00:00
+github_979019027,cfa-ngm-pyodide,exemptByMissionSystem,"AI Suggestion: The repository is explicitly stated to be for use by CDC programs collaborating on public health projects in support of the CDC mission, indicating its importance to public health.",2025-05-16T06:01:21.142787+00:00
+github_984073996,cfa-backtest-rt,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:21.163463+00:00
+github_984151491,nchs-drm-sync-gitlab-repos,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:21.169931+00:00
+github_984207408,nccdphp-dash-dining-decisions-universal-ios,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:21.186259+00:00
+github_984404906,cfa-svd-2025-undetected-chains,exemptNonCode,Non-code repository (languages: [None detected]),2025-05-16T06:01:21.204491+00:00
