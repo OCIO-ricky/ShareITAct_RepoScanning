@@ -28,11 +28,11 @@ docker run -d --rm \
   -e GITHUB_ORGS="CDCent,CDCgov" \
   -e SCANNER_MAX_WORKERS="3" \
   -e AI_ENABLED="true" \
-  -v "$(pwd)/output_github:/app/output" \
+  -v "$(pwd)/output:/app/output" \
   -v "$(pwd)/logs:/app/logs" \
   -v "$(pwd)/.env:/app/.env:ro" \
   "$IMAGE_NAME" \
-  python generate_codejson.py --platform github
+  python generate_codejson.py github
 
 # --- GitLab Scan ---
 echo "Starting GitLab scan..."
@@ -43,11 +43,11 @@ docker run -d --rm \
   -e GITLAB_GROUPS="cdcent" \
   -e SCANNER_MAX_WORKERS="4" \
   -e AI_ENABLED="${AI_ENABLED_FOR_GITLAB:-true}" \
-  -v "$(pwd)/output_gitlab:/app/output" \
+  -v "$(pwd)/output:/app/output" \
   -v "$(pwd)/logs:/app/logs" \
   -v "$(pwd)/.env:/app/.env:ro" \
   "$IMAGE_NAME" \
-  python generate_codejson.py --platform gitlab
+  python generate_codejson.py gitlab
 
 # --- Azure DevOps Scan (Example - Uncomment and configure if needed) ---
 echo "Starting Azure DevOps scan..."
@@ -58,11 +58,11 @@ docker run -d --rm \
   -e AZURE_DEVOPS_TARGETS="MyAzureOrg/ProjectA,MyAzureOrg/ProjectB" \
   -e SCANNER_MAX_WORKERS="4" \
   -e AI_ENABLED="${AI_ENABLED_FOR_AZURE:-true}" \
-  -v "$(pwd)/output_azure:/app/output" \
+  -v "$(pwd)/output:/app/output" \
   -v "$(pwd)/logs:/app/logs" \
   -v "$(pwd)/.env:/app/.env:ro" \
   "$IMAGE_NAME" \
-  python generate_codejson.py --platform azure
+  python generate_codejson.py azure
 
 echo ""
 echo "All scans launched. You can monitor them with 'docker ps'."
