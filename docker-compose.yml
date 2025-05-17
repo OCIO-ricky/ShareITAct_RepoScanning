@@ -10,7 +10,7 @@ services:
     build: . # Builds using the Dockerfile in the current directory (your project root)
     container_name: scanner-github-instance
     environment:
-      # These environment variables will override any values from the .env file
+      # These environment variables will read values from the .env file, unless you override them here.
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GITHUB_ORGS=cdcent,cdcgov
