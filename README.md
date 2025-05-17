@@ -182,11 +182,15 @@ This is useful for quick tests and debugging.
 
 ## 🐳 Docker Usage
 
-To run the container in Docker. You must then type and execute the command(s) inside the container's "Exec" tab (console)
+Scanning many repositories, especially large ones with extensive commit histories, can take a long time. API rate limits, network issues, or even just needing to pause the process can interrupt a scan. Leveraging Docker to run multiple repository scans concurrently is a really smart way to scale up these operations and get results faster! The key here is typically using docker-compose, which allows you to define and run multi-container Docker applications.  The primary goal of using the provided docker-compose.yml file is to set up and run separate, concurrent scanning processes for different code hosting platforms (GitHub and GitLab, with Azure DevOps). Each platform scanner runs in its own isolated Docker container, but they share some common configurations like output and log directories.
+
+The scanners are configured primarily through environment variables, which are flexibly sourced from your host environment or a .env file. SO please, set the API tokens in the .env file first before running docker. This approach allows you to easily customize the scanning process without modifying the Docker image itself.
+
+Once you have setup the TOKEN KEYS for each platform repository as well as the groups or organizations to scan, You must simply type and execute the following docker-compose command(s) in your terminal window
 ```bash
 docker-compose up --build -d
 ```
-To run the container and also execute a command to run the scanner ...
+To rather run the container with a single repository scan ...
 ```bash
 docker-compose exec app python generate_codejson.py <command> [options]
 ```
@@ -195,6 +199,13 @@ To stop the container:
 docker-compose stop
 or docker-compose down  (to also delete the container)
 ```
+
+Key Takeaways & How It Works:
+
+Parallel Processing: You can run docker-compose up --build -d, and it will build the image (once, shared by all services that use build: .) and then start separate containers for scan-github and scan-gitlab (and scan-azure if uncommented). These containers will run their respective python generate_codejson.py <platform> commands concurrently.
+
+Isolation: Each scanner runs in its own isolated environment, preventing interference between them, though they share the same underlying built image.
+
 ## 🔐 Configuration
 
 Check the `.env` file in the root directory to configure the following:
