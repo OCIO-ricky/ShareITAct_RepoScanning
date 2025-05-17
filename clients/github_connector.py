@@ -16,7 +16,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional, Any
 from utils.delay_calculator import calculate_dynamic_delay # Import the calculator
 from utils.caching import load_previous_scan_data, PLATFORM_CACHE_CONFIG
-from datetime import timezone
+from datetime import timezone, datetime
+from utils.dateparse import parse_repos_created_after_date # Import the new utility
 from utils.labor_hrs_estimator import analyze_github_repo_sync # Import the estimator
 
 from github import (
@@ -74,7 +75,6 @@ def apply_dynamic_github_delay(cfg_obj: Optional[Any], num_repos_in_target: Opti
         logger.debug(f"Applying SYNC dynamic GitHub API call delay: {delay_seconds:.2f}s (based on target size: {num_repos_in_target})")
         time.sleep(delay_seconds)
 
-
 def is_placeholder_token(token: Optional[str]) -> bool:
     """Checks if the GitHub token is missing or a known placeholder."""
     return not token or token == PLACEHOLDER_GITHUB_TOKEN
@@ -118,7 +118,6 @@ def _get_readme_details_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos_in_
     logger.debug(f"No common README file found for {repo_obj.full_name}")
     return None, None, False
 
-
 def _get_codeowners_content_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos_in_target: Optional[int]) -> tuple[Optional[str], bool]:
     """
     Fetches CODEOWNERS content from standard locations.
@@ -147,7 +146,6 @@ def _get_codeowners_content_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos
             return None, False
     logger.debug(f"No CODEOWNERS file found in standard locations for {repo_obj.full_name}")
     return None, False
-
 
 def _fetch_tags_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos_in_target: Optional[int]) -> List[str]:
     tag_names = []
@@ -443,9 +441,15 @@ def fetch_repositories(
         logger.error("GitHub token is a placeholder or missing. Cannot fetch repositories.")
         return []
 
+    # Parse the REPOS_CREATED_AFTER_DATE from cfg_obj
+    repos_created_after_filter_date: Optional[datetime] = None
+    if cfg_obj and hasattr(cfg_obj, 'REPOS_CREATED_AFTER_DATE'):
+        repos_created_after_filter_date = parse_repos_created_after_date(cfg_obj.REPOS_CREATED_AFTER_DATE, logger)
+
     # --- Load Previous Scan Data for Caching ---
     previous_scan_cache: Dict[str, Dict] = {}
     if previous_scan_output_file:
+        # ... (previous_scan_cache loading logic remains the same)
         logger.info(f"Attempting to load previous GitHub scan data for '{org_name}' from: {previous_scan_output_file}")
         # Ensure previous_scan_cache is a dict, even if load_previous_scan_data returns None or wrong type
         loaded_cache = load_previous_scan_data(previous_scan_output_file, "github")
@@ -494,18 +498,65 @@ def fetch_repositories(
             if isinstance(r_data, dict) and r_data.get(github_id_field) is not None
         ]
         cached_repo_count_for_target = len(valid_cached_repos)
-        if cached_repo_count_for_target > 0:
+        if cached_repo_count_for_target > 0: # If we have a valid cached count
             logger.info(f"CACHE: Found {cached_repo_count_for_target} valid repos in cache for '{org_name}'.")
             num_repos_in_target = cached_repo_count_for_target
-            logger.info(f"ADAPTIVE DELAY/PROCESSING: Using cached count ({num_repos_in_target}) as total items estimate for target '{org_name}'.")
+
+            # If REPOS_CREATED_AFTER_DATE filter is active, adjust num_repos_in_target
+            # to account for potentially additional private repos that may have been modified after the filter date.
+            if repos_created_after_filter_date and cfg_obj and hasattr(cfg_obj, 'ADAPTIVE_DELAY_CACHE_MODIFIED_FACTOR_ENV'):
+                adjustment_factor = float(cfg_obj.ADAPTIVE_DELAY_CACHE_MODIFIED_FACTOR_ENV)
+                try:
+                    # Fetch total live count to compare (this is an API call)
+                    apply_dynamic_github_delay(cfg_obj, None) # Delay before this potentially significant list operation
+                    total_live_repos_for_adjustment = organization_obj_for_iteration.get_repos(type='all').totalCount
+                    
+                    if total_live_repos_for_adjustment > cached_repo_count_for_target:
+                        diff_count = total_live_repos_for_adjustment - cached_repo_count_for_target
+                        additional_repos_estimate = int(diff_count * adjustment_factor)
+                        if additional_repos_estimate > 0:
+                            num_repos_in_target += additional_repos_estimate
+                            logger.info(f"ADAPTIVE DELAY/PROCESSING: Adjusted target estimate for '{org_name}' by {additional_repos_estimate} (due to date filter & potential modifications). New estimate: {num_repos_in_target}.")
+                        else:
+                            logger.info(f"ADAPTIVE DELAY/PROCESSING: Calculated additional repo estimate is {additional_repos_estimate} for '{org_name}'. No change to target estimate from adjustment.")
+                    else:
+                        logger.info(f"ADAPTIVE DELAY/PROCESSING: Live repo count ({total_live_repos_for_adjustment}) is not greater than cached count ({cached_repo_count_for_target}) for '{org_name}'. No adjustment made.")
+                except Exception as e_adj_count:
+                    logger.warning(f"GitHub: Error fetching total live repo count for cache adjustment for '{org_name}': {e_adj_count}. Using unadjusted cached count.")
+            logger.info(f"ADAPTIVE DELAY/PROCESSING: Using {num_repos_in_target} (cached, possibly adjusted) as total items estimate for target '{org_name}'.")
 
     if num_repos_in_target == 0: # If cache was empty or not used
         try:
             logger.info(f"ADAPTIVE DELAY/PROCESSING: Cache empty or not used for count. Fetching live repository list for '{org_name}' to get count.")
             apply_dynamic_github_delay(cfg_obj, None) # Delay before get_repos list
             live_repo_list_materialized = list(organization_obj_for_iteration.get_repos(type='all'))
-            num_repos_in_target = len(live_repo_list_materialized)
-            logger.info(f"ADAPTIVE DELAY/PROCESSING: Using live API count ({num_repos_in_target}) as total items estimate for target '{org_name}'.")
+            initial_live_count = len(live_repo_list_materialized)
+            logger.info(f"ADAPTIVE DELAY/PROCESSING: Fetched {initial_live_count} live repositories for '{org_name}' before date filtering.")
+
+            # --- Apply REPOS_CREATED_AFTER_DATE filter to live_repo_list_materialized ---
+            if repos_created_after_filter_date and live_repo_list_materialized:
+                filtered_live_repos = []
+                skipped_legacy_count = 0
+                for repo_stub_item in live_repo_list_materialized:
+                    if not repo_stub_item.private: # Public repos always pass this specific filter
+                        filtered_live_repos.append(repo_stub_item)
+                        continue
+                    # Private repo, check dates
+                    created_at_dt = repo_stub_item.created_at.replace(tzinfo=timezone.utc) if repo_stub_item.created_at else None
+                    modified_at_dt = repo_stub_item.pushed_at.replace(tzinfo=timezone.utc) if repo_stub_item.pushed_at else None
+                    
+                    if (created_at_dt and created_at_dt >= repos_created_after_filter_date) or \
+                       (modified_at_dt and modified_at_dt >= repos_created_after_filter_date):
+                        filtered_live_repos.append(repo_stub_item)
+                    else:
+                        skipped_legacy_count += 1
+                
+                live_repo_list_materialized = filtered_live_repos # Update with filtered list
+                if skipped_legacy_count > 0:
+                    logger.info(f"GitHub: Skipped {skipped_legacy_count} private legacy repositories from '{org_name}' due to REPOS_CREATED_AFTER_DATE filter ('{repos_created_after_filter_date.strftime('%Y-%m-%d')}') before full processing.")
+            
+            num_repos_in_target = len(live_repo_list_materialized) # Count after filtering
+            logger.info(f"ADAPTIVE DELAY/PROCESSING: Using API count of {num_repos_in_target} (after date filter) as total items estimate for target '{org_name}'.")
         except Exception as e_live_count:
             logger.warning(f"GitHub: Error fetching live repository list for '{org_name}' to get count: {e_live_count}. num_repos_in_target will be 0.", exc_info=True)
             num_repos_in_target = 0 # Fallback if live counting fails
@@ -528,6 +579,7 @@ def fetch_repositories(
 
     processed_repo_list: List[Dict[str, Any]] = []
     repo_count_for_org_processed_or_submitted = 0
+    skipped_by_date_filter_count = 0 # Initialize counter for skipped repos
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_repo_name = {}
@@ -542,6 +594,43 @@ def fetch_repositories(
                         break
                     processed_counter[0] += 1 
                 
+                # --- Apply REPOS_CREATED_AFTER_DATE filter ---
+                if repos_created_after_filter_date:
+                    is_private_repo = repo_stub.private
+                    if is_private_repo:
+                        created_at_dt = repo_stub.created_at.replace(tzinfo=timezone.utc) if repo_stub.created_at else None
+                        # pushed_at is a good proxy for last modified on GitHub
+                        modified_at_dt = repo_stub.pushed_at.replace(tzinfo=timezone.utc) if repo_stub.pushed_at else None
+
+                        created_match = created_at_dt and created_at_dt >= repos_created_after_filter_date
+                        modified_match = modified_at_dt and modified_at_dt >= repos_created_after_filter_date
+
+                        if created_match or modified_match:
+                            # This private repo passes the filter. Log why.
+                            created_at_log_str = created_at_dt.strftime('%Y-%m-%d %H:%M:%S %Z') if created_at_dt else 'N/A'
+                            modified_at_log_str = modified_at_dt.strftime('%Y-%m-%d %H:%M:%S %Z') if modified_at_dt else 'N/A'
+                            
+                            log_message_parts = [
+                                f"GitHub: Private repo '{repo_stub.full_name}' included "
+                            ]
+                            if created_match and modified_match:
+                                log_message_parts.append(f"due to both Creation ({created_at_log_str}) and Modification ({modified_at_log_str}).")
+                            elif created_match:
+                                log_message_parts.append(f"due to Creation date ({created_at_log_str}).")
+                            elif modified_match:
+                                log_message_parts.append(f"due to Modification date ({modified_at_log_str}).")
+                            logger.info(" ".join(log_message_parts))
+                            # Repo passes, so it continues to further processing.
+                        else:
+                            # This private repo does NOT pass the filter.
+                            # The log for skipping by this specific filter is removed as per request.
+                            # Still need to skip it and adjust counter.
+                            with processed_counter_lock:
+                                processed_counter[0] -=1
+                            skipped_by_date_filter_count += 1 # Increment skipped counter
+                            continue # Skip to the next repository
+                # --- End REPOS_CREATED_AFTER_DATE filter ---
+
                 repo_count_for_org_processed_or_submitted +=1
                 # --- Get current commit SHA for caching comparison ---
                 current_commit_sha_for_cache = None
@@ -606,6 +695,8 @@ def fetch_repositories(
                                             "processing_error": f"Thread execution failed: {exc}"})
 
     logger.info(f"Finished processing for {repo_count_for_org_processed_or_submitted} repositories from GitHub organization: {org_name}. Collected {len(processed_repo_list)} results.")
+    if repos_created_after_filter_date and skipped_by_date_filter_count > 0:
+        logger.info(f"GitHub: Skipped {skipped_by_date_filter_count} private repositories from '{org_name}' due to the REPOS_CREATED_AFTER_DATE filter ('{repos_created_after_filter_date.strftime('%Y-%m-%d')}').")
 
     return processed_repo_list
 

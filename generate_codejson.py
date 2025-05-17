@@ -81,6 +81,7 @@ class Config:
         
         self.EXEMPTION_LOG_FILEPATH = os.path.join(self.OUTPUT_DIR, self.EXEMPTION_LOG_FILENAME)
         self.PRIVATE_ID_FILEPATH = os.path.join(self.OUTPUT_DIR, self.PRIVATE_ID_FILENAME) # Reverted path
+        self.REPOS_CREATED_AFTER_DATE = os.getenv("REPOS_CREATED_AFTER_DATE", "")
 
         # --- AI Specific Configurations ---
         self.AI_ENABLED_ENV = os.getenv("AI_ENABLED", "False").lower() == "true"
@@ -94,6 +95,8 @@ class Config:
         self.ADAPTIVE_DELAY_BASE_SECONDS_ENV = float(os.getenv("ADAPTIVE_DELAY_BASE_SECONDS", "0.1"))
         self.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV = int(os.getenv("ADAPTIVE_DELAY_THRESHOLD_REPOS", "50"))
         self.ADAPTIVE_DELAY_MAX_SECONDS_ENV = float(os.getenv("ADAPTIVE_DELAY_MAX_SECONDS", "2.0"))
+        self.ADAPTIVE_DELAY_CACHE_MODIFIED_FACTOR_ENV = float(os.getenv("ADAPTIVE_DELAY_CACHE_MODIFIED_FACTOR", "0.10"))
+
 
         # --- GitHub Specific API Call Throttling ---
         self.GITHUB_API_CALL_DELAY_SECONDS_ENV = float(os.getenv("GITHUB_API_CALL_DELAY_SECONDS", "0.0"))

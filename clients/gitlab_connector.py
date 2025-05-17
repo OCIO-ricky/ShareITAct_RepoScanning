@@ -17,6 +17,7 @@ from typing import List, Optional, Dict, Any
 from datetime import timezone, datetime 
 from utils.delay_calculator import calculate_dynamic_delay # Import the calculator
 from utils.caching import load_previous_scan_data, PLATFORM_CACHE_CONFIG
+from utils.dateparse import parse_repos_created_after_date # Import the new utility
 from utils.labor_hrs_estimator import analyze_gitlab_repo_sync # Import the labor hrs estimator
 
 
@@ -341,6 +342,19 @@ def _process_single_gitlab_project(
         logger.error(f"Unexpected error processing project {project_path_for_error} (ID: {project_stub_id}, part of {group_full_path}): {e_proj}. Skipping.", exc_info=True)
         return {"name": project_path_for_error, "organization": group_full_path, "processing_error": f"Unexpected Error: {e_proj}"}
 
+def _parse_gitlab_iso_datetime_for_filter(datetime_str: Optional[str], logger_instance: logging.Logger, repo_name_for_log: str, field_name: str) -> Optional[datetime]:
+    """Parses GitLab's ISO datetime string to a timezone-aware datetime object for filtering."""
+    if not datetime_str:
+        return None
+    try:
+        # GitLab dates are typically like '2023-10-26T18:06:07.176Z'
+        # fromisoformat handles 'Z' correctly in Python 3.11+, for older versions, manual replacement is safer.
+        dt_obj = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
+        return dt_obj.replace(tzinfo=timezone.utc) if dt_obj.tzinfo is None else dt_obj
+    except ValueError:
+        logger_instance.warning(f"Could not parse {field_name} date string '{datetime_str}' for {repo_name_for_log} during filter check.")
+        return None
+
 def fetch_repositories(
     token: Optional[str], 
     group_path: str, 
@@ -382,6 +396,11 @@ def fetch_repositories(
     if not group_path:
         logger.warning("GitLab group path not provided. Skipping GitLab scan.")
         return []
+    
+    # Parse the REPOS_CREATED_AFTER_DATE from cfg_obj
+    repos_created_after_filter_date: Optional[datetime] = None
+    if cfg_obj and hasattr(cfg_obj, 'REPOS_CREATED_AFTER_DATE'):
+        repos_created_after_filter_date = parse_repos_created_after_date(cfg_obj.REPOS_CREATED_AFTER_DATE, logger)
 
     ssl_verify_flag = True # Default to True (verify SSL)
     disable_ssl_env = os.getenv("DISABLE_SSL_VERIFICATION", "false").lower()
@@ -432,9 +451,37 @@ def fetch_repositories(
             try:
                 logger.info(f"ADAPTIVE DELAY/PROCESSING: Cache empty or not used for count. Fetching live project list for group '{group_path}' to get count.")
                 # This is an API call
-                live_project_stubs_materialized = list(group.projects.list(all=True, include_subgroups=True, statistics=False, lazy=True))
-                num_projects_in_target_for_delay_calc = len(live_project_stubs_materialized)
-                logger.info(f"ADAPTIVE DELAY/PROCESSING: Using live API count ({num_projects_in_target_for_delay_calc}) as total items estimate for target group '{group_path}'.")
+                all_live_project_stubs = list(group.projects.list(all=True, include_subgroups=True, statistics=False, lazy=True))
+                initial_live_count = len(all_live_project_stubs)
+                logger.info(f"ADAPTIVE DELAY/PROCESSING: Fetched {initial_live_count} live projects for group '{group_path}' before date filtering.")
+
+                # --- Apply REPOS_CREATED_AFTER_DATE filter to live_project_stubs_materialized ---
+                if repos_created_after_filter_date and all_live_project_stubs:
+                    filtered_live_projects = []
+                    skipped_legacy_count = 0
+                    for proj_stub_item in all_live_project_stubs:
+                        visibility = proj_stub_item.visibility
+                        if visibility == "public": # Public projects always pass
+                            filtered_live_projects.append(proj_stub_item)
+                            continue
+                        
+                        # Non-public project ('internal', 'private'), check dates
+                        created_at_dt = _parse_gitlab_iso_datetime_for_filter(proj_stub_item.created_at, logger, proj_stub_item.path_with_namespace, "created_at")
+                        modified_at_dt = _parse_gitlab_iso_datetime_for_filter(proj_stub_item.last_activity_at, logger, proj_stub_item.path_with_namespace, "last_activity_at")
+
+                        if (created_at_dt and created_at_dt >= repos_created_after_filter_date) or \
+                           (modified_at_dt and modified_at_dt >= repos_created_after_filter_date):
+                            filtered_live_projects.append(proj_stub_item)
+                        else:
+                            skipped_legacy_count += 1
+                    live_project_stubs_materialized = filtered_live_projects # Update with filtered list
+                    if skipped_legacy_count > 0:
+                        logger.info(f"GitLab: Skipped {skipped_legacy_count} non-public legacy projects from group '{group_path}' due to REPOS_CREATED_AFTER_DATE filter ('{repos_created_after_filter_date.strftime('%Y-%m-%d')}') before full processing.")
+                else:
+                    live_project_stubs_materialized = all_live_project_stubs # Use all if no filter or no initial projects
+
+                num_projects_in_target_for_delay_calc = len(live_project_stubs_materialized) # Count after filtering
+                logger.info(f"ADAPTIVE DELAY/PROCESSING: Using API count of {num_projects_in_target_for_delay_calc} (after date filter) as total items estimate for target group '{group_path}'.")
             except Exception as e_live_count:
                 logger.warning(f"GitLab: Error fetching live project list for group '{group_path}' to get count: {e_live_count}. num_projects_in_target_for_delay_calc will be 0.", exc_info=True)
                 num_projects_in_target_for_delay_calc = 0 # Fallback
@@ -470,6 +517,7 @@ def fetch_repositories(
                  logger.info(f"{ANSI_YELLOW}GitLab: DYNAMIC POST-API-CALL delay for metadata in group '{group_path}' set to: {dynamic_post_api_call_delay_seconds:.2f}s (based on {num_projects_in_target_for_delay_calc} projects).{ANSI_RESET}")
 
         project_count_for_group_submitted = 0
+        skipped_by_date_filter_count = 0 # Initialize counter for skipped projects
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_project_name = {}
@@ -483,6 +531,40 @@ def fetch_repositories(
                             logger.info(f"Global debug limit ({debug_limit}) reached. Stopping further project submissions for {group_path}.")
                             break
                         processed_counter[0] += 1
+                    
+                    project_stub_path_with_namespace = proj_stub.path_with_namespace # For logging
+
+                    # --- Apply REPOS_CREATED_AFTER_DATE filter ---
+                    if repos_created_after_filter_date:
+                        visibility = proj_stub.visibility # 'public', 'internal', 'private'
+                        is_not_public = visibility != "public" # Treat 'internal' and 'private' as non-public
+
+                        if is_not_public:
+                            created_at_dt = _parse_gitlab_iso_datetime_for_filter(proj_stub.created_at, logger, project_stub_path_with_namespace, "created_at")
+                            modified_at_dt = _parse_gitlab_iso_datetime_for_filter(proj_stub.last_activity_at, logger, project_stub_path_with_namespace, "last_activity_at")
+
+                            created_match = created_at_dt and created_at_dt >= repos_created_after_filter_date
+                            modified_match = modified_at_dt and modified_at_dt >= repos_created_after_filter_date
+
+                            if created_match or modified_match:
+                                created_at_log_str = created_at_dt.strftime('%Y-%m-%d %H:%M:%S %Z') if created_at_dt else 'N/A'
+                                modified_at_log_str = modified_at_dt.strftime('%Y-%m-%d %H:%M:%S %Z') if modified_at_dt else 'N/A'
+                                log_message_parts = [
+                                    f"GitLab: Non-public project '{project_stub_path_with_namespace}' included by REPOS_CREATED_AFTER_DATE "
+                                    f"filter ({repos_created_after_filter_date.strftime('%Y-%m-%d')})"
+                                ]
+                                if created_match and modified_match: log_message_parts.append(f"due to both Creation ({created_at_log_str}) and Modification ({modified_at_log_str}).")
+                                elif created_match: log_message_parts.append(f"due to Creation date ({created_at_log_str}).")
+                                elif modified_match: log_message_parts.append(f"due to Modification date ({modified_at_log_str}).")
+                                logger.info(" ".join(log_message_parts))
+                            else:
+                                # Skip this non-public project
+                                with processed_counter_lock:
+                                    processed_counter[0] -= 1
+                                skipped_by_date_filter_count += 1
+                                continue # Skip to the next project
+                    # --- End REPOS_CREATED_AFTER_DATE filter ---
+
                     
                     # --- Get current commit SHA for caching comparison ---
                     current_commit_sha_for_cache = None
@@ -549,6 +631,8 @@ def fetch_repositories(
                                                 "processing_error": f"Thread execution failed: {exc}"})
 
         logger.info(f"Finished processing for {project_count_for_group_submitted} projects from GitLab group: {group_path}. Collected {len(processed_repo_list)} results.")
+        if repos_created_after_filter_date and skipped_by_date_filter_count > 0:
+            logger.info(f"GitLab: Skipped {skipped_by_date_filter_count} non-public projects from group '{group_path}' due to the REPOS_CREATED_AFTER_DATE filter ('{repos_created_after_filter_date.strftime('%Y-%m-%d')}').")
 
     except GitlabAuthenticationError:
         logger.critical(f"GitLab authentication failed for URL {effective_gitlab_url}. Check token. Skipping GitLab scan for {group_path}.")

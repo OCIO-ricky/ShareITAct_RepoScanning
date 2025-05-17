@@ -16,6 +16,7 @@ import base64
 from typing import List, Dict, Optional, Any, Tuple
 from datetime import timezone, datetime
 from utils.delay_calculator import calculate_dynamic_delay # Import the calculator
+from utils.dateparse import parse_repos_created_after_date # Import the new utility
 from utils.caching import load_previous_scan_data, PLATFORM_CACHE_CONFIG
 from utils.labor_hrs_estimator import _create_summary_dataframe # Import the labor hrs estimator
 
@@ -359,6 +360,11 @@ def fetch_repositories(
         logger.error("Azure DevOps SDK not available. Skipping Azure DevOps scan.")
         return []
 
+    # Parse the REPOS_CREATED_AFTER_DATE from cfg_obj
+    repos_created_after_filter_date: Optional[datetime] = None
+    if cfg_obj and hasattr(cfg_obj, 'REPOS_CREATED_AFTER_DATE'):
+        repos_created_after_filter_date = parse_repos_created_after_date(cfg_obj.REPOS_CREATED_AFTER_DATE, logger)
+
     # --- Load Previous Scan Data for Caching ---
     previous_scan_cache: Dict[str, Dict] = {}
     if previous_scan_output_file:
@@ -434,9 +440,39 @@ def fetch_repositories(
             try:
                 logger.info(f"ADAPTIVE DELAY/PROCESSING: Cache empty or not used for count. Fetching live repository list for project '{organization_name}/{project_name}' to get count.")
                 # This is an API call
-                live_repo_list_materialized = list(git_client.get_repositories(project=project_name))
-                num_repos_in_target_for_delay_calc = len(live_repo_list_materialized)
-                logger.info(f"ADAPTIVE DELAY/PROCESSING: Using live API count ({num_repos_in_target_for_delay_calc}) as total items estimate for target project '{organization_name}/{project_name}'.")
+                all_live_repos_for_project = list(git_client.get_repositories(project=project_name))
+                initial_live_count = len(all_live_repos_for_project)
+                logger.info(f"ADAPTIVE DELAY/PROCESSING: Fetched {initial_live_count} live repositories for project '{organization_name}/{project_name}' before date filtering.")
+
+                # --- Apply REPOS_CREATED_AFTER_DATE filter to live_repo_list_materialized ---
+                if repos_created_after_filter_date and all_live_repos_for_project:
+                    filtered_live_repos = []
+                    skipped_legacy_count = 0
+                    for repo_stub_item in all_live_repos_for_project:
+                        project_visibility = repo_stub_item.project.visibility.lower() if repo_stub_item.project and repo_stub_item.project.visibility else "private"
+                        is_private_project_repo = project_visibility == "private"
+
+                        if not is_private_project_repo: # Public project repos always pass
+                            filtered_live_repos.append(repo_stub_item)
+                            continue
+                        
+                        # Private project repo, check project's last update time
+                        modified_at_dt = repo_stub_item.project.last_update_time
+                        if modified_at_dt and modified_at_dt.tzinfo is None: # Ensure tz-aware
+                            modified_at_dt = modified_at_dt.replace(tzinfo=timezone.utc)
+                        
+                        if modified_at_dt and modified_at_dt >= repos_created_after_filter_date:
+                            filtered_live_repos.append(repo_stub_item)
+                        else:
+                            skipped_legacy_count += 1
+                    live_repo_list_materialized = filtered_live_repos # Update with filtered list
+                    if skipped_legacy_count > 0:
+                        logger.info(f"Azure DevOps: Skipped {skipped_legacy_count} private project legacy repositories from '{organization_name}/{project_name}' due to REPOS_CREATED_AFTER_DATE filter ('{repos_created_after_filter_date.strftime('%Y-%m-%d')}') before full processing.")
+                else:
+                    live_repo_list_materialized = all_live_repos_for_project # Use all if no filter or no initial repos
+
+                num_repos_in_target_for_delay_calc = len(live_repo_list_materialized) # Count after filtering
+                logger.info(f"ADAPTIVE DELAY/PROCESSING: Using API count of {num_repos_in_target_for_delay_calc} (after date filter) as total items estimate for target project '{organization_name}/{project_name}'.")
             except Exception as e_live_count:
                 logger.warning(f"Azure DevOps: Error fetching live repository list for project '{organization_name}/{project_name}' to get count: {e_live_count}. num_repos_in_target_for_delay_calc will be 0.", exc_info=True)
                 num_repos_in_target_for_delay_calc = 0 # Fallback
@@ -472,6 +508,7 @@ def fetch_repositories(
                  logger.info(f"{ANSI_YELLOW}Azure DevOps: DYNAMIC POST-API-CALL delay for metadata in project '{organization_name}/{project_name}' set to: {dynamic_post_api_call_delay_seconds:.2f}s (based on {num_repos_in_target_for_delay_calc} projects).{ANSI_RESET}")
 
         repo_count_for_project_submitted = 0
+        skipped_by_date_filter_count = 0 # Initialize counter for skipped repos
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_repo_name = {}
@@ -490,9 +527,40 @@ def fetch_repositories(
                             break
                         processed_counter[0] += 1
                     
+                    repo_stub_full_name_for_log = f"{organization_name}/{project_name}/{repo_stub.name}"
+
+                    # --- Apply REPOS_CREATED_AFTER_DATE filter ---
+                    if repos_created_after_filter_date:
+                        # Azure DevOps repo visibility is often tied to project visibility.
+                        # repo_stub.project is TeamProjectReference
+                        project_visibility = repo_stub.project.visibility.lower() if repo_stub.project and repo_stub.project.visibility else "private"
+                        is_private_project_repo = project_visibility == "private"
+
+                        if is_private_project_repo:
+                            # Use project's last_update_time as a proxy for repo modification date
+                            # Ensure it's timezone-aware (it should be from the SDK)
+                            modified_at_dt = repo_stub.project.last_update_time
+                            if modified_at_dt and modified_at_dt.tzinfo is None: # Make tz-aware if not already
+                                modified_at_dt = modified_at_dt.replace(tzinfo=timezone.utc)
+                            
+                            modified_match = modified_at_dt and modified_at_dt >= repos_created_after_filter_date
+
+                            if modified_match:
+                                modified_at_log_str = modified_at_dt.strftime('%Y-%m-%d %H:%M:%S %Z') if modified_at_dt else 'N/A'
+                                logger.info(
+                                    f"Azure DevOps: Private project repo '{repo_stub_full_name_for_log}' included by REPOS_CREATED_AFTER_DATE "
+                                    f"filter ({repos_created_after_filter_date.strftime('%Y-%m-%d')}) due to Project Last Update Time ({modified_at_log_str})."
+                                )
+                            else:
+                                # Skip this private repo
+                                with processed_counter_lock:
+                                    processed_counter[0] -= 1
+                                skipped_by_date_filter_count += 1
+                                continue # Skip to the next repository
+                    # --- End REPOS_CREATED_AFTER_DATE filter ---
+
                     # --- Get current commit SHA for caching comparison ---
                     current_commit_sha_for_cache = None
-                    repo_stub_full_name_for_log = f"{organization_name}/{project_name}/{repo_stub.name}"
                     try:
                         if repo_stub.size == 0: # Proactive check if size is available and 0
                              logger.info(f"Repo {repo_stub_full_name_for_log} has size 0. Cannot get current commit SHA for caching.")
@@ -512,7 +580,7 @@ def fetch_repositories(
                     except Exception as e_sha_unexpected:
                         logger.error(f"Unexpected error fetching current commit SHA for {repo_stub_full_name_for_log}: {e_sha_unexpected}. Proceeding without SHA for caching.", exc_info=True)
 
-                    repo_count_for_project_submitted += 1
+                    repo_count_for_project_submitted += 1 # Increment for repos submitted to executor
                     future = executor.submit(
                         _process_single_azure_devops_repository,
                         git_client,
@@ -560,6 +628,8 @@ def fetch_repositories(
                                                 "processing_error": f"Thread execution failed: {exc}"})
 
         logger.info(f"Finished processing for {repo_count_for_project_submitted} repositories from Azure DevOps project: {organization_name}/{project_name}. Collected {len(processed_repo_list)} results.")
+        if repos_created_after_filter_date and skipped_by_date_filter_count > 0:
+            logger.info(f"Azure DevOps: Skipped {skipped_by_date_filter_count} private project repositories from '{organization_name}/{project_name}' due to the REPOS_CREATED_AFTER_DATE filter ('{repos_created_after_filter_date.strftime('%Y-%m-%d')}').")
 
     except AzureDevOpsServiceError as e:
         logger.critical(f"Azure DevOps API error for {organization_name}/{project_name} (using {auth_method}): {e}", exc_info=False)
