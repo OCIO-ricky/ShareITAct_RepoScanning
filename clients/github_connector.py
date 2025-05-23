@@ -205,7 +205,7 @@ def _process_single_github_repository(
         if cached_repo_entry:
             cached_commit_sha = cached_repo_entry.get(github_cache_config["commit_sha_field"])
             if cached_commit_sha and current_commit_sha == cached_commit_sha:
-                logger.info(f"CACHE HIT: GitHub repo '{repo_full_name}' (ID: {repo_id_str}, SHA: {current_commit_sha}) has not changed. Using cached data.")
+                logger.info(f"CACHE HIT: GitHub repo '{repo_full_name}' (ID: {repo_id_str}) has not changed. Using cached data.")
                 
                 # Start with the cached data
                 repo_data_to_process = cached_repo_entry.copy()
@@ -221,7 +221,7 @@ def _process_single_github_repository(
                         ai_temperature_from_config=cfg_obj.AI_TEMPERATURE_ENV, ai_max_output_tokens_from_config=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV,
                         ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV)
                 return repo_data_to_process # Return cached and re-processed data
-    logger.info(f"CACHE MISS or no current SHA: Processing repository: {repo_full_name} (ID: {repo_id_str}) with full data fetch.")
+    logger.info(f"No SHA: Processing repository: {repo_full_name} (ID: {repo_id_str}) with full data fetch.")
 
     try:
         if repo.fork:
@@ -613,9 +613,7 @@ def fetch_repositories(
                             log_message_parts = [
                                 f"GitHub: Private repo '{repo_stub.full_name}' included "
                             ]
-                            if created_match and modified_match:
-                                log_message_parts.append(f"due to both Creation ({created_at_log_str}) and Modification ({modified_at_log_str}).")
-                            elif created_match:
+                            if created_match:
                                 log_message_parts.append(f"due to Creation date ({created_at_log_str}).")
                             elif modified_match:
                                 log_message_parts.append(f"due to Modification date ({modified_at_log_str}).")

@@ -204,20 +204,14 @@ def _process_single_azure_devops_repository(
         if cached_repo_entry:
             cached_commit_sha = cached_repo_entry.get(azure_cache_config["commit_sha_field"])
             if cached_commit_sha and current_commit_sha == cached_commit_sha:
-                logger.info(f"CACHE HIT: Azure DevOps repo '{repo_full_name}' (ID: {repo_id_str}, SHA: {current_commit_sha}) has not changed. Using cached data.")
+                logger.info(f"CACHE HIT: Azure DevOps repo '{repo_full_name}' (ID: {repo_id_str}) has not changed. Using cached data.")
                 
                 # Start with the cached data
                 repo_data_to_process = cached_repo_entry.copy()
                 # Ensure the current (and matching) SHA is in the data for consistency
                 repo_data_to_process[azure_cache_config["commit_sha_field"]] = current_commit_sha
                 
-                # Ensure 'repo_id' is present, mapping from 'id' if necessary
- #               if "repo_id" not in repo_data_to_process and "id" in repo_data_to_process:
- #                   logger.debug(f"CACHE HIT {repo_full_name}: Mapping 'id' ({repo_data_to_process['id']}) to 'repo_id' from cached data.")
- #                   repo_data_to_process["repo_id"] = repo_data_to_process["id"]
-                    # repo_data_to_process.pop("id", None) # Optionally remove the old 'id' field
-
-                # Re-process exemptions to apply current logic/AI models, even on cached data
+                 # Re-process exemptions to apply current logic/AI models, even on cached data
                 default_ids_for_exemption_cache = [organization_name]
                 if project_name and project_name.lower() != organization_name.lower():
                     default_ids_for_exemption_cache.append(project_name)
@@ -229,7 +223,7 @@ def _process_single_azure_devops_repository(
                         ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV)
                 return repo_data_to_process # Return cached and re-processed data
 
-    logger.info(f"CACHE MISS or no current SHA: Processing Azure DevOps repo: {repo_full_name} (ID: {repo_id_str}) with full data fetch.")
+    logger.info(f"No SHA: Processing Azure DevOps repo: {repo_full_name} (ID: {repo_id_str}) with full data fetch.")
 
     try:
         if repo.is_fork and repo.parent_repository:
@@ -547,10 +541,11 @@ def fetch_repositories(
 
                             if modified_match:
                                 modified_at_log_str = modified_at_dt.strftime('%Y-%m-%d %H:%M:%S %Z') if modified_at_dt else 'N/A'
-                                logger.info(
-                                    f"Azure DevOps: Private project repo '{repo_stub_full_name_for_log}' included by REPOS_CREATED_AFTER_DATE "
-                                    f"filter ({repos_created_after_filter_date.strftime('%Y-%m-%d')}) due to Project Last Update Time ({modified_at_log_str})."
-                                )
+                                log_message_parts = [
+                                    f"ADO: Private repo '{repo_stub_full_name_for_log}' included "
+                                ]
+                                log_message_parts.append(f"due to modified date ({modified_at_log_str }).")
+                                logger.info(" ".join(log_message_parts))
                             else:
                                 # Skip this private repo
                                 with processed_counter_lock:

@@ -218,7 +218,7 @@ def _programmatic_org_from_repo_name(repo_name: str, current_org: str, default_o
         acronym_lower = acronym.lower()
         pattern = rf"(?:^|[^a-z0-9]){re.escape(acronym_lower)}(?:[^a-z0-9]|$)"
         if re.search(pattern, repo_name_lower):
-            logger.info(f"Programmatically identified organization '{full_name}' from repo name '{repo_name}' (acronym: '{acronym}'). Current org: '{current_org}'.")
+            logger.info(f"Identified organization '{full_name}' from repo name '{repo_name}'. Initial '{current_org}'.")
             return full_name
     return None
 
@@ -473,7 +473,7 @@ def _get_combined_contact_emails(repo_data: Dict[str, Any]) -> List[str]:
                  all_emails = readme_emails
 
     unique_sorted_emails = sorted(list(set(email.lower() for email in all_emails)))
-    logger.info(f"Final unique contact emails for {repo_name_for_log}: {unique_sorted_emails}")
+#    logger.info(f"Final unique contact emails for {repo_name_for_log}: {unique_sorted_emails}")
     return unique_sorted_emails
 
 def _strip_html_tags(text: str) -> str:
@@ -556,7 +556,7 @@ def process_repository_exemptions(
     if not isinstance(repo_data, dict):
         logger.error(f"Invalid repo_data type: {type(repo_data)}. Expected dict.")
         return {"name": "ErrorRepo", "processing_error": "Invalid input data type"}
-    
+   
     # Start with a copy of the input repo_data to ensure all existing fields,
     # including internal ones like lastCommitSHA, _api_tags, etc., are preserved
     # unless explicitly changed by the exemption logic.
@@ -564,7 +564,7 @@ def process_repository_exemptions(
 
     # Ensure essential keys exist to avoid KeyErrors, especially for 'permissions'
     processed_repo_data.setdefault('name', 'UnknownRepo')
-    processed_repo_data.setdefault('permissions', {})
+#    processed_repo_data.setdefault('permissions', {})
 
     repo_name = processed_repo_data.get('name', 'UnknownRepo')
     repo_description = processed_repo_data.get('description', '')
@@ -588,18 +588,125 @@ def process_repository_exemptions(
     # is_disabled is specific to Azure DevOps, handled by connector
     is_disabled = processed_repo_data.get('disabled', False) # Common in Azure DevOps
     
-    current_permissions = processed_repo_data['permissions']
-    # Clear before processing, will be re-assigned
-    current_permissions['usageType'] = None 
-    current_permissions['exemptionText'] = None
+    current_permissions = processed_repo_data.get('permissions', {'usageType': None, 'exemptionText': None})
     
     # Determine if AI should be attempted for this call based on passed config and module readiness
     should_attempt_ai = ai_is_enabled_from_config and _MODULE_AI_ENABLED_STATUS and (DISABLE_SSL_ENV != "true")
 
-    actual_contact_emails = _get_combined_contact_emails(processed_repo_data)
-    processed_repo_data['_private_contact_emails'] = actual_contact_emails
+     # If _private_contact_emails is already populated (e.g., from cache and is a list), use it.
+    # Otherwise, try to derive it by parsing readme/codeowners (if available).
+    # Also check if the list is non-empty before trusting it from cache.
+    pre_existing_emails = processed_repo_data.get('_private_contact_emails')
+    actual_contact_emails_for_final_step = [] # Initialize to ensure it's always defined
 
-    # --- Organization Processing ---
+    if '_private_contact_emails' in processed_repo_data and \
+        isinstance(pre_existing_emails, list) and \
+        pre_existing_emails: # Check if the list is non-empty
+        logger.info(f"For {repo_name}, using pre-existing _private_contact_emails: {processed_repo_data['_private_contact_emails']}")
+        actual_contact_emails_for_final_step = pre_existing_emails # Use the cached/pre-existing emails
+    else:
+        derived_contact_emails = _get_combined_contact_emails(processed_repo_data)
+        processed_repo_data['_private_contact_emails'] = derived_contact_emails
+        actual_contact_emails_for_final_step = derived_contact_emails # Use the newly derived emails
+        logger.info(f"For {repo_name}, contact emails now SET to: {processed_repo_data.get('_private_contact_emails')}")
+
+    # --- Exemption Processing (incorporating cached exemption prioritization) ---
+    permissions_from_cache = processed_repo_data.get('permissions', {})
+    cached_usage_type_value = permissions_from_cache.get('usageType') # Get the value, which could be None
+    cached_usage_type = cached_usage_type_value if isinstance(cached_usage_type_value, str) else '' # Ensure it's a string, default to '' if None or not str
+    cached_exemption_text_value = permissions_from_cache.get('exemptionText')
+    cached_exemption_text = cached_exemption_text_value if isinstance(cached_exemption_text_value, str) else '' # Ensure string, default to ''
+
+    is_valid_cached_exemption = cached_usage_type.startswith('exempt') and \
+                                    (cached_exemption_text or cached_usage_type == 'exemptButNotEnoughContent')
+
+    if is_valid_cached_exemption:
+        logger.info(f"For {repo_name}, using cached exemption status: usageType='{cached_usage_type}', exemptionText='{cached_exemption_text or '(none)'}'")
+        # Values are already in processed_repo_data['permissions'], no change needed for these fields.
+    else:
+        logger.info(f"For {repo_name}, cached exemption status not found or invalid (Processed cached usageType: '{cached_usage_type}', Processed cached ExempText: '{cached_exemption_text}'). Determining exemption status now.")
+        # This section determines the initial usageType and exemptionText
+        # based on exemptions.yaml or AI analysis.
+        # Note: _determine_initial_exemption_status is not defined in the provided context,
+        # assuming the cascade logic below serves this purpose.
+        # If _determine_initial_exemption_status was a separate helper, it would be called here.
+        # For now, the cascade logic will set current_permissions['usageType'] and ['exemptionText']
+
+        # --- Exemption Cascade Logic (moved from later, to be applied if not validly cached) ---
+        exemption_applied = False
+        if readme_content:
+            manual_exempt_match = re.search(r"Exemption:\s*(\S+)", readme_content, re.IGNORECASE | re.MULTILINE)
+            justification_match = re.search(r"Exemption justification:\s*(.*)", readme_content, re.IGNORECASE | re.MULTILINE)
+            if manual_exempt_match and justification_match:
+                captured_code = manual_exempt_match.group(1).strip()
+                if captured_code in VALID_AI_EXEMPTION_CODES or captured_code == EXEMPT_NON_CODE:
+                    current_permissions['usageType'] = captured_code
+                    current_permissions['exemptionText'] = justification_match.group(1).strip()
+                    exemption_applied = True
+                    logger.info(f"Repo '{repo_name}': Exempted manually via README ({captured_code}).")
+
+        if not exemption_applied:
+            is_purely_non_code = not any(lang and lang.strip().lower() not in [l.lower() for l in NON_CODE_LANGUAGES if l] for lang in all_languages) if all_languages else True
+            if is_purely_non_code:
+                current_permissions['usageType'] = EXEMPT_NON_CODE
+                languages_str = ', '.join(filter(None, all_languages)) or 'None detected'
+                current_permissions['exemptionText'] = f"Non-code repository (languages: [{languages_str}])"
+                exemption_applied = True
+                logger.info(f"Repo '{repo_name}': Exempted as non-code (Languages: [{languages_str}]).")
+
+        if not exemption_applied and readme_content:
+            found_keywords = [kw for kw in SENSITIVE_KEYWORDS if re.search(r'\b' + re.escape(kw) + r'\b', readme_content, re.IGNORECASE)]
+            if found_keywords:
+                current_permissions['usageType'] = EXEMPT_BY_LAW
+                current_permissions['exemptionText'] = f"Flagged: Found keywords in README: [{', '.join(found_keywords)}]"
+                exemption_applied = True
+                logger.info(f"Repo '{repo_name}': Exempted due to sensitive keywords ({EXEMPT_BY_LAW}): {found_keywords}.")
+
+        if not exemption_applied and should_attempt_ai: # Only attempt AI if enabled and no prior exemption
+            if is_empty_repo:
+                logger.info(f"Repository '{repo_name}' is marked as empty. Skipping AI exemption analysis.")
+            else:
+                logger.debug(f"Repo '{repo_name}': No standard exemption. Calling AI for exemption analysis.")
+                ai_usage_type, ai_exemption_text = _call_ai_for_exemption(
+                    processed_repo_data, # Pass the current state
+                    ai_model_name=ai_model_name_from_config,
+                    ai_temperature=ai_temperature_from_config,
+                    ai_max_output_tokens=ai_max_output_tokens_from_config,
+                    max_input_tokens_for_combined_text=ai_max_input_tokens_from_config
+                )
+                if ai_usage_type:
+                    current_permissions['usageType'] = ai_usage_type
+                    current_permissions['exemptionText'] = ai_exemption_text
+                    exemption_applied = True
+                    logger.info(f"Repo '{repo_name}': Exempted via AI analysis ({ai_usage_type}).")
+        
+        if not exemption_applied: # Default if no exemption applied
+            if not should_attempt_ai and not is_empty_repo and (DISABLE_SSL_ENV != "true"): # Log if AI was skipped but could have run (and SSL wasn't the reason)
+                logger.debug(f"AI was disabled for exemption analysis for '{repo_name}' (config or module status). Applying default usageType.")
+            # Determine final usageType based on visibility and license if no exemption was applied
+            visibility_for_rules = processed_repo_data.get('repositoryVisibility', '').lower()
+            # Treat 'internal' as 'private' for this rule application
+            if visibility_for_rules == 'internal':
+                effective_visibility_for_usage_rule = 'private'
+            else:
+                effective_visibility_for_usage_rule = visibility_for_rules
+
+            licenses_list = current_permissions.get('licenses', [])
+            has_license = bool(licenses_list)
+
+            if effective_visibility_for_usage_rule == 'public' and has_license:
+                final_usage_type = USAGE_OPEN_SOURCE
+            else: # Covers public without license, and private/internal (with or without license)
+                final_usage_type = USAGE_GOVERNMENT_WIDE_REUSE
+            
+            current_permissions['usageType'] = final_usage_type
+            logger.info(f"Repo '{repo_name}': Assigned final usageType: '{final_usage_type}' (Visibility: {visibility_for_rules}, HasLicense: {has_license}).")
+            current_permissions['exemptionText'] = None # Ensure no leftover text if no exemption was applied
+        
+        logger.info(f"For {repo_name}, exemption status in repo_data NOW SET to: usageType='{current_permissions['usageType']}', exemptionText='{current_permissions.get('exemptionText', '(none)')}'")
+
+
+    # --- Organization Processing (can run independently of exemption status) ---
     effective_default_org_ids = list(set(doi.lower() for doi in (default_org_identifiers or []) if doi))
     if initial_org_from_connector.lower() not in effective_default_org_ids and \
        initial_org_from_connector.lower() not in (val.lower() for val in KNOWN_CDC_ORGANIZATIONS.values()):
@@ -625,7 +732,7 @@ def process_repository_exemptions(
         if is_empty_repo:
             logger.info(f"Repository '{repo_name}' is marked as empty. Skipping AI organization inference.")
         elif current_org_after_prog_readme in effective_default_org_ids: # Check elif to avoid re-eval if empty
-            logger.info(f"Organization for '{repo_name}' is default ('{processed_repo_data.get('organization', '')}'). Attempting AI inference.")
+            # Attempting AI inference.")
             ai_org = _call_ai_for_organization(
                 processed_repo_data, # Pass the current state of processed_repo_data
                 ai_model_name=ai_model_name_from_config,
@@ -641,7 +748,7 @@ def process_repository_exemptions(
                 elif not validated_ai_org:
                      logger.warning(f"AI suggested org '{ai_org}' for '{repo_name}', but not in known list. Discarding.")
         else:
-            logger.info(f"Organization for '{repo_name}' is '{processed_repo_data.get('organization', '')}' (or SSL verification disabled), not calling AI for organization.")
+            logger.info(f"Organization for '{repo_name}' is '{processed_repo_data.get('organization', '')}', not calling AI for organization.")
     else:
         logger.debug(f"AI is disabled for organization inference for '{repo_name}' (config or module status).")
 
@@ -650,77 +757,6 @@ def process_repository_exemptions(
         contract_match = re.search(r"^Contract#:\s*(.*)", readme_content, re.MULTILINE | re.IGNORECASE)
         if contract_match:
             processed_repo_data['contractNumber'] = contract_match.group(1).strip()
-
-    # --- Exemption Cascade Logic ---
-    exemption_applied = False
-    if readme_content:
-        manual_exempt_match = re.search(r"Exemption:\s*(\S+)", readme_content, re.IGNORECASE | re.MULTILINE)
-        justification_match = re.search(r"Exemption justification:\s*(.*)", readme_content, re.IGNORECASE | re.MULTILINE)
-        if manual_exempt_match and justification_match:
-            captured_code = manual_exempt_match.group(1).strip()
-            if captured_code in VALID_AI_EXEMPTION_CODES or captured_code == EXEMPT_NON_CODE:
-                current_permissions['usageType'] = captured_code
-                current_permissions['exemptionText'] = justification_match.group(1).strip()
-                exemption_applied = True
-                logger.info(f"Repo '{repo_name}': Exempted manually via README ({captured_code}).")
-
-    if not exemption_applied:
-        is_purely_non_code = not any(lang and lang.strip().lower() not in [l.lower() for l in NON_CODE_LANGUAGES if l] for lang in all_languages) if all_languages else True
-        if is_purely_non_code:
-            current_permissions['usageType'] = EXEMPT_NON_CODE
-            languages_str = ', '.join(filter(None, all_languages)) or 'None detected'
-            current_permissions['exemptionText'] = f"Non-code repository (languages: [{languages_str}])"
-            exemption_applied = True
-            logger.info(f"Repo '{repo_name}': Exempted as non-code (Languages: [{languages_str}]).")
-
-    if not exemption_applied and readme_content:
-        found_keywords = [kw for kw in SENSITIVE_KEYWORDS if re.search(r'\b' + re.escape(kw) + r'\b', readme_content, re.IGNORECASE)]
-        if found_keywords:
-            current_permissions['usageType'] = EXEMPT_BY_LAW
-            current_permissions['exemptionText'] = f"Flagged: Found keywords in README: [{', '.join(found_keywords)}]"
-            exemption_applied = True
-            logger.info(f"Repo '{repo_name}': Exempted due to sensitive keywords ({EXEMPT_BY_LAW}): {found_keywords}.")
-
-    if not exemption_applied and should_attempt_ai: # Only attempt AI if enabled and no prior exemption
-        if is_empty_repo:
-            logger.info(f"Repository '{repo_name}' is marked as empty. Skipping AI exemption analysis.")
-        else:
-            logger.debug(f"Repo '{repo_name}': No standard exemption. Calling AI for exemption analysis.")
-            ai_usage_type, ai_exemption_text = _call_ai_for_exemption(
-                processed_repo_data, # Pass the current state
-                ai_model_name=ai_model_name_from_config,
-                ai_temperature=ai_temperature_from_config,
-                ai_max_output_tokens=ai_max_output_tokens_from_config,
-                max_input_tokens_for_combined_text=ai_max_input_tokens_from_config
-            )
-            if ai_usage_type:
-                current_permissions['usageType'] = ai_usage_type
-                current_permissions['exemptionText'] = ai_exemption_text
-                exemption_applied = True
-                logger.info(f"Repo '{repo_name}': Exempted via AI analysis ({ai_usage_type}).")
-    
-    if not exemption_applied: # Default if no exemption applied
-        if not should_attempt_ai and not is_empty_repo and (DISABLE_SSL_ENV != "true"): # Log if AI was skipped but could have run (and SSL wasn't the reason)
-            logger.debug(f"AI was disabled for exemption analysis for '{repo_name}' (config or module status). Applying default usageType.")
-        # Determine final usageType based on visibility and license if no exemption was applied
-        visibility_for_rules = processed_repo_data.get('repositoryVisibility', '').lower()
-        # Treat 'internal' as 'private' for this rule application
-        if visibility_for_rules == 'internal':
-            effective_visibility_for_usage_rule = 'private'
-        else:
-            effective_visibility_for_usage_rule = visibility_for_rules
-
-        licenses_list = current_permissions.get('licenses', [])
-        has_license = bool(licenses_list)
-
-        if effective_visibility_for_usage_rule == 'public' and has_license:
-            final_usage_type = USAGE_OPEN_SOURCE
-        else: # Covers public without license, and private/internal (with or without license)
-            final_usage_type = USAGE_GOVERNMENT_WIDE_REUSE
-        
-        current_permissions['usageType'] = final_usage_type
-        logger.info(f"Repo '{repo_name}': Assigned final usageType: '{final_usage_type}' (Visibility: {visibility_for_rules}, HasLicense: {has_license}).")
-        current_permissions['exemptionText'] = None # Ensure no leftover text if no exemption was applied
 
     # --- README Fallbacks for other fields ---
     if readme_content:
@@ -758,8 +794,8 @@ def process_repository_exemptions(
     is_private_or_internal = processed_repo_data.get('repositoryVisibility', '').lower() in ['private', 'internal']
     if is_private_or_internal:
         final_json_email = PRIVATE_CONTACT_EMAIL_DEFAULT
-    elif actual_contact_emails: # Use extracted if public and available
-        final_json_email = actual_contact_emails[0]
+    elif actual_contact_emails_for_final_step: # Use the emails determined earlier (cached or derived)
+        final_json_email = actual_contact_emails_for_final_step[0]
     processed_repo_data['contact']['email'] = final_json_email
 
     # Clean up empty contact dict if only 'name' was present without email, or if totally empty
@@ -774,9 +810,6 @@ def process_repository_exemptions(
     processed_repo_data.pop('readme_content', None)
     processed_repo_data.pop('_codeowners_content', None)
     # _is_empty_repo is kept as it's a useful final flag.
-    # processed_repo_data.pop('_is_empty_repo', None) 
-    # _private_contact_emails is an internal field, remove it from final output.
-    processed_repo_data.pop('_private_contact_emails', None)
-
+    # _private_contact_emails it's a useful when processing from cache.
 
     return processed_repo_data

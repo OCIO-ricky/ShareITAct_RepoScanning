@@ -1,4 +1,4 @@
-# utils/privateid_manager.py
+# utils\privateid_manager.py
 """
 Manages a persistent mapping between repository identifiers (organization, name)
 and a generated PrivateID. This PrivateID is intended to be a stable,
@@ -28,19 +28,22 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-class RepoIdMappingManager: # Renamed class
+ANSI_RED = "\x1b[31;1m"  # Bold Red
+ANSI_RESET = "\x1b[0m"   # Reset to default color
+
+class RepoIdMappingManager:
     """Manages the mapping between repositories (org/name) and their platform RepoIDs, URLs, and contacts."""
-    EXPECTED_HEADER = ["PrivateID", "RepositoryName", "RepositoryURL","Organization", "ContactEmails", "DateAdded"] # Changed PlatformRepoID to PrivateID
+    EXPECTED_HEADER = ["PrivateID", "RepositoryName", "RepositoryURL","Organization", "ContactEmails", "DateAdded"]
 
     def __init__(self, filepath="output/privateid_mapping.csv"):
         self.filepath = filepath
         # Key: private_id_value (e.g., "github_12345")
         # Value: dict with 'private_id', 'repo', 'org', 'url', 'emails', 'date'
         self.mappings: Dict[str, Dict[str, Any]] = {}
-        self.lock = threading.Lock() # Initialize the lock
-        self.logger = logging.getLogger(__name__) # Instance logger if preferred
-        self.new_id_count = 0 # Track genuinely new IDs generated
-        self.updated_email_count = 0 # Track records where emails were updated
+        self.lock = threading.Lock()
+        self.logger = logging.getLogger(__name__) # Use the module-level logger
+        self.new_id_count = 0
+        self.updated_email_count = 0
         self._load_mappings()
 
     def _generate_random_suffix(self, length=6) -> str:
@@ -54,7 +57,7 @@ class RepoIdMappingManager: # Renamed class
     def _load_mappings(self):
         """Loads existing mappings from the CSV file into memory."""
         self._ensure_directory_exists()
-        with self.lock: # Protect access to self.mappings during load
+        with self.lock:
             if not os.path.exists(self.filepath):
                 self.logger.info(f"Mapping file {self.filepath} not found. A new one will be created on save if needed.")
                 return
@@ -74,37 +77,37 @@ class RepoIdMappingManager: # Renamed class
                             f"Expected: {self.EXPECTED_HEADER}, Found: {header}. "
                             "Cannot reliably load mappings. Please check or regenerate the file."
                         )
-                        # Potentially raise an error or clear self.mappings to prevent using bad data
                         self.mappings.clear()
                         return
 
-                    for row_num, row in enumerate(reader, start=2): # start=2 because header is row 1
+                    for row_num, row in enumerate(reader, start=2):
                         if len(row) != len(self.EXPECTED_HEADER):
                             self.logger.warning(f"Skipping malformed row {row_num} in {self.filepath}: Incorrect number of columns. Row: {row}")
                             continue
-                        
+
                         private_id_val, repo_name, repo_url, org_name, emails_str, date_added = row
-                        
-                        # Basic validation for required fields
+
                         if not private_id_val or not repo_name or not org_name or not repo_url:
                              self.logger.warning(f"Skipping row {row_num} in {self.filepath}: Missing required field(s) (PrivateID, RepositoryName, Organization, RepositoryURL). Row: {row}")
                              continue
-                        
-                        # Check for duplicate PrivateID during load
+
                         if private_id_val in self.mappings:
                             self.logger.warning(f"Duplicate PrivateID '{private_id_val}' found in {self.filepath} at row {row_num}. Keeping the first encountered entry. Row: {row}")
-                            continue # Skip this duplicate
-                            
-                        # Store emails as a sorted list internally
-                        contact_emails = sorted(list(set(email.strip() for email in emails_str.split(';') if email.strip())))
+                            continue
 
-                        # Key is now private_id_val
+                        # Parse and store emails as a sorted list of unique, lowercase strings
+                        contact_emails_list = []
+                        if emails_str: # Check if emails_str is not empty
+                            contact_emails_list = sorted(list(set(
+                                email.strip().lower() for email in emails_str.split(';') if email.strip()
+                            )))
+
                         self.mappings[private_id_val] = {
-                            'private_id': private_id_val, # Store the prefixed ID
-                            'repo': repo_name, # Store original case for writing
+                            'private_id': private_id_val,
+                            'repo': repo_name,
                             'url': repo_url,
-                            'org': org_name,   # Store original case for writing
-                            'emails': contact_emails, # Store as list
+                            'org': org_name,
+                            'emails': contact_emails_list, # Store the parsed list
                             'date': date_added
                         }
                 self.logger.info(f"Successfully loaded {len(self.mappings)} repo ID mappings from {self.filepath}")
@@ -112,90 +115,117 @@ class RepoIdMappingManager: # Renamed class
                 self.logger.info(f"Mapping file {self.filepath} not found. Will create a new one on save if needed.")
             except Exception as e:
                 self.logger.error(f"Error loading repo ID mappings from {self.filepath}: {e}", exc_info=True)
-                # Decide if to clear mappings or try to proceed with what was loaded
-                self.mappings.clear() # Safer to clear if loading failed unexpectedly
+                self.mappings.clear()
 
-    def get_or_create_mapping_entry(self, platform_repo_id: Any, organization: str, repo_name: str, repository_url: Optional[str], contact_emails: Optional[List[str]], platform_prefix: str) -> str:
+    def get_or_create_mapping_entry(self, platform_repo_id: Any, organization: str, repo_name: str, repository_url: Optional[str], contact_emails_str_arg: Optional[str], platform_prefix: str) -> str:
         """
         Gets an existing PrivateID for a repo or creates a new one.
-        Updates URL and contact emails if the entry exists and they differ.
-        The platform_repo_id is the unique ID from the platform (e.g., GitHub repo.id).
-        The platform_prefix is 'github', 'gitlab', or 'azure'.
+        Updates URL, organization, and contact emails if the entry exists and they differ.
+        contact_emails_str_arg: A semicolon-separated string of contact emails, or None.
         """
         if not platform_repo_id:
+            self.logger.info(f"get_or_create_mapping_entry: platform_repo_id is MISSING for {organization}/{repo_name}. Generating random suffix for PrivateID.")
             self.logger.error(f"Platform Repo ID is missing for {organization}/{repo_name}. Cannot generate PrivateID. Using random suffix.")
-            # Fallback to a less stable identifier if platform_repo_id is missing
             private_id_value = f"{platform_prefix}_random_{self._generate_random_suffix()}"
         else:
             private_id_value = f"{platform_prefix}_{str(platform_repo_id)}"
 
         if not repository_url:
             self.logger.warning(f"RepositoryURL is missing for {organization}/{repo_name} (PrivateID: {private_id_value}). Mapping entry will lack URL.")
-            # repository_url = "" # Or handle as an error if it's mandatory for your CSV
 
-        with self.lock: # Acquire lock
-            actual_emails_list = sorted(list(set(email.lower() for email in contact_emails if email))) if contact_emails else []
+     #   self.logger.info(f"get_or_create_mapping_entry CALLED. PrivateID to check/create: '{private_id_value}' for repo: {organization}/{repo_name}. Incoming Org: '{organization}'. Emails str: '{contact_emails_str_arg}'")
 
+        # Parse the incoming semicolon-separated string into a list of unique, sorted, lowercase emails.
+        parsed_incoming_emails_list = []
+        if contact_emails_str_arg and isinstance(contact_emails_str_arg, str): # Ensure it's a string
+            parsed_incoming_emails_list = sorted(list(set(
+                email.strip().lower() for email in contact_emails_str_arg.split(';') if email.strip()
+            )))
+        elif contact_emails_str_arg: # Log if it's not a string but also not None/empty
+             self.logger.warning(f"contact_emails_str_arg for {private_id_value} was not a string: {type(contact_emails_str_arg)}. Treating as no emails.")
+             # parsed_incoming_emails_list remains []
+
+        with self.lock:
             if private_id_value in self.mappings:
                 existing_data = self.mappings[private_id_value]
+           #     self.logger.info(f"{ANSI_RED}PRIVATEID_MANAGER - Checking existing entry for {private_id_value}. Current in-memory: {existing_data}{ANSI_RESET}")
                 updated = False
 
-                if existing_data.get('repo') != repo_name:
-                    self.logger.info(f"Updating RepositoryName for PrivateID {private_id_value}. Old: '{existing_data.get('repo')}', New: '{repo_name}'.")
-                    existing_data['repo'] = repo_name
-                    updated = True
-                if existing_data.get('org') != organization:
-                    self.logger.info(f"Updating Organization for PrivateID {private_id_value}. Old: '{existing_data.get('org')}', New: '{organization}'.")
+                # Organization update logic
+                current_org_in_mapping = existing_data.get('org')
+                org_needs_update = current_org_in_mapping != organization
+           #     self.logger.info(f"{ANSI_RED}PRIVATEID_MANAGER - Org check for {private_id_value}: Incoming='{organization}', Existing='{current_org_in_mapping}', NeedsUpdate={org_needs_update}{ANSI_RESET}")
+                if org_needs_update:
+                    self.logger.info(f"Updating Organization for PrivateID {private_id_value}. Old: '{current_org_in_mapping}', New: '{organization}'.")
                     existing_data['org'] = organization
                     updated = True
-                if existing_data.get('url') != repository_url:
-                    self.logger.info(f"Updating RepositoryURL for PrivateID {private_id_value}. Old: '{existing_data.get('url')}', New: '{repository_url}'.")
+                
+                # RepositoryURL update logic
+                current_url_in_mapping = existing_data.get('url')
+                url_needs_update = current_url_in_mapping != repository_url
+            #    self.logger.info(f"{ANSI_RED}PRIVATEID_MANAGER - URL check for {private_id_value}: Incoming='{repository_url}', Existing='{current_url_in_mapping}', NeedsUpdate={url_needs_update}{ANSI_RESET}")
+                if url_needs_update:
+                    self.logger.info(f"Updating RepositoryURL for PrivateID {private_id_value}. Old: '{current_url_in_mapping}', New: '{repository_url}'.")
                     existing_data['url'] = repository_url
                     updated = True
 
+                # Repository Name update logic
+                current_repo_name_in_mapping = existing_data.get('repo')
+                repo_name_needs_update = current_repo_name_in_mapping != repo_name
+            #    self.logger.info(f"{ANSI_RED}PRIVATEID_MANAGER - RepoName check for {private_id_value}: Incoming='{repo_name}', Existing='{current_repo_name_in_mapping}', NeedsUpdate={repo_name_needs_update}{ANSI_RESET}")
+                if repo_name_needs_update:
+                    self.logger.info(f"Updating RepositoryName for PrivateID {private_id_value}. Old: '{current_repo_name_in_mapping}', New: '{repo_name}'.")
+                    existing_data['repo'] = repo_name
+                    updated = True
+
+                # Contact Emails update logic
                 existing_emails_list = existing_data.get('emails', [])
-                if actual_emails_list != existing_emails_list: # Compare sorted lists
-                    self.logger.info(f"Updating contact emails for PrivateID {private_id_value}. Old: {';'.join(existing_emails_list)}, New: {';'.join(actual_emails_list)}")
-                    existing_data['emails'] = actual_emails_list
-                    self.updated_email_count += 1 # Count email updates specifically
+                emails_need_update = parsed_incoming_emails_list != existing_emails_list
+            #    self.logger.info(f"{ANSI_RED}PRIVATEID_MANAGER - Emails check for {private_id_value}: ParsedIncoming={parsed_incoming_emails_list}, ExistingLoaded={existing_emails_list}, NeedsUpdate={emails_need_update}{ANSI_RESET}")
+                if emails_need_update:
+                    self.logger.info(f"Updating contact emails for PrivateID {private_id_value}. Old: {';'.join(existing_emails_list)}, New: {';'.join(parsed_incoming_emails_list)}")
+                    existing_data['emails'] = parsed_incoming_emails_list
+                    self.updated_email_count += 1
                     updated = True
                 
                 if updated:
-                    existing_data['date'] = datetime.now(timezone.utc).isoformat() # Update modification date
+                    existing_data['date'] = datetime.now(timezone.utc).isoformat()
+           #         self.logger.info(f"PRIVATEID_MANAGER - Entry for {private_id_value} was updated in memory. New state: {existing_data}")
+           #     else:
+           #         self.logger.info(f"PRIVATEID_MANAGER - Entry for {private_id_value} existed but no fields required updating.")
 
                 return str(private_id_value)
-            else:
+            else: # New entry
                 date_added = datetime.now(timezone.utc).isoformat()
-                emails_str_log = ";".join(actual_emails_list) if actual_emails_list else ""
-                self.logger.debug(f"Creating new mapping entry for PrivateID '{private_id_value}' ({organization}/{repo_name}) URL: {repository_url}. Contacts: '{emails_str_log}'")
+                emails_str_log = ";".join(parsed_incoming_emails_list) if parsed_incoming_emails_list else ""
+           #     self.logger.info(f"Attempting to ADD new entry to self.mappings with private_id_value='{private_id_value}' for {organization}/{repo_name}")
+           #     self.logger.debug(f"Creating new mapping entry for PrivateID '{private_id_value}' ({organization}/{repo_name}) URL: {repository_url}. Contacts: '{emails_str_log}'")
                 self.mappings[private_id_value] = {
-                    'private_id': str(private_id_value), # Store the prefixed ID
-                    'repo': repo_name, # Store original case
+                    'private_id': str(private_id_value),
+                    'repo': repo_name,
                     'url': repository_url,
-                    'org': organization, # Store original case
-                    'emails': actual_emails_list, # Store as list
+                    'org': organization,
+                    'emails': parsed_incoming_emails_list, # Store the parsed list
                     'date': date_added
                 }
-                self.new_id_count += 1 # Increment new counter
+                self.new_id_count += 1
+           #     self.logger.info(f"SUCCESSFULLY ADDED new entry for private_id_value='{private_id_value}'. self.mappings now has {len(self.mappings)} entries.")
                 return str(private_id_value)
-        # Lock is released automatically
 
     def get_contact_email_for_code_json(self, organization: str, repo_name: str, is_private_or_internal: bool) -> Optional[str]:
         """
         Determines the contact email for the code.json output.
-        - Private/Internal repos: Returns a configured default email.
-        - Public repos: Returns the first contact email found in the mapping,
-                        or a configured default public email if none found.
         """
         if is_private_or_internal:
-            return os.getenv("PRIVATE_REPO_CONTACT_EMAIL", "shareit@cdc.gov") # Fetch from env
-        else:
-            # Iterate to find the matching org/repo since privateID is the key
-            with self.lock: # Protect reading self.mappings
+            return os.getenv("PRIVATE_REPO_CONTACT_EMAIL", "shareit@cdc.gov")
+        else: # Public repository
+            with self.lock:
+                # Find the mapping entry by org/name to get its specific emails
+                # This requires iterating as mappings are keyed by privateID
                 for mapping_data in self.mappings.values():
                     if mapping_data.get('org', '').lower() == organization.lower() and \
                        mapping_data.get('repo', '').lower() == repo_name.lower():
-                        if mapping_data.get('emails'):
+                        if mapping_data.get('emails'): # Check if the 'emails' list exists and is not empty
                             return mapping_data['emails'][0] # Return the first actual email
             # If public and no specific emails found in mapping, return default public contact
             return os.getenv("DEFAULT_CONTACT_EMAIL", "shareit@cdc.gov")
@@ -209,22 +239,17 @@ class RepoIdMappingManager: # Renamed class
             return
 
         saved_count = 0
-        with self.lock: # Acquire lock for writing
+        with self.lock:
             try:
-                # Open in write mode ('w') to overwrite the file
                 with open(self.filepath, 'w', newline='', encoding='utf-8') as csvfile:
                     writer = csv.writer(csvfile)
-                    # Write the header first
                     writer.writerow(self.EXPECTED_HEADER)
 
-                    # Sort by privateID for consistent output order (optional, but good practice)
-                    # self.mappings.values() are the dictionaries we want to write
                     sorted_mapping_values = sorted(self.mappings.values(), key=lambda x: (x.get('org','').lower(), x.get('repo','').lower()))
                     for data in sorted_mapping_values:
-                        # Convert list of emails back to semicolon-separated string for CSV
-                        emails_str = ";".join(data.get('emails', []))
+                        emails_str = ";".join(data.get('emails', [])) # Convert list of emails back to string
                         writer.writerow([
-                            data['private_id'], # Write the prefixed ID
+                            data['private_id'],
                             data['repo'], 
                             data['url'],
                             data['org'],  
@@ -242,91 +267,7 @@ class RepoIdMappingManager: # Renamed class
         self.updated_email_count = 0
 
     def get_new_id_count(self) -> int:
-        """Returns the count of new PrivateIDs generated during this run."""
         return self.new_id_count
 
     def get_updated_email_count(self) -> int:
-        """Returns the count of records where contact emails were updated during this run."""
         return self.updated_email_count
-
-if __name__ == '__main__':
-    # Basic test and usage example
-    logging.basicConfig(level=logging.DEBUG)
-    logger.info("--- Testing RepoIdMappingManager ---")
-    
-    # Use a temporary file for testing
-    test_mapping_file = "output/test_privateid_mapping.csv"
-    if os.path.exists(test_mapping_file):
-        os.remove(test_mapping_file)
-
-    manager = RepoIdMappingManager(filepath=test_mapping_file)
-
-    # Test 1: Create new entries
-    id1 = manager.get_or_create_mapping_entry("gh_123", "TestOrg", "RepoA", "http://example.com/TestOrg/RepoA", ["dev1@example.com", "dev2@example.com"], "github")
-    id2 = manager.get_or_create_mapping_entry("gl_456", "TestOrg", "RepoB", "http://example.com/TestOrg/RepoB", ["dev3@example.com"], "gitlab")
-    id3 = manager.get_or_create_mapping_entry("az_789", "AnotherOrg", "RepoC", "http://example.com/AnotherOrg/RepoC", [], "azure")
-    
-    logger.info(f"Generated ID for RepoA: {id1}")
-    logger.info(f"Generated ID for RepoB: {id2}")
-    logger.info(f"Generated ID for RepoC: {id3}")
-    assert id1 == "github_gh_123"
-    assert manager.get_new_id_count() == 3
-
-    # Test 2: Retrieve existing entry (should not create new)
-    id1_retrieved = manager.get_or_create_mapping_entry("gh_123", "TestOrg", "RepoA", "http://example.com/TestOrg/RepoA", ["dev1@example.com", "dev2@example.com"], "github")
-    assert id1_retrieved == id1
-    assert manager.get_new_id_count() == 3 # Count should not increase
-
-    # Test 3: Update existing entry's emails and URL
-    id1_updated = manager.get_or_create_mapping_entry("gh_123", "TestOrg", "RepoA", "http://new.example.com/TestOrg/RepoA_renamed", ["dev1@example.com", "newdev@example.com"], "github")
-    assert id1_updated == id1
-    assert manager.get_new_id_count() == 3
-    assert manager.get_updated_email_count() == 1
-    
-    # Check internal state for RepoA
-    repo_a_data = manager.mappings.get(id1)
-    assert repo_a_data is not None
-    assert repo_a_data['url'] == "http://new.example.com/TestOrg/RepoA_renamed"
-    assert repo_a_data['emails'] == sorted(["dev1@example.com", "newdev@example.com"])
-
-
-    # Test 4: Save and reload
-    manager.save_all_mappings()
-    logger.info(f"New ID count before reload: {manager.get_new_id_count()}") # Should be 0 after save
-    logger.info(f"Updated email count before reload: {manager.get_updated_email_count()}") # Should be 0 after save
-
-    manager_reloaded = RepoIdMappingManager(filepath=test_mapping_file)
-    assert len(manager_reloaded.mappings) == 3
-    assert manager_reloaded.get_new_id_count() == 0 # Should be 0 after loading
-    
-    id1_reloaded = manager_reloaded.get_or_create_mapping_entry("gh_123", "TestOrg", "RepoA", "http://new.example.com/TestOrg/RepoA_renamed", ["dev1@example.com", "newdev@example.com"], "github")
-    assert id1_reloaded == id1
-    assert manager_reloaded.get_new_id_count() == 0 # Still 0, no new IDs
-
-    # Test 5: Get contact email
-    email_repo_a = manager_reloaded.get_contact_email_for_code_json("TestOrg", "RepoA", is_private_or_internal=False)
-    assert email_repo_a == "dev1@example.com" # First sorted email
-
-    email_repo_c_public = manager_reloaded.get_contact_email_for_code_json("AnotherOrg", "RepoC", is_private_or_internal=False)
-    assert email_repo_c_public == os.getenv("DEFAULT_CONTACT_EMAIL", "shareit@cdc.gov") # No emails, public, so default public
-
-    email_repo_c_private = manager_reloaded.get_contact_email_for_code_json("AnotherOrg", "RepoC", is_private_or_internal=True)
-    assert email_repo_c_private == os.getenv("PRIVATE_REPO_CONTACT_EMAIL", "shareit@cdc.gov") # Private, so default private
-
-    # Test 6: Duplicate PrivateID in CSV (manual simulation for loading robustness)
-    if os.path.exists(test_mapping_file):
-        with open(test_mapping_file, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            # Add a row with an existing PrivateID but different data
-            writer.writerow(["github_gh_123", "RepoADuplicate", "http://duplicate.com", "TestOrg", "dup@example.com", datetime.now(timezone.utc).isoformat()])
-    
-    manager_dup_test = RepoIdMappingManager(filepath=test_mapping_file)
-    assert len(manager_dup_test.mappings) == 3 # Should still be 3, duplicate PrivateID ignored
-    repo_a_after_dup_load = manager_dup_test.mappings.get("github_gh_123")
-    assert repo_a_after_dup_load is not None
-    assert repo_a_after_dup_load['repo'] == "RepoA" # Should have original RepoA data, not RepoADuplicate
-
-    logger.info("--- RepoIdMappingManager tests completed ---")
-    # Clean up test file
-    # if os.path.exists(test_mapping_file):
-    #     os.remove(test_mapping_file)

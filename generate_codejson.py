@@ -218,6 +218,38 @@ def backup_existing_file(output_dir, filename):
         except Exception as e:
             logger.error(f"Error backing up '{filename}': {e}", exc_info=True)
 
+def backup_file_and_leave_original(output_dir, filename):
+    """
+    Creates a backup copy of an existing file while leaving the original file intact.
+    
+    Args:
+        output_dir (str): Directory where the file is located
+        filename (str): Name of the file to back up
+    """
+    logger = logging.getLogger(__name__)
+    current_filepath = os.path.join(output_dir, filename)
+    if os.path.isfile(current_filepath):
+        try:
+            now = datetime.now()
+            timestamp_str = now.strftime("%Y%m%d_%H%M%S")
+            base_name, ext_dot = os.path.splitext(filename)
+            ext = ext_dot if ext_dot else ""
+            backup_filename = f"{base_name}_{timestamp_str}{ext}"
+            backup_filepath = os.path.join(output_dir, backup_filename)
+            counter = 1
+            while os.path.exists(backup_filepath):
+                 backup_filename = f"{base_name}_{timestamp_str}_{counter}{ext}"
+                 backup_filepath = os.path.join(output_dir, backup_filename)
+                 counter += 1
+            
+            # Use shutil.copy2 instead of os.rename to preserve the original file
+            import shutil
+            shutil.copy2(current_filepath, backup_filepath)
+            
+            logger.info(f"Backed up existing '{filename}' to '{backup_filename}' (original preserved).")
+        except Exception as e:
+            logger.error(f"Error backing up '{filename}': {e}", exc_info=True)
+
 # --- Data Processing and Inference ---
 def parse_semver(tag_name):
     if not tag_name or not isinstance(tag_name, str): return None
@@ -326,7 +358,16 @@ def process_and_finalize_repo_data_list(
         try:
             prefixed_repo_id_for_code_json = None
             if is_private_or_internal and platform_repo_id:
-                private_emails_list = repo_data.get('_private_contact_emails', [])
+                private_emails_data = repo_data.get('_private_contact_emails', []) # Renamed for clarity
+                contact_emails_for_csv = '' # Initialize as empty string
+
+                if isinstance(private_emails_data, list):
+                    # Filter out None or empty strings before joining
+                    valid_emails = [email for email in private_emails_data if email and isinstance(email, str)]
+                    contact_emails_for_csv = ';'.join(valid_emails)
+                elif isinstance(private_emails_data, str): # Should ideally not happen if _private_contact_emails is always a list
+                    contact_emails_for_csv = private_emails_data
+                
                 # Ensure entry in mapping file (stores raw platform_repo_id and URL)
                 prefixed_repo_id_for_code_json = f"{platform.lower()}_{platform_repo_id}" # Create prefixed ID first
                 repo_id_mapping_mgr.get_or_create_mapping_entry(
@@ -334,7 +375,7 @@ def process_and_finalize_repo_data_list(
                     organization=org_name,
                     repo_name=repo_name, 
                     repository_url=repo_data.get('repositoryURL', ''), # Pass the URL
-                    contact_emails=private_emails_list,
+                    contact_emails_str_arg=contact_emails_for_csv, # Pass the semicolon-separated string
                     platform_prefix=platform.lower() # Pass the prefix
                 )
                 
@@ -361,7 +402,13 @@ def process_and_finalize_repo_data_list(
             if is_exempt:
                 exemption_text = repo_data.get('permissions', {}).get('exemptionText', '')
                 # Log exemption with the prefixed_repo_id if available, otherwise a placeholder
-                log_id_for_exemption = prefixed_repo_id_for_code_json
+                log_id_for_exemption = None 
+                if prefixed_repo_id_for_code_json: # This is set for private/internal with a valid platform_repo_id
+                    log_id_for_exemption = prefixed_repo_id_for_code_json
+                # For private/internal repos that are exempt but somehow missing a platform_repo_id (edge case)
+                elif is_private_or_internal and not prefixed_repo_id_for_code_json: 
+                    log_id_for_exemption = f"NoPlatformRepoID-{platform.lower()}-{org_name}-{repo_name}"
+                # No 'else' for public, as 'is_exempt' will be false for them.
                 if not log_id_for_exemption: 
                     if is_private_or_internal: # Fallback if private/internal but no platform_repo_id
                          log_id_for_exemption = f"NoPlatformRepoID-{platform.lower()}-{org_name}-{repo_name}"
@@ -381,7 +428,7 @@ def process_and_finalize_repo_data_list(
                 if not repo_data['date']:
                     repo_data.pop('date')
 
-            repo_data.pop('_private_contact_emails', None)
+#           repo_data.pop('_private_contact_emails', None)
             repo_data.pop('_api_tags', None)
             repo_data.pop('archived', None) 
             repo_data.pop('_status_from_readme', None) 
@@ -401,6 +448,7 @@ def process_and_finalize_repo_data_list(
                 else:
                     cleaned_repo_data[k] = v
             finalized_list.append(cleaned_repo_data)
+
         except Exception as e:
             target_logger.error(f"Error during final processing for {org_name}/{repo_name}: {e}", exc_info=True)
             finalized_list.append({
@@ -527,7 +575,12 @@ def scan_and_process_single_target(
 
     intermediate_filename = f"intermediate_{platform}_{target_identifier.replace('/', '_').replace('.', '_')}.json"
     intermediate_filepath = os.path.join(cfg.OUTPUT_DIR, intermediate_filename)
-    
+     # Log the content for mynodejs specifically before writing to intermediate file
+    for item_to_log in intermediate_data: # intermediate_data is a list of dicts
+        if isinstance(item_to_log, dict) and item_to_log.get("name") == "mynodejs":
+            target_logger.info(f"Repo: mynodejs - Permissions content for intermediate file: {item_to_log.get('permissions')}")
+            break
+   
     if write_json_file(intermediate_data, intermediate_filepath):
         target_logger.info(f"Successfully wrote intermediate data to {intermediate_filepath}")
         target_logger.info(f"--- Finished scan for {platform} target: {target_identifier} ---")
@@ -607,6 +660,7 @@ def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> boo
         main_logger.debug(f"Repo {updated_project_data.get('name')}: Using privateID '{updated_project_data.get('privateID')}' from intermediate file.")
 
        # Remove _is_empty_repo and lastCommitSHA if they exist
+        updated_project_data.pop('_private_contact_emails', None)
         updated_project_data.pop("_is_empty_repo", None)
         updated_project_data.pop("lastCommitSHA", None) # Assuming the key is exactly "lastCommitSHA"
         
@@ -840,7 +894,7 @@ def main_cli():
             main_logger.info(f"Targeting GitHub Enterprise Server: {github_url_for_scan}")
             target_entity_name = f"Organizations on GHES ({github_url_for_scan})"
         else: 
-            targets_to_scan = get_targets_from_cli_or_env(args.orgs, cfg.GITHUB_ORGS_ENV, "Public GitHub.com organizations", main_logger)
+            targets_to_scan = get_targets_from_cli_or_env(args.orgs, cfg.GITHUB_ORGS_ENV, "GitHub.com organizations", main_logger)
             main_logger.info("Targeting public GitHub.com")
 
         if not targets_to_scan: 
@@ -946,7 +1000,7 @@ def main_cli():
         main_logger.info("--- Azure DevOps Scan Command Finished ---")
 
     elif args.command == "merge":
-        backup_existing_file(cfg.OUTPUT_DIR, cfg.EXEMPTION_LOG_FILENAME)
+        backup_file_and_leave_original(cfg.OUTPUT_DIR, cfg.EXEMPTION_LOG_FILENAME)
         backup_existing_file(cfg.OUTPUT_DIR, cfg.PRIVATE_ID_FILENAME) # Use correct filename from Config
         if not merge_intermediate_catalogs(cfg, main_logger): # Manager no longer needed here
             overall_command_success = False 

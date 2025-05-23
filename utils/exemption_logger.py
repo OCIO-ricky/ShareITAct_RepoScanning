@@ -173,7 +173,7 @@ class ExemptionLogger:
         In the current implementation, logging happens immediately, so this method
         primarily serves as a confirmation or for future batching capabilities.
         """
-        logger.info(f"ExemptionLogger: 'save_all_exemptions' called. All {self.new_exemptions_logged_count} new exemptions (if any) were logged immediately during the run to {self.log_file_path}.")
+        logger.info(f"All {self.new_exemptions_logged_count} new exemptions were logged to {self.log_file_path}.")
  
 # Example usage (if needed for testing, otherwise remove)
 # if __name__ == '__main__':

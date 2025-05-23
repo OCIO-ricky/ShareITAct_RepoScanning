@@ -175,7 +175,7 @@ def _process_single_gitlab_project(
             if cached_repo_entry:
                 cached_commit_sha = cached_repo_entry.get(gitlab_cache_config["commit_sha_field"])
                 if cached_commit_sha and current_commit_sha == cached_commit_sha:
-                    logger.info(f"CACHE HIT: GitLab project '{project.path_with_namespace}' (ID: {project_id_str}, SHA: {current_commit_sha}) has not changed. Using cached data.")
+                    logger.info(f"CACHE HIT: GitLab project '{project.path_with_namespace}' (ID: {project_id_str}) has not changed. Using cached data.")
                     
                     # Start with the cached data
                     repo_data_to_process = cached_repo_entry.copy()
@@ -197,7 +197,7 @@ def _process_single_gitlab_project(
                             ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV)
                     return repo_data_to_process # Return cached and re-processed data
         
-        logger.info(f"CACHE MISS or no current SHA: Processing GitLab project: {project.path_with_namespace} (ID: {project_id_str}) with full data fetch.")
+        logger.info(f"No SHA: Processing GitLab project: {project.path_with_namespace} (ID: {project_id_str}) with full data fetch.")
 
 
         if dynamic_post_api_call_delay_seconds > 0:
@@ -319,6 +319,7 @@ def _process_single_gitlab_project(
                 ai_max_output_tokens_from_config=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV,
                 ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV
             )
+            logger.info(f"GitLab Connector: For {project.path_with_namespace}, after exemption_processor (AI branch), _private_contact_emails: {repo_data.get('_private_contact_emails')}")
         else:
             logger.warning(
                 f"cfg_obj not provided to _process_single_gitlab_project for {repo_full_name}. "
@@ -327,6 +328,7 @@ def _process_single_gitlab_project(
             repo_data = exemption_processor.process_repository_exemptions(
                 repo_data, default_org_identifiers=[group_full_path]
             )
+            logger.info(f"GitLab Connector: For {project.path_with_namespace}, after exemption_processor (non-AI branch), _private_contact_emails: {repo_data.get('_private_contact_emails')}")
         if inter_repo_adaptive_delay_seconds > 0: # This is the inter-repository adaptive delay
             logger.debug(f"GitLab project {repo_full_name}: Applying INTER-REPO adaptive delay of {inter_repo_adaptive_delay_seconds:.2f}s")
             time.sleep(inter_repo_adaptive_delay_seconds)
@@ -550,12 +552,13 @@ def fetch_repositories(
                                 created_at_log_str = created_at_dt.strftime('%Y-%m-%d %H:%M:%S %Z') if created_at_dt else 'N/A'
                                 modified_at_log_str = modified_at_dt.strftime('%Y-%m-%d %H:%M:%S %Z') if modified_at_dt else 'N/A'
                                 log_message_parts = [
-                                    f"GitLab: Non-public project '{project_stub_path_with_namespace}' included by REPOS_CREATED_AFTER_DATE "
-                                    f"filter ({repos_created_after_filter_date.strftime('%Y-%m-%d')})"
+                                    f"GitLab: Private repo '{project_stub_path_with_namespace}' included "
                                 ]
-                                if created_match and modified_match: log_message_parts.append(f"due to both Creation ({created_at_log_str}) and Modification ({modified_at_log_str}).")
-                                elif created_match: log_message_parts.append(f"due to Creation date ({created_at_log_str}).")
-                                elif modified_match: log_message_parts.append(f"due to Modification date ({modified_at_log_str}).")
+
+                                if created_match:
+                                    log_message_parts.append(f"due to Creation date ({created_at_log_str}).")
+                                elif modified_match:
+                                    log_message_parts.append(f"due to Modification date ({modified_at_log_str}).")
                                 logger.info(" ".join(log_message_parts))
                             else:
                                 # Skip this non-public project
