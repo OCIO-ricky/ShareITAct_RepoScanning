@@ -17,6 +17,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# ANSI escape codes for coloring output (if not already defined globally)
+ANSI_RED = "\x1b[31;1m"  # Bold Red
+ANSI_RESET = "\x1b[0m"   # Reset to default color
+
 class ExemptionLogger:
     """Handles loading and logging repository exemptions to a CSV file."""
 
@@ -109,13 +113,13 @@ class ExemptionLogger:
                         self.logged_exemptions_by_private_id.add(private_id_from_csv)
                         count += 1
                     else:
-                         logger.warning(f"Skipping row {row_num} with missing privateID in '{self.log_file_path}': {row}")
+                         logger.warning(f"{ANSI_RED}Skipping row {row_num} with missing privateID in '{self.log_file_path}': {row}{ANSI_RESET}")
             logger.info(f"Loaded {count} existing exemption entries (repo names) from {self.log_file_path}")
         except FileNotFoundError:
             # Should be handled by _ensure_log_file_header, but good safety check
-            logger.error(f"Exemption log file unexpectedly not found at {self.log_file_path} during load.")
+            logger.error(f"{ANSI_RED}Exemption log file unexpectedly not found at {self.log_file_path} during load.{ANSI_RESET}")
         except Exception as e:
-            logger.error(f"Error loading exemption log {self.log_file_path}: {e}", exc_info=True)
+            logger.error(f"{ANSI_RED}Error loading exemption log{ANSI_RESET} {self.log_file_path}: {e}", exc_info=True)
 
     def log_exemption(self, private_id_value: str, repo_name: str, usage_type: str, exemption_text: str):
         """Logs an exemption entry to the CSV file if not already logged."""

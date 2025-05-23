@@ -415,6 +415,13 @@ def process_and_finalize_repo_data_list(
                     # For public, no privateID is set, so no specific ID needed for exemption log unless desired
                 exemption_mgr.log_exemption(log_id_for_exemption or f"Public-{org_name}-{repo_name}", repo_name, usage_type, exemption_text)
 
+            # Default organization for ALL repositories (public or private)
+            # if ExemptionProcessor flagged its current organization value as generic.
+            if repo_data.get('_is_generic_organization', False):
+                old_org_for_log = repo_data.get('organization', 'N/A')
+                repo_data['organization'] = cfg.AGENCY_NAME # Set the default organization
+                target_logger.info(f"Repo: {org_name}/{repo_name} has generic org ('{old_org_for_log}'). Defaulting organization to '{cfg.AGENCY_NAME}'.")
+
             repo_data['status'] = infer_status(repo_data, target_logger)
             if repo_data.get('version', 'N/A') == 'N/A':
                  repo_data['version'] = infer_version(repo_data, target_logger)
@@ -428,10 +435,11 @@ def process_and_finalize_repo_data_list(
                 if not repo_data['date']:
                     repo_data.pop('date')
 
-#           repo_data.pop('_private_contact_emails', None)
             repo_data.pop('_api_tags', None)
             repo_data.pop('archived', None) 
             repo_data.pop('_status_from_readme', None) 
+            repo_data.pop('_is_generic_organization', None)
+            # leave on the _private_contact_emails field as it is used when caching the repo data
 
             cleaned_repo_data = {}
             for k, v in repo_data.items():
@@ -662,7 +670,8 @@ def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> boo
        # Remove _is_empty_repo and lastCommitSHA if they exist
         updated_project_data.pop('_private_contact_emails', None)
         updated_project_data.pop("_is_empty_repo", None)
-        updated_project_data.pop("lastCommitSHA", None) # Assuming the key is exactly "lastCommitSHA"
+        updated_project_data.pop("lastCommitSHA", None)
+        updated_project_data.pop("repo_id", None)
         
         processed_projects_for_final_catalog.append(updated_project_data)
 

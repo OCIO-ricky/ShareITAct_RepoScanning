@@ -25,6 +25,7 @@ import gitlab # python-gitlab library
 from gitlab.exceptions import GitlabAuthenticationError, GitlabGetError, GitlabListError
 
 # ANSI escape codes for coloring output
+ANSI_RED = "\x1b[31;1m"  # Bold Red
 ANSI_YELLOW = "\x1b[33;1m"
 ANSI_RESET = "\x1b[0m"   # Reset to default color
 
