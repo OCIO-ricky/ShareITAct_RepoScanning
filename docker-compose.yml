@@ -14,7 +14,7 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GITHUB_ORGS=cdcent,cdcgov
-      - SCANNER_MAX_WORKERS=3
+      - SCANNER_MAX_WORKERS=5
       - AI_ENABLED=true
       # Add any other .env variables your script needs
     volumes:
@@ -32,7 +32,7 @@ services:
       - GITLAB_GROUPS=cdcent
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - AI_ENABLED=${AI_ENABLED:-true}
-      - SCANNER_MAX_WORKERS=4
+      - SCANNER_MAX_WORKERS=5
     volumes:
       - ./output:/app/output
       - ./logs:/app/logs 
