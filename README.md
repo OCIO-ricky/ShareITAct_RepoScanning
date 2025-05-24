@@ -1,36 +1,35 @@
 # 🏛️ Share IT Act – Repository Scanning Tool
 
+<!-- Add your badges here -->
+<p align="center">
+  <a href="https://github.com/OCIO-ricky/ShareITAct_RepoScanning/actions"><img alt="Build Status" src="https://img.shields.io/github/actions/workflow/status/OCIO-ricky/ShareITAct_RepoScanning/main.yml?branch=main&style=for-the-badge&logo=githubactions"></a>
+  <a href="https://www.python.org/"><img alt="Python Version" src="https://img.shields.io/badge/python-3.9%2B-blue?style=for-the-badge&logo=python"></a>
+  <a href="https://github.com/OCIO-ricky/ShareITAct_RepoScanning/blob/main/LICENSE.md"><img alt="License" src="https://img.shields.io/github/license/OCIO-ricky/ShareITAct_RepoScanning?style=for-the-badge"></a>
+</p>
+
 ## 👋 Introduction
 
-Welcome to the **Share IT Act – Repository Scanning Tool**! This Python-based utility is designed to help CDC organizations efficiently discover, analyze, and catalog custom-developed source code across various repositories. By generating machine-readable `code.json` metadata compliant with the code.gov schema v2.0, this tool directly supports compliance with the SHARE IT Act (Public Law 118-187).
+Welcome to the **Share IT Act – Repository Scanning Tool**! This utility is engineered to streamline compliance with the SHARE IT Act (Public Law 118-187) for CDC organizations. It automatically scans code repositories across **GitHub, GitLab, and Azure DevOps**, generating a `code.json` metadata file that is fully compliant with the code.gov schema v2.0. This process ensures an accurate and machine-readable inventory.
+Leveraging **AI-driven insights** for inferring code sharing exemptions and offering a **portable design**, the tool helps facilitate inventory efforts across the many mission units across CDC.
 
-Our goal is to simplify the inventory process, enhance metadata accuracy through AI-driven insights, and provide a portable solution for scanning diverse code hosting platforms. **The recommended and most efficient method for using this tool is with Docker**, which streamlines setup, ensures consistency, and enables powerful **concurrent scans** across GitHub, GitLab, and Azure DevOps.
-
-For comprehensive business-side documentation and process details, please refer to the internal [CDC's EA site](https://cdc.sharepoint.com/sites/EITPO/EA/SitePages/Enterprise-Architecture.aspx) or: https://docs.cdc.gov/docs/ea/codeshare/
+For comprehensive business-side documentation and process details, please refer to the internal [CDC's EA SHare IT Act](https://cdc.sharepoint.com/sites/EITPO/EA/SitePages/Enterprise-Architecture.aspx). 
 
 ---
-
 ## ✨ Features
 
--   **🤖 AI-Powered Insights:**
-    -   Intelligently infers code sharing exemptions based on repository metadata and content.
-    -   Predicts organization or office names to improve the accuracy of your `code.json` metadata.
--   **🌐 Multi-Platform Scanning:**
-    -   Seamlessly connects to and scans **GitHub** (Cloud & Enterprise Server), **GitLab** (Cloud & Self-Managed), and **Azure DevOps**.
--   **Comprehensive Metadata Extraction:**
-    -   Gathers structured metadata from both public and private repositories.
-    -   Automatically detects exemption flags and classifications.
--   **⏱️ Effort Estimation:**
-    -   Estimates labor hours invested in projects based on repository commit history.
--   **✅ Compliant Output:**
-    -   Generates `code.json` files that are valid against the code.gov schema v2.0.
--   **🐳 Dockerized for Simplicity & Scale:**
-    -   Run scans in isolated, pre-configured environments.
-    -   Easily perform concurrent scans across multiple platforms for faster inventory completion.
--   **💻 Flexible Execution:**
-    -   Operates as a standalone CLI tool or within Docker containers.
--   **📦 Centralized Output:**
-    -   Saves all generated reports, logs, and metadata for easy consolidation, review, and publication.
+This tool directly supports compliance with the SHARE IT Act by:
+
+-   **Automated Inventory Creation:** Scans repositories across **GitHub, GitLab, and Azure DevOps** to automatically gather metadata.
+-   **Compliant Metadata Generation:** Produces `code.json` files that are validated against the **code.gov schema v2.0**, meeting federal requirements.
+-   **Exemption Assistance:** Utilizes AI-driven insights to infer potential code sharing exemptions based on repository content and metadata.
+-   **Comprehensive Data Collection:** Extracts detailed information including project descriptions, languages, licenses, and estimates labor hours from commit history.
+-   **Centralized Reporting:** Consolidates all generated `code.json` files, exemption logs, and private ID mappings into a structured output for easy review and agency-wide reporting.
+-   **Flexible Deployment:** Offers execution via Docker (recommended for concurrent scans and consistency) or as a standalone CLI tool.
+
+Additional capabilities include:
+-   Suggestion of organization or office names to aid in `code.json` metadata accuracy.
+-   Detection of existing exemption flags and classifications within repositories.
+-   Support for scanning both public and private repositories.
 
 ## 🐳 Getting Started with Docker (Recommended)
 
