@@ -367,8 +367,8 @@ Only select an exemption if explicit functional or legal evidence is present in 
 You may apply one of the following exemption's codes:
 {EXEMPT_BY_LAW} - The repository processes or stores legally protected data (e.g., HIPAA, PII, FOIA exclusions, IRB-sensitive datasets).
 {EXEMPT_BY_NATIONAL_SECURITY} - Contains elements tied to classified, military, or national security-sensitive content.
-{EXEMPT_BY_AGENCY_SYSTEM} - Supports internal CDC infrastructure, not intended for public or external use (e.g., internal APIs, IT operations tools).
-{EXEMPT_BY_MISSION_SYSTEM} - Directly supports CDC public health mission (e.g., disease surveillance, outbreak analysis, clinical decision logic).
+{EXEMPT_BY_AGENCY_SYSTEM} - The repository is tightly integrated with CDC-only infrastructure, such as internal IT dashboards, operational monitoring tools, identity systems, or HR-specific logic (e.g., position rating criteria). The code cannot be reused outside CDC without major reconfiguration or poses operational risk if shared.
+{EXEMPT_BY_MISSION_SYSTEM} - The repository powers real-time outbreak response, case triage, or operational public health decisions. Releasing the code could impair mission execution, expose vulnerabilities, or cause misinterpretation by external users.
 {EXEMPT_BY_CIO} - Appears sensitive or unusually complex but lacks clear evidence; defer to CIO for review (use only if borderline case).
 
 Example1: Title: survey-data-cleaner, README Content: This tool processes raw CDC health surveys containing ZIP codes, birthdates, and patient identifiers before analysis. Data is subject to HIPAA and IRB controls.
