@@ -36,3 +36,6 @@ logs/
 
 # Local configuration
 .env
+*.env
+.env.local
+.env.*.local

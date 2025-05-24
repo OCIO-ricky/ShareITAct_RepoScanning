@@ -1,81 +1,155 @@
 # 🏛️ Share IT Act – Repository Scanning Tool
 
-This repository contains a Python-based scanning utility designed to discover, analyze, and catalog custom-developed source code across CDC repositories. The tool supports compliance with the [SHARE IT Act (Public Law 118-187)](https://www.congress.gov/bill/118th-congress/house-bill/1390) by generating machine-readable `code.json` metadata following the [code.gov schema v2.0](https://code.gov/meta/schema/2.0.0/schema.json).
+## 👋 Introduction
 
-This document outlines how to set up and run the repository scanning tool. **The preferred and most efficient method is to use Docker**, as this approach simplifies the setup, enhances portability, and allows for **concurrent scans** across multiple platforms (e.g., GitHub, GitLab, and Azure DevOps simultaneously).
+Welcome to the **Share IT Act – Repository Scanning Tool**! This Python-based utility is designed to help CDC organizations efficiently discover, analyze, and catalog custom-developed source code across various repositories. By generating machine-readable `code.json` metadata compliant with the code.gov schema v2.0, this tool directly supports compliance with the SHARE IT Act (Public Law 118-187).
 
-For associated business-side documentation and process details, please visit the internal CDC's EA site: [https://ocio-ricky.github.io/ShareIT-Act/](https://ocio-ricky.github.io/ShareIT-Act/)
+Our goal is to simplify the inventory process, enhance metadata accuracy through AI-driven insights, and provide a portable solution for scanning diverse code hosting platforms. **The recommended and most efficient method for using this tool is with Docker**, which streamlines setup, ensures consistency, and enables powerful **concurrent scans** across GitHub, GitLab, and Azure DevOps.
+
+For comprehensive business-side documentation and process details, please refer to the internal [CDC's EA site](https://cdc.sharepoint.com/sites/EITPO/EA/SitePages/Enterprise-Architecture.aspx) or: https://docs.cdc.gov/docs/ea/codeshare/
 
 ---
-## 🚀 Features
 
-- Leverages AI to:
-  - Infer code sharing exemptions based on repository metadata and content
-  - Predict organization or office names for improved metadata accuracy
-- Can scan the following repository platforms:
-  - GitHub
-  - GitLab
-  - Azure DevOps
-- Extracts structured metadata for public and private repositories
-- Detects exemption flags and classifications
-- Estimates labor hours based on repo commit history.
-- Generates valid `code.json` entries
-- Runs standalone or inside Docker
-- Output saved for inventory consolidation and publication
+## ✨ Features
 
-## 📁 Project Structure
+-   **🤖 AI-Powered Insights:**
+    -   Intelligently infers code sharing exemptions based on repository metadata and content.
+    -   Predicts organization or office names to improve the accuracy of your `code.json` metadata.
+-   **🌐 Multi-Platform Scanning:**
+    -   Seamlessly connects to and scans **GitHub** (Cloud & Enterprise Server), **GitLab** (Cloud & Self-Managed), and **Azure DevOps**.
+-   **Comprehensive Metadata Extraction:**
+    -   Gathers structured metadata from both public and private repositories.
+    -   Automatically detects exemption flags and classifications.
+-   **⏱️ Effort Estimation:**
+    -   Estimates labor hours invested in projects based on repository commit history.
+-   **✅ Compliant Output:**
+    -   Generates `code.json` files that are valid against the code.gov schema v2.0.
+-   **🐳 Dockerized for Simplicity & Scale:**
+    -   Run scans in isolated, pre-configured environments.
+    -   Easily perform concurrent scans across multiple platforms for faster inventory completion.
+-   **💻 Flexible Execution:**
+    -   Operates as a standalone CLI tool or within Docker containers.
+-   **📦 Centralized Output:**
+    -   Saves all generated reports, logs, and metadata for easy consolidation, review, and publication.
 
-```
-ShareITAct_RepoScanning/
-├── clients/                      # Repository Platforms API connectors
-    ├── github_connector.py       # GitHub API scanner
-    ├── gitlab_connector.py       # GitLab API scanner
-    ├── azure_devops_connector.py # Azure DevOps API scanner
-├── utils/                        # Helper functions
-    ├── exemption_processor.py    # AI-driven exemption detection and handler code
-├── zscaler/                      # (Optional) Corporate certificates (e.g., Zscaler root CA) for trusted HTTPS access inside Docker
-├── .env                          # Environment credentials
-├── generate_codejson.py          # (main) Runs and builds code.json
-├── requirements.txt              # Python dependencies
-├── Dockerfile                    # Container build
-└── output/                       # Generated reports and artifacts
-```
+## 🐳 Getting Started with Docker (Recommended)
 
-## 🧰 Setup
+Using Docker (specifically `docker-compose`) is the preferred method for running the Repository Scanning Tool. It simplifies dependency management, ensures a consistent environment, and allows for efficient concurrent scanning of multiple platforms.
 
-Clone the repository:
+### Prerequisites
 
+1.  **Docker and Docker Compose:** Ensure Docker and Docker Compose are installed on your system.
+2.  **Clone the Repository:**
+    ```bash
+    git clone https://github.com/OCIO-ricky/ShareITAct_RepoScanning.git
+    cd ShareITAct_RepoScanning
+    ```
+3.  **Configure Environment Variables (`.env` file):**
+    This is a crucial step. API tokens and target configurations are managed via an `.env` file.
+    ```bash
+    cp docs/.env.template .env
+    ```
+    Now, **edit the `.env` file** in the project root directory. Populate it with your API tokens (GitHub, GitLab, Azure DevOps), target organizations/groups/projects, and any other necessary configurations (e.g., `GOOGLE_API_KEY` for AI features).
+    **Important:** Do NOT commit the `.env` file with your actual secrets to version control.
+
+### Option 1: Running All Configured Scans Concurrently
+
+This is ideal for a full inventory run, scanning all platforms you've configured in your `.env` file and `docker-compose.yml`. The `docker-compose.yml` file is set up to run scans for GitHub, GitLab, and Azure DevOps in parallel and merge the results producing a single `code.json` file.
+
+**Start the scan services:**
 ```bash
-git clone https://github.com/OCIO-ricky/ShareITAct_RepoScanning.git
-cd ShareITAct_RepoScanning
+docker-compose up --build -d
 ```
+-   `--build`: Builds the Docker image if it doesn't exist or if `Dockerfile` has changed.
+-   `-d`: Runs the containers in detached mode (in the background).
 
-Create and activate a virtual environment:
-
-```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-**Configure Environment Variables:**
-Copy the `docs/.env.template` file (or create a new file named `.env`) in the project root directory (where `generate_codejson.py` is located).
-```bash
-cp docs/.env.template .env 
-```
-Then, edit the `.env` file and populate it with your specific settings and credentials. **Do not commit the `.env` file with your actual secrets to version control.**
+This will start separate containers for each platform defined as a service in `docker-compose.yml` (e.g., `scan-github`, `scan-gitlab`, `scan-azure`). Each will execute its respective scan command.
 
 
-## Running the Tool (CLI)
-The main script `generate_codejson.py` provides a Command-Line Interface (CLI) to perform scans and merge results.
+### Option 2: Running a Specific Scan or Command
 
-All commands should be run from the root directory of the project where `generate_codejson.py` is located. Make sure your virtual environment is activated.
+If you want to run a scan for a single platform, or execute a specific command like `merge` without running all concurrent scans first.
 
-### General Usage
+1.  **Execute the desired command:**
+    Use `docker-compose run --rm app` followed by the `python generate_codejson.py` command and its arguments.
+    ```bash
+    # Example: Scan only specific GitHub organizations
+    docker-compose run --rm app python generate_codejson.py github --gh-tk YOUR_GITHUB_PAT --orgs YourOrg1,YourOrg2
+
+    # Example: Scan only specific GitLab groups
+    docker-compose run --rm app python generate_codejson.py gitlab --gl-tk YOUR_GITLAB_PAT --groups your-group
+
+    # Example: Run only the merge command
+    docker-compose run --rm app python generate_codejson.py merge
+    ```
+    Remember to replace placeholders like `YOUR_GITHUB_PAT` with actual values or ensure they are correctly set in your `.env` file (which `docker-compose` will typically load).
+
+### Managing Docker Containers
+
+-   **View Logs:**
+    To see the output/logs of all running services:
+    ```bash
+    docker-compose logs -f
+    ```
+    To follow logs for a specific service (e.g., `scan-github`):
+    ```bash
+    docker-compose logs -f scan-github
+    ```
+-   **Stop Services:**
+    To stop the running services (if started with `-d`):
+    ```bash
+    docker-compose stop
+    ```
+-   **Stop and Remove Services/Networks/Volumes:**
+    To stop services and remove containers, networks, and (optionally) volumes:
+    ```bash
+    docker-compose down
+    ```
+
+## 🛠️ Manual Installation & CLI Usage (Alternative)
+
+If you prefer not to use Docker, or if you are contributing to the development of the tool, you can set it up and run it directly on your machine.
+
+### Prerequisites
+
+-   Python (version specified in development, e.g., 3.9+)
+-   `pip` and `venv`
+
+### Setup
+
+1.  **Clone the repository (if not already done):**
+    ```bash
+    git clone https://github.com/OCIO-ricky/ShareITAct_RepoScanning.git
+    cd ShareITAct_RepoScanning
+    ```
+2.  **Create and activate a virtual environment:**
+    ```bash
+    python -m venv venv
+    # On Windows:
+    # venv\Scripts\activate
+    # On macOS/Linux:
+    source venv/bin/activate
+    ```
+3.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+4.  **Configure Environment Variables (`.env` file):**
+    Copy the `docs/.env.template` file to `.env` in the project root directory.
+    ```bash
+    cp docs/.env.template .env
+    ```
+    Then, edit the `.env` file and populate it with your specific settings and credentials (API tokens, target orgs/groups, `GOOGLE_API_KEY`, etc.). **Do not commit the `.env` file with your actual secrets to version control.**
+
+### Running the Tool (CLI)
+
+All commands should be run from the root directory of the project where `generate_codejson.py` is located, with your virtual environment activated.
+
+#### General Usage
 
 ```bash
 python generate_codejson.py <command> [options]
 ```
-
 ### Available Commands
 
 1.  **`github`**: Scan GitHub organizations.
@@ -184,76 +258,6 @@ This is useful for quick tests and debugging.
 - Ensure your API tokens have the correct permissions and are not expired.
 - Verify that the organization, group, or project names/paths specified in `.env` or via CLI are correct.
 - If using AI features, ensure your `GOOGLE_API_KEY` is correctly set and the API is enabled for your project.
-
-## 🐳 Docker Usage
-
-Scanning many repositories, especially large ones with extensive commit histories, can take a long time. API rate limits, network issues, or even just needing to pause the process can interrupt a scan. Leveraging Docker to run multiple repository scans concurrently is a really smart way to scale up these operations and get results faster! The key here is typically using docker-compose, which allows you to define and run multi-container Docker applications.  The primary goal of using the provided docker-compose.yml file is to set up and run separate, concurrent scanning processes for different code hosting platforms (GitHub and GitLab, with Azure DevOps). Each platform scanner runs in its own isolated Docker container, but they share some common configurations like output and log directories.
-
-The scanners are configured primarily through environment variables, which are flexibly sourced from your host environment or a .env file. SO please, set the API tokens in the .env file first before running docker. This approach allows you to easily customize the scanning process without modifying the Docker image itself.
-
-Once you have setup the TOKEN KEYS for each platform repository as well as the groups or organizations to scan, You must simply type and execute the following docker-compose command(s) in your terminal window
-```bash
-docker-compose up --build -d
-```
-To rather run the container with a single repository scan ...
-```bash
-docker-compose exec app python generate_codejson.py <command> [options]
-```
-To stop the container:
-```bash
-docker-compose stop
-or docker-compose down  (to also delete the container)
-```
-
-Key Takeaways & How It Works:
-
-Parallel Processing: You can run docker-compose up --build -d, and it will build the image (once, shared by all services that use build: .) and then start separate containers for scan-github and scan-gitlab (and scan-azure if uncommented). These containers will run their respective python generate_codejson.py <platform> commands concurrently.
-
-Isolation: Each scanner runs in its own isolated environment, preventing interference between them, though they share the same underlying built image.
-
-## 🔐 Configuration
-
-Check the `.env` file in the root directory to configure the following:
-- **`OutputDir`**: Directory to store output files.
-- **`catalogJsonFile`**: Name of the final merged catalog file.
-- **`ExemptedCSVFile`**: Name of the CSV file to log exempted repositories.
-- **`PrivateIDCSVFile`**: Name of the CSV file to log private repositories and their generated PrivateIDs.
-- **`GOOGLE_API_KEY`**: Google API key for AI features.  Got to https://aistudio.google.com/apikey 
-
-## 📤 Output
-
-After running the **merge** command to combine all the intermidiary .json files found in the /output directtory, a new metadata catalog **code.json** is produced:
-
-- `output/code.json`: Machine-readable metadata export that conforms to the code.gov schema
-- `output/exempted_log.csv`: List of repositories inferred to be exempt, including exemption codes and justification texts (for validation and audit)
-- `output/privateid_mapping.csv`: Maps anonymized private repository identifiers to known contact emails, used for metadata traceability
-
-## ✅ Compliance Goal
-
-Support CDC and other federal agencies in meeting SHARE IT Act requirements by generating and publishing a machine-readable `code.json`.
-
-📤 To finalize compliance:
-```bash
-cp output/code.json /var/www/html/code.json
-```
-
-Published endpoint:
-```
-https://www.cdc.gov/code.json
-```
-
-## Override Metadata via README.md
-
-Developers can enhance the metadata collected by this scanner by adding specific markers anywhere within their repository's existing README.md file. Adding these is completely optional, but recommended for accuracy where applicable. The scanner looks for lines starting with the following (case-insensitive). Here is an example:
-
-***Version:*** <span style="color:darkgray">2.1.0</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray">(Specifies the current official release version of the software.)</span><br>
-***Status:*** <span style="color:darkgray">Maintained</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray">(Indicates the project's lifecycle stage (e.g., Maintained, Deprecated, Experimental)).</span><br>
-***Keywords:*** <span style="color:darkgray">data analysis, python, visualization</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray">(Lists relevant terms (tags) describing the project's domain or technology.</span><br>
-***Labor Hours:*** <span style="color:darkgray">2500</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray">(Provides a numeric estimate of total person-hours invested across all versions.)</span><br>
-***Organization:*** <span style="color:darkgray">National Center for Chronic Disease Prevention and Health Promotion (NCCDPHP)</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray">(owning CDC's Organization)</span><br>
-***Contract#:*** <span style="color:darkgray">75D30123C12345</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray">(Lists the relevant government contract number, if applicable.)</span><br>
-***Exemption:*** <span style="color:darkgray">exemptByLaw</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray">(Declares a specific code-sharing exemption reason (requires justification)).</span><br>
-***Exemption justification:*** <span style="color:darkgray">This specific module interfaces with classified national security systems...)</span>&nbsp;&nbsp;<span style="color:gray">(Provides the mandatory explanation for the chosen Exemption.)</span><br>
 
 
 ## 🛠 Maintainers
