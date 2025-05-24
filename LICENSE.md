@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) [Year] [Full Name of Copyright Holder / Organization]
+Copyright (c) 2025 Centers for Disease Control and Prevention
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
