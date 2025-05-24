@@ -116,7 +116,7 @@ def _get_file_content_azure(git_client: GitClient, repository_id: str, project_n
     return None
 
 
-def _get_readme_details_azure(git_client: GitClient, repository_id: str, project_name: str, repo_web_url: str, repo_default_branch: Optional[str], cfg_obj: Optional[Any], dynamic_delay_to_apply: float) -> Tuple[Optional[str], Optional[str]]:
+def _get_readme_content_azure_devops(connection, repo_id, project_name, cfg_obj: Optional[Any], dynamic_delay_to_apply: float, num_workers: int = 1) -> tuple[Optional[str], Optional[str]]:
     common_readme_names = ["README.md", "README.txt", "README"]
     if not repo_default_branch:
         logger.warning(f"Cannot fetch README for repo ID {repository_id} in {project_name}: No default branch identified.")
@@ -135,7 +135,7 @@ def _get_readme_details_azure(git_client: GitClient, repository_id: str, project
     logger.debug(f"No common README file found for repo ID {repository_id}")
     return None, None
 
-def _get_codeowners_content_azure(git_client: GitClient, repository_id: str, project_name: str, repo_default_branch: Optional[str], cfg_obj: Optional[Any], dynamic_delay_to_apply: float) -> Optional[str]:
+def _get_codeowners_content_azure_devops(connection, repo_id, project_name, cfg_obj: Optional[Any], dynamic_delay_to_apply: float, num_workers: int = 1) -> Optional[str]:
     codeowners_locations = ["CODEOWNERS", ".azuredevops/CODEOWNERS", "docs/CODEOWNERS", ".vsts/CODEOWNERS"]
     if not repo_default_branch:
         logger.warning(f"Cannot fetch CODEOWNERS for repo ID {repository_id} in {project_name}: No default branch identified.")
@@ -152,7 +152,7 @@ def _get_codeowners_content_azure(git_client: GitClient, repository_id: str, pro
     logger.debug(f"No CODEOWNERS file found in standard locations for repo ID {repository_id}")
     return None
 
-def _fetch_tags_azure(git_client: GitClient, repository_id: str, project_name: str, cfg_obj: Optional[Any], dynamic_delay_to_apply: float) -> List[str]:
+def _fetch_tags_azure_devops(connection, repo_id, project_name, cfg_obj: Optional[Any], dynamic_delay_to_apply: float, num_workers: int = 1) -> List[str]:
     if not AZURE_SDK_AVAILABLE: return []
     tag_names = []
     try:
@@ -187,7 +187,8 @@ def _process_single_azure_devops_repository(
     dynamic_post_api_call_delay_seconds: float, # Per-API call dynamic delay
     # --- Parameters for Caching ---
     previous_scan_cache: Dict[str, Dict],
-    current_commit_sha: Optional[str]
+    current_commit_sha: Optional[str],
+    num_workers: int = 1  # Add this parameter
 ) -> Dict[str, Any]:
     """
     Processes a single Azure DevOps repository to extract its metadata.
@@ -259,9 +260,9 @@ def _process_single_azure_devops_repository(
         except Exception as proj_vis_err:
             logger.warning(f"Could not determine project visibility for {repo_full_name}: {proj_vis_err}. Defaulting to 'private'.")
 
-        readme_content_str, readme_html_url = _get_readme_details_azure(git_client, repo.id, project_name, repo.web_url, repo.default_branch, cfg_obj, dynamic_post_api_call_delay_seconds)
-        codeowners_content_str = _get_codeowners_content_azure(git_client, repo.id, project_name, repo.default_branch, cfg_obj, dynamic_post_api_call_delay_seconds)
-        repo_git_tags = _fetch_tags_azure(git_client, repo.id, project_name, cfg_obj, dynamic_post_api_call_delay_seconds)
+        readme_content, readme_html_url = _get_readme_content_azure_devops(connection, repo.id, project_name, cfg_obj, dynamic_post_api_call_delay_seconds, num_workers)
+        codeowners_content = _get_codeowners_content_azure_devops(connection, repo.id, project_name, cfg_obj, dynamic_post_api_call_delay_seconds, num_workers)
+        repo_git_tags = _fetch_tags_azure_devops(connection, repo.id, project_name, cfg_obj, dynamic_post_api_call_delay_seconds, num_workers)
 
         repo_data.update({
             "description": repo.project.description if repo.project and repo.project.description else "",
@@ -331,23 +332,41 @@ def _process_single_azure_devops_repository(
         return {"name": repo.name, "organization": organization_name, "_azure_project_name": project_name, "processing_error": f"Unexpected Error: {e_repo}"}
 
 def fetch_repositories(
-    pat_token: Optional[str],
-    spn_client_id: Optional[str],
-    spn_client_secret: Optional[str],
-    spn_tenant_id: Optional[str],
-    organization_name: str, 
-    project_name: str, 
-    processed_counter: List[int], 
-    processed_counter_lock: threading.Lock, 
-    debug_limit: Optional[int] = None, 
+    token: Optional[str],
+    target_path: str,
+    processed_counter: List[int],
+    processed_counter_lock: threading.Lock,
+    debug_limit: int | None = None,
+    azure_devops_url: str | None = None,
     hours_per_commit: Optional[float] = None,
-    max_workers: int = 5, 
-    cfg_obj: Optional[Any] = None, # Accept the cfg object
-    previous_scan_output_file: Optional[str] = None # For caching
+    max_workers: int = 5,  # Ensure this parameter exists
+    cfg_obj: Optional[Any] = None,
+    previous_scan_output_file: Optional[str] = None,
+    client_id: Optional[str] = None,
+    client_secret: Optional[str] = None,
+    tenant_id: Optional[str] = None
 ) -> list[dict]:
     """
-    Fetches repository details from a specific Azure DevOps project.
-    Uses Service Principal if all SPN details are provided, otherwise falls back to PAT.
+    Fetches repository details from a specific Azure DevOps organization/project.
+    
+    Args:
+        token: The Azure DevOps Personal Access Token.
+        target_path: The full path in format 'organization/project'.
+        processed_counter: Mutable list to track processed repositories for debug limit.
+        processed_counter_lock: Lock for safely updating processed_counter.
+        debug_limit: Optional global limit for repositories to process.
+        azure_devops_url: The base URL of the Azure DevOps instance. Defaults to https://dev.azure.com if None.
+        hours_per_commit: Optional factor to estimate labor hours based on commit count.
+        max_workers: Number of concurrent worker threads for repository processing.
+                     This affects rate limiting calculations.
+        cfg_obj: Configuration object containing settings for API calls, delays, and exemption processing.
+        previous_scan_output_file: Path to previous scan results for caching optimization.
+        client_id: Service Principal Client ID (alternative to token).
+        client_secret: Service Principal Client Secret (alternative to token).
+        tenant_id: Service Principal Tenant ID (alternative to token).
+    
+    Returns:
+        A list of dictionaries, each containing processed metadata for a repository.
     """
     logger.info(f"Attempting to fetch repositories CONCURRENTLY for Azure DevOps project: {organization_name}/{project_name} (max_workers: {max_workers})")
     if not AZURE_SDK_AVAILABLE:
@@ -479,7 +498,7 @@ def fetch_repositories(
                 calculated_delay = cfg_obj.ADAPTIVE_DELAY_BASE_SECONDS_ENV * scale_factor
                 inter_repo_adaptive_delay_per_repo = min(calculated_delay, cfg_obj.ADAPTIVE_DELAY_MAX_SECONDS_ENV)
                 if inter_repo_adaptive_delay_per_repo > 0:
-                    logger.info(f"{ANSI_YELLOW}Azure DevOps: INTER-REPO adaptive delay calculated for project '{organization_name}/{project_name}': {inter_repo_adaptive_delay_per_repo:.2f}s per repo (based on {num_repos_in_target_for_delay_calc} repos).{ANSI_RESET}")
+                    logger.info(f"{ANSI_YELLOW}Azure DevOps: INTER-REPO adaptive delay calculated for '{target_path}': {inter_repo_adaptive_delay_per_repo:.2f}s per repository (based on {num_repos_in_target} repositories, {max_workers} workers).{ANSI_RESET}")
         elif cfg_obj and cfg_obj.ADAPTIVE_DELAY_ENABLED_ENV and num_repos_in_target_for_delay_calc == 0:
             logger.info(f"Azure DevOps: Adaptive delay enabled but num_repos_in_target_for_delay_calc is 0 for project '{organization_name}/{project_name}'. No inter-repo adaptive delay will be applied.")
         elif cfg_obj: # Adaptive delay is configured but disabled
@@ -496,10 +515,13 @@ def fetch_repositories(
             dynamic_post_api_call_delay_seconds = calculate_dynamic_delay(
                 base_delay_seconds=base_delay,
                 num_items=num_repos_in_target_for_delay_calc if num_repos_in_target_for_delay_calc > 0 else None,
-                threshold_items=threshold, scale_factor=scale, max_delay_seconds=max_d
+                threshold_items=threshold, 
+                scale_factor=scale, 
+                max_delay_seconds=max_d,
+                num_workers=max_workers  # Pass the number of workers
             )
             if dynamic_post_api_call_delay_seconds > 0:
-                 logger.info(f"{ANSI_YELLOW}Azure DevOps: DYNAMIC POST-API-CALL delay for metadata in project '{organization_name}/{project_name}' set to: {dynamic_post_api_call_delay_seconds:.2f}s (based on {num_repos_in_target_for_delay_calc} projects).{ANSI_RESET}")
+                 logger.info(f"{ANSI_YELLOW}Azure DevOps: DYNAMIC POST-API-CALL delay for metadata in target '{target_path}' set to: {dynamic_post_api_call_delay_seconds:.2f}s (based on {num_repos_in_target} repositories, {max_workers} workers).{ANSI_RESET}")
 
         repo_count_for_project_submitted = 0
         skipped_by_date_filter_count = 0 # Initialize counter for skipped repos
@@ -592,7 +614,8 @@ def fetch_repositories(
                         inter_repo_adaptive_delay_per_repo, # Pass inter-repo adaptive delay
                         dynamic_post_api_call_delay_seconds, # Pass dynamic per-API call delay
                         previous_scan_cache=previous_scan_cache, # Pass cache
-                        current_commit_sha=current_commit_sha_for_cache # Pass current SHA
+                        current_commit_sha=current_commit_sha_for_cache, # Pass current SHA
+                        num_workers=max_workers
                     )
                     future_to_repo_name[future] = f"{organization_name}/{project_name}/{repo_stub.name}"
             

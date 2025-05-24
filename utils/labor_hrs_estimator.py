@@ -393,7 +393,8 @@ def analyze_github_repo_sync(
     session: Optional[requests.Session] = None, # This session is for synchronous calls if any were needed
     cfg_obj: Optional[Any] = None, 
     num_repos_in_target: Optional[int] = None, # For dynamic delay in commit fetching
-    is_empty_repo: bool = False # Added to proactively skip empty repos
+    is_empty_repo: bool = False, # Added to proactively skip empty repos
+    number_of_workers: int = 1, # For parallel processing
 ) -> pd.DataFrame:
     """Estimate labor hours from a GitHub repo using its API (asynchronously for commit fetching)."""
     platform_identifier = f"GitHub repository: {owner}/{repo}"
@@ -421,7 +422,7 @@ def analyze_github_repo_sync(
         # active_rate_limit_handler = GitHubRateLimitHandler(
         #     safety_buffer_remaining=safety_buffer, min_sleep_if_limited=min_sleep, max_sleep_duration=max_sleep
         # )
-        active_rate_limit_handler = GitHubRateLimitHandler() # Using defaults from the class
+        active_rate_limit_handler = GitHubRateLimitHandler(num_workers=number_of_workers) # Using defaults from the class
         logger.info(f"GitHubRateLimitHandler activated for {platform_identifier}.")
     else:
         logger.warning("GitHubRateLimitHandler class not available. GitHub API calls will not have advanced rate limit handling.")

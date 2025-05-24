@@ -18,20 +18,28 @@ class GitHubRateLimitHandler:
     Designed for use with asyncio.
     """
     def __init__(self, 
-                 safety_buffer_remaining: int = 10, 
+                 base_safety_buffer_remaining: int = 10, # Renamed for clarity
                  min_sleep_if_limited: float = 1.0,
-                 max_sleep_duration: float = 3600.0): # Max sleep 1 hour
+                 max_sleep_duration: float = 3600.0, # Max sleep 1 hour
+                 num_workers: int = 1): # Number of concurrent workers
         self.remaining: Optional[int] = None
         self.limit: Optional[int] = None
         self.reset_time: Optional[float] = None  # Unix timestamp (UTC)
         
         # Pause if remaining calls are below this threshold
-        self.safety_buffer_remaining = safety_buffer_remaining
+        self.base_safety_buffer_remaining = base_safety_buffer_remaining
         # Minimum sleep duration if rate limited, even if reset time is very soon or past
         self.min_sleep_if_limited = min_sleep_if_limited
         # Maximum duration to sleep to prevent excessively long sleeps if reset time is far
         self.max_sleep_duration = max_sleep_duration 
+        self.num_workers = max(1, num_workers) # Ensure at least 1 worker
         
+        # Effective safety buffer can be slightly higher with more workers.
+        # Heuristic: base buffer + 2 for each additional worker beyond the first.
+        # This makes the handler more cautious as concurrency increases.
+        self.effective_safety_buffer = self.base_safety_buffer_remaining + (self.num_workers - 1) * 2
+        # Optionally, cap the effective buffer:
+        # self.effective_safety_buffer = min(self.effective_safety_buffer, self.base_safety_buffer_remaining * 3)
         self._lock = asyncio.Lock() # Ensures atomic updates and checks in async context
 
     async def update_from_headers(self, headers: Dict[str, str]):
@@ -53,6 +61,7 @@ class GitHubRateLimitHandler:
                     reset_dt_utc = datetime.fromtimestamp(self.reset_time, tz=timezone.utc)
                     logger.debug(
                         f"{ANSI_YELLOW}GitHub Rate Limit: Remaining={self.remaining}, Limit={self.limit}, "
+                        f"EffectiveSafetyBuffer={self.effective_safety_buffer} (Workers: {self.num_workers}), "
                         f"ResetAt={reset_dt_utc.isoformat()}.{ANSI_RESET}"
                     )
                 else:
@@ -70,7 +79,7 @@ class GitHubRateLimitHandler:
             # Check if we are critically near the rate limit and need to wait.
             # The proactive fixed delay is now handled by a separate post-call delay mechanism.
             if self.remaining is not None and self.reset_time is not None:
-                if self.remaining < self.safety_buffer_remaining:
+                if self.remaining < self.effective_safety_buffer:
                     current_time_utc = time.time() # time.time() is generally UTC-based epoch
                     sleep_duration = self.reset_time - current_time_utc
                     
@@ -79,16 +88,16 @@ class GitHubRateLimitHandler:
                         # This might happen if we hit the limit exactly, or headers are slightly stale.
                         # A short sleep is advisable to allow the reset to propagate.
                         effective_sleep = self.min_sleep_if_limited
-                        logger.warning(
-                            f"{ANSI_YELLOW}GitHub rate limit critically low (Remaining: {self.remaining}). "
+                        logger.info( # Changed to info as it's an expected operational state
+                            f"{ANSI_YELLOW}GitHub rate limit low (Remaining: {self.remaining} < EffectiveBuffer: {self.effective_safety_buffer}). "
                             f"Reset time was {datetime.fromtimestamp(self.reset_time, tz=timezone.utc).isoformat()} (in the past/now). "
                             f"Sleeping for {effective_sleep:.2f}s as a precaution.{ANSI_RESET}"
                         )
                     else:
                         # Add a small buffer (e.g., 1 second) to sleep duration to ensure reset has occurred.
                         effective_sleep = sleep_duration + 1.0 
-                        logger.warning(
-                            f"{ANSI_YELLOW}GitHub rate limit critically low (Remaining: {self.remaining}). "
+                        logger.info( # Changed to info
+                            f"{ANSI_YELLOW}GitHub rate limit low (Remaining: {self.remaining} < EffectiveBuffer: {self.effective_safety_buffer}). "
                             f"Reset time is {datetime.fromtimestamp(self.reset_time, tz=timezone.utc).isoformat()}. "
                             f"Sleeping for {effective_sleep:.2f}s until reset.{ANSI_RESET}"
                         )

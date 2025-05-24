@@ -26,7 +26,7 @@ from gitlab.exceptions import GitlabAuthenticationError, GitlabGetError, GitlabL
 
 # ANSI escape codes for coloring output
 ANSI_RED = "\x1b[31;1m"  # Bold Red
-ANSI_YELLOW = "\x1b[33;1m"
+ANSI_YELLOW = "\x1b[333;1m"
 ANSI_RESET = "\x1b[0m"   # Reset to default color
 
 # Attempt to import the exemption processor
@@ -63,7 +63,7 @@ def is_placeholder_token(token: Optional[str]) -> bool:
     return not token or token == PLACEHOLDER_GITLAB_TOKEN
 
 
-def _get_readme_content_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_delay_to_apply: float) -> tuple[Optional[str], Optional[str]]:
+def _get_readme_content_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_delay_to_apply: float, num_workers: int = 1) -> tuple[Optional[str], Optional[str]]:
     """
     Fetches and decodes the README content for a given GitLab project object.
     Tries common README filenames. Returns content and URL.
@@ -97,7 +97,7 @@ def _get_readme_content_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_dela
     return None, None
 
 
-def _get_codeowners_content_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_delay_to_apply: float) -> Optional[str]:
+def _get_codeowners_content_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_delay_to_apply: float, num_workers: int = 1) -> Optional[str]:
     """Fetches CODEOWNERS content from standard locations in a GitLab project."""
     common_paths = ["CODEOWNERS", ".gitlab/CODEOWNERS", "docs/CODEOWNERS"]
     if not project_obj.default_branch:
@@ -126,7 +126,7 @@ def _get_codeowners_content_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_
     return None
 
 
-def _fetch_tags_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_delay_to_apply: float) -> List[str]:
+def _fetch_tags_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_delay_to_apply: float, num_workers: int = 1) -> List[str]:
     """Fetches Git tag names using the python-gitlab project object."""
     tag_names = []
     try:
@@ -144,18 +144,18 @@ def _fetch_tags_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_delay_to_app
     return tag_names
 
 def _process_single_gitlab_project(
-    gl_instance: gitlab.Gitlab, # Pass the authenticated gitlab instance
-    project_stub_id: int, # Pass project ID to re-fetch full object
-    group_full_path: str, # For logging and context
-    token: Optional[str], # For labor hours estimator
-    effective_gitlab_url: str, # For labor hours estimator
+    gl_instance: gitlab.Gitlab,
+    project_stub_id: int,
+    group_full_path: str,
+    token: Optional[str],
+    effective_gitlab_url: str,
     hours_per_commit: Optional[float],
-    cfg_obj: Any, # Pass the Config object
-    inter_repo_adaptive_delay_seconds: float, # Inter-repository adaptive delay
-    dynamic_post_api_call_delay_seconds: float, # Per-API call dynamic delay
-    # --- Parameters for Caching ---
+    cfg_obj: Any,
+    inter_repo_adaptive_delay_seconds: float,
+    dynamic_post_api_call_delay_seconds: float,
     previous_scan_cache: Dict[str, Dict],
-    current_commit_sha: Optional[str]
+    current_commit_sha: Optional[str],
+    num_workers: int = 1  # Add this parameter
 ) -> Dict[str, Any]:
     """
     Processes a single GitLab project to extract its metadata.
@@ -256,10 +256,10 @@ def _process_single_gitlab_project(
         except Exception as lang_err:
             logger.warning(f"Could not fetch languages for {repo_full_name}: {lang_err}", exc_info=False)
 
-        readme_content, readme_html_url = _get_readme_content_gitlab(project, cfg_obj, dynamic_post_api_call_delay_seconds)
-        codeowners_content = _get_codeowners_content_gitlab(project, cfg_obj, dynamic_post_api_call_delay_seconds)
+        readme_content, readme_html_url = _get_readme_content_gitlab(project, cfg_obj, dynamic_post_api_call_delay_seconds, num_workers)
+        codeowners_content = _get_codeowners_content_gitlab(project, cfg_obj, dynamic_post_api_call_delay_seconds, num_workers)
         repo_topics = project.tag_list if hasattr(project, 'tag_list') else []
-        repo_git_tags = _fetch_tags_gitlab(project, cfg_obj, dynamic_post_api_call_delay_seconds)
+        repo_git_tags = _fetch_tags_gitlab(project, cfg_obj, dynamic_post_api_call_delay_seconds, num_workers)
 
         licenses_list = []
         if hasattr(project, 'license') and project.license and isinstance(project.license, dict):
@@ -497,7 +497,7 @@ def fetch_repositories(
                 calculated_delay = cfg_obj.ADAPTIVE_DELAY_BASE_SECONDS_ENV * scale_factor
                 inter_repo_adaptive_delay_per_repo = min(calculated_delay, cfg_obj.ADAPTIVE_DELAY_MAX_SECONDS_ENV)
                 if inter_repo_adaptive_delay_per_repo > 0:
-                    logger.info(f"{ANSI_YELLOW}GitLab: INTER-REPO adaptive delay calculated for group '{group_path}': {inter_repo_adaptive_delay_per_repo:.2f}s per project (based on {num_projects_in_target_for_delay_calc} projects).{ANSI_RESET}")
+                    logger.info(f"{ANSI_YELLOW}GitLab: INTER-REPO adaptive delay calculated for group '{group_path}': {inter_repo_adaptive_delay_per_repo:.2f}s per project (based on {num_projects_in_target_for_delay_calc} projects, {max_workers} workers).{ANSI_RESET}")
         elif cfg_obj and cfg_obj.ADAPTIVE_DELAY_ENABLED_ENV and num_projects_in_target_for_delay_calc == 0:
             logger.info(f"GitLab: Adaptive delay enabled but num_projects_in_target_for_delay_calc is 0 for group '{group_path}'. No inter-repo adaptive delay will be applied.")
         elif cfg_obj: # Adaptive delay is configured but disabled
@@ -514,10 +514,13 @@ def fetch_repositories(
             dynamic_post_api_call_delay_seconds = calculate_dynamic_delay(
                 base_delay_seconds=base_delay,
                 num_items=num_projects_in_target_for_delay_calc if num_projects_in_target_for_delay_calc > 0 else None,
-                threshold_items=threshold, scale_factor=scale, max_delay_seconds=max_d
+                threshold_items=threshold, 
+                scale_factor=scale, 
+                max_delay_seconds=max_d,
+                num_workers=max_workers  # Pass the number of workers
             )
             if dynamic_post_api_call_delay_seconds > 0:
-                 logger.info(f"{ANSI_YELLOW}GitLab: DYNAMIC POST-API-CALL delay for metadata in group '{group_path}' set to: {dynamic_post_api_call_delay_seconds:.2f}s (based on {num_projects_in_target_for_delay_calc} projects).{ANSI_RESET}")
+                 logger.info(f"{ANSI_YELLOW}GitLab: DYNAMIC POST-API-CALL delay for metadata in group '{group_path}' set to: {dynamic_post_api_call_delay_seconds:.2f}s (based on {num_projects_in_target_for_delay_calc} projects, {max_workers} workers).{ANSI_RESET}")
 
         project_count_for_group_submitted = 0
         skipped_by_date_filter_count = 0 # Initialize counter for skipped projects
@@ -610,7 +613,8 @@ def fetch_repositories(
                         inter_repo_adaptive_delay_per_repo, # Pass inter-repo adaptive delay
                         dynamic_post_api_call_delay_seconds, # Pass dynamic per-API call delay
                         previous_scan_cache=previous_scan_cache, # Pass cache
-                        current_commit_sha=current_commit_sha_for_cache # Pass current SHA
+                        current_commit_sha=current_commit_sha_for_cache, # Pass current SHA
+                        num_workers=max_workers  
                     )
                     future_to_project_name[future] = proj_stub.path_with_namespace
             

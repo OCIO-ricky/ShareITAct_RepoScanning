@@ -53,9 +53,10 @@ logger = logging.getLogger(__name__)
 PLACEHOLDER_GITHUB_TOKEN = "YOUR_GITHUB_PAT"
 
 
-def apply_dynamic_github_delay(cfg_obj: Optional[Any], num_repos_in_target: Optional[int]):
+def apply_dynamic_github_delay(cfg_obj: Optional[Any], num_repos_in_target: Optional[int], num_workers: int = 1):
     """
-    Calculates and applies a dynamic delay based on the number of repositories in the target.
+    Calculates and applies a dynamic delay based on the number of repositories in the target
+    and the number of concurrent workers.
     This is a synchronous sleep for PyGithub calls.
     """
     delay_seconds = 0.0
@@ -64,22 +65,27 @@ def apply_dynamic_github_delay(cfg_obj: Optional[Any], num_repos_in_target: Opti
         threshold = int(getattr(cfg_obj, 'DYNAMIC_DELAY_THRESHOLD_REPOS_ENV', os.getenv("DYNAMIC_DELAY_THRESHOLD_REPOS", "100")))
         scale = float(getattr(cfg_obj, 'DYNAMIC_DELAY_SCALE_FACTOR_ENV', os.getenv("DYNAMIC_DELAY_SCALE_FACTOR", "1.5")))
         max_d = float(getattr(cfg_obj, 'DYNAMIC_DELAY_MAX_SECONDS_ENV', os.getenv("DYNAMIC_DELAY_MAX_SECONDS", "1.0")))
-
+      
+      ## DEBUG:   print(f"{ANSI_YELLOW}num_repos_in_target: {num_repos_in_target} ")
         delay_seconds = calculate_dynamic_delay(
             base_delay_seconds=base_delay,
             num_items=num_repos_in_target if num_repos_in_target is not None and num_repos_in_target > 0 else None,
-            threshold_items=threshold, scale_factor=scale, max_delay_seconds=max_d
+            threshold_items=threshold, 
+            scale_factor=scale, 
+            max_delay_seconds=max_d,
+            num_workers=num_workers  # Pass the number of workers
         )
-
+  
     if delay_seconds > 0:
-        logger.debug(f"Applying SYNC dynamic GitHub API call delay: {delay_seconds:.2f}s (based on target size: {num_repos_in_target})")
+        logger.debug(f"Applying SYNC dynamic GitHub API call delay: {delay_seconds:.2f}s "
+                     f"(based on target size: {num_repos_in_target}, workers: {num_workers})")
         time.sleep(delay_seconds)
 
 def is_placeholder_token(token: Optional[str]) -> bool:
     """Checks if the GitHub token is missing or a known placeholder."""
     return not token or token == PLACEHOLDER_GITHUB_TOKEN
 
-def _get_readme_details_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos_in_target: Optional[int]) -> tuple[Optional[str], Optional[str], bool]:
+def _get_readme_details_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos_in_target: Optional[int], num_workers: int = 1) -> tuple[Optional[str], Optional[str]]:
     """
     Fetches and decodes the README content and its HTML URL.
     Tries common README filenames.
@@ -88,7 +94,7 @@ def _get_readme_details_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos_in_
     common_readme_names = ["README.md", "README.txt", "README", "readme.md"]
     for readme_name in common_readme_names:
         try:
-            apply_dynamic_github_delay(cfg_obj, num_repos_in_target) # Apply delay BEFORE the call
+            apply_dynamic_github_delay(cfg_obj, num_repos_in_target, num_workers) # Apply delay BEFORE the call
             readme_file = repo_obj.get_contents(readme_name)
             readme_content_bytes = base64.b64decode(readme_file.content)
             try:
@@ -118,7 +124,7 @@ def _get_readme_details_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos_in_
     logger.debug(f"No common README file found for {repo_obj.full_name}")
     return None, None, False
 
-def _get_codeowners_content_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos_in_target: Optional[int]) -> tuple[Optional[str], bool]:
+def _get_codeowners_content_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos_in_target: Optional[int], num_workers: int = 1) -> Optional[str]:
     """
     Fetches CODEOWNERS content from standard locations.
     Returns: (content, is_empty_repo_error_occurred)
@@ -126,7 +132,7 @@ def _get_codeowners_content_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos
     codeowners_locations = ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"]
     for location in codeowners_locations:
         try:
-            apply_dynamic_github_delay(cfg_obj, num_repos_in_target) # Apply delay BEFORE the call
+            apply_dynamic_github_delay(cfg_obj, num_repos_in_target, num_workers) # Apply delay BEFORE the call
             codeowners_file = repo_obj.get_contents(location)
             codeowners_content = codeowners_file.decoded_content.decode('utf-8', errors='replace')
             logger.debug(f"Successfully fetched CODEOWNERS from '{location}' for {repo_obj.full_name}")
@@ -147,11 +153,11 @@ def _get_codeowners_content_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos
     logger.debug(f"No CODEOWNERS file found in standard locations for {repo_obj.full_name}")
     return None, False
 
-def _fetch_tags_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos_in_target: Optional[int]) -> List[str]:
+def _fetch_tags_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos_in_target: Optional[int], num_workers: int = 1) -> List[str]:
     tag_names = []
     try:
         logger.debug(f"Fetching tags for repo: {repo_obj.full_name}")
-        apply_dynamic_github_delay(cfg_obj, num_repos_in_target) # Apply delay BEFORE the call
+        apply_dynamic_github_delay(cfg_obj, num_repos_in_target, num_workers)# Apply delay BEFORE the call
         tags = repo_obj.get_tags()
         tag_names = [tag.name for tag in tags if tag.name]
         logger.debug(f"Found {len(tag_names)} tags for {repo_obj.full_name}")
@@ -174,7 +180,8 @@ def _process_single_github_repository(
     num_repos_in_target: Optional[int], # Pass the count for dynamic delay
     # --- Parameters for Caching ---
     previous_scan_cache: Dict[str, Dict],
-    current_commit_sha: Optional[str] 
+    current_commit_sha: Optional[str],
+    num_workers: int = 1  # Add this parameter
 ) -> Dict[str, Any]:
     """
     Processes a single GitHub repository to extract its metadata. # KEEP
@@ -292,7 +299,7 @@ def _process_single_github_repository(
 
         all_languages_list = []
         try:
-            apply_dynamic_github_delay(cfg_obj, num_repos_in_target) # Apply delay BEFORE the call
+            apply_dynamic_github_delay(cfg_obj, num_repos_in_target, num_workers) # Apply delay BEFORE the call
             languages_dict = repo.get_languages()
             if not languages_dict and repo.size == 0:
                 logger.info(f"Repository {repo_full_name} has no languages and size is 0, likely empty.")
@@ -314,13 +321,13 @@ def _process_single_github_repository(
                 license_entry["name"] = repo.license.name
             licenses_list.append(license_entry)
         
-        readme_content_str, readme_html_url, readme_empty_repo_error = _get_readme_details_pygithub(repo, cfg_obj, num_repos_in_target)
-        codeowners_content_str, codeowners_empty_repo_error = _get_codeowners_content_pygithub(repo, cfg_obj, num_repos_in_target)
+        readme_content_str, readme_html_url, readme_empty_repo_error = _get_readme_details_pygithub(repo, cfg_obj, num_repos_in_target, num_workers)
+        codeowners_content_str, codeowners_empty_repo_error = _get_codeowners_content_pygithub(repo, cfg_obj, num_repos_in_target, num_workers)
 
         if not repo_data.get('_is_empty_repo', False):
             repo_data['_is_empty_repo'] = readme_empty_repo_error or codeowners_empty_repo_error
 
-        apply_dynamic_github_delay(cfg_obj, num_repos_in_target) # Delay before get_topics
+        apply_dynamic_github_delay(cfg_obj, num_repos_in_target, num_workers) # Delay before get_topics
         repo_topics = repo.get_topics()
         repo_git_tags = _fetch_tags_pygithub(repo, cfg_obj, num_repos_in_target)
         
@@ -372,7 +379,8 @@ def _process_single_github_repository(
                     session=None,
                     cfg_obj=cfg_obj,
                     num_repos_in_target=num_repos_in_target,
-                    is_empty_repo=repo_data.get('_is_empty_repo', False)
+                    is_empty_repo=repo_data.get('_is_empty_repo', False),
+                    number_of_workers=num_workers
                 )
                 if not labor_df.empty:
                     repo_data["laborHours"] = round(float(labor_df["EstimatedHours"].sum()), 2)
@@ -420,19 +428,35 @@ def _process_single_github_repository(
 
 
 def fetch_repositories(
-    token: Optional[str], 
-    org_name: str, 
-    processed_counter: List[int], 
-    processed_counter_lock: threading.Lock, 
-    debug_limit: int | None = None, 
-    github_instance_url: str | None = None, 
+    token: Optional[str],
+    org_name: str,
+    processed_counter: List[int],
+    processed_counter_lock: threading.Lock,
+    debug_limit: int | None = None,
+    github_instance_url: str | None = None,
     hours_per_commit: Optional[float] = None,
     max_workers: int = 5,
-    previous_scan_output_file: Optional[str] = None, # For caching
-    cfg_obj: Optional[Any] = None 
+    cfg_obj: Optional[Any] = None,
+    previous_scan_output_file: Optional[str] = None # For caching
 ) -> list[dict]:
     """
-    Fetches repository details from a specific GitHub organization concurrently.
+    Fetches repository details from a specific GitHub organization.
+    
+    Args:
+        token: The GitHub Personal Access Token.
+        org_name: The name of the GitHub organization to scan.
+        processed_counter: Mutable list to track processed repositories for debug limit.
+        processed_counter_lock: Lock for safely updating processed_counter.
+        debug_limit: Optional global limit for repositories to process.
+        github_instance_url: The base URL of the GitHub instance. Defaults to https://api.github.com if None.
+        hours_per_commit: Optional factor to estimate labor hours based on commit count.
+        max_workers: Number of concurrent worker threads for repository processing.
+                     This affects rate limiting calculations.
+        cfg_obj: Configuration object containing settings for API calls, delays, and exemption processing.
+        previous_scan_output_file: Path to previous scan results for caching optimization.
+    
+    Returns:
+        A list of dictionaries, each containing processed metadata for a repository.
     """
     instance_msg = f"GitHub instance: {github_instance_url}" if github_instance_url else "public GitHub.com"
     logger.info(f"Attempting to fetch repositories CONCURRENTLY for GitHub organization: {org_name} on {instance_msg} (max_workers: {max_workers})")
@@ -478,7 +502,7 @@ def fetch_repositories(
         # Fetch the organization object once. It will be used for iterating repos.
         # The num_repos_in_target for this initial call to apply_dynamic_github_delay is not yet known from cache/live.
         # Passing None will result in base_delay or 0 if base_delay is 0.
-        apply_dynamic_github_delay(cfg_obj, None) 
+        apply_dynamic_github_delay(cfg_obj, None, max_workers) 
         organization_obj_for_iteration = gh.get_organization(org_name)
         logger.info(f"Successfully configured GitHub client for organization: {org_name}.")
     except Exception as e:
@@ -508,7 +532,7 @@ def fetch_repositories(
                 adjustment_factor = float(cfg_obj.ADAPTIVE_DELAY_CACHE_MODIFIED_FACTOR_ENV)
                 try:
                     # Fetch total live count to compare (this is an API call)
-                    apply_dynamic_github_delay(cfg_obj, None) # Delay before this potentially significant list operation
+                    apply_dynamic_github_delay(cfg_obj, None, max_workers) # Delay before this potentially significant list operation
                     total_live_repos_for_adjustment = organization_obj_for_iteration.get_repos(type='all').totalCount
                     
                     if total_live_repos_for_adjustment > cached_repo_count_for_target:
@@ -528,7 +552,7 @@ def fetch_repositories(
     if num_repos_in_target == 0: # If cache was empty or not used
         try:
             logger.info(f"ADAPTIVE DELAY/PROCESSING: Cache empty or not used for count. Fetching live repository list for '{org_name}' to get count.")
-            apply_dynamic_github_delay(cfg_obj, None) # Delay before get_repos list
+            apply_dynamic_github_delay(cfg_obj, None, max_workers) # Delay before get_repos list
             live_repo_list_materialized = list(organization_obj_for_iteration.get_repos(type='all'))
             initial_live_count = len(live_repo_list_materialized)
             logger.info(f"ADAPTIVE DELAY/PROCESSING: Fetched {initial_live_count} live repositories for '{org_name}' before date filtering.")
@@ -637,7 +661,7 @@ def fetch_repositories(
                     # Optimization: don't fetch SHA for already skipped types or if no default branch
                     if not repo_stub.archived and not repo_stub.fork and repo_stub.default_branch:
                         # This is an API call to get the specific branch details
-                        apply_dynamic_github_delay(cfg_obj, num_repos_in_target) # Delay before this critical API call
+                        apply_dynamic_github_delay(cfg_obj, num_repos_in_target, max_workers) # Delay before this critical API call
                         branch_obj = repo_stub.get_branch(repo_stub.default_branch)
                         current_commit_sha_for_cache = branch_obj.commit.sha
                         logger.debug(f"Successfully fetched current commit SHA '{current_commit_sha_for_cache}' for default branch '{repo_stub.default_branch}' of {repo_stub_full_name}.")
@@ -666,7 +690,8 @@ def fetch_repositories(
                     inter_repo_adaptive_delay_seconds=inter_repo_adaptive_delay_per_repo,
                     num_repos_in_target=num_repos_in_target,
                     previous_scan_cache=previous_scan_cache, # Pass cache
-                    current_commit_sha=current_commit_sha_for_cache # Pass current SHA
+                    current_commit_sha=current_commit_sha_for_cache, # Pass current SHA
+                    num_workers=max_workers
                 )
                 future_to_repo_name[future] = repo_stub.full_name
         
@@ -718,7 +743,7 @@ if __name__ == '__main__':
         
         repositories = fetch_repositories(
             token=test_gh_token, 
-            org_name=test_org_name_env, 
+            organization=test_org_name_env, 
             processed_counter=counter, 
             processed_counter_lock=counter_lock,
             debug_limit=None, 

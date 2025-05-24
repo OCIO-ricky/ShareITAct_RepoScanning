@@ -1,45 +1,41 @@
-# utils/delay_calculator.py
-import logging
-from typing import Optional, Any
-
-logger = logging.getLogger(__name__)
+from typing import Optional
 
 def calculate_dynamic_delay(
     base_delay_seconds: float,
     num_items: Optional[int],
-    threshold_items: int,
-    scale_factor: float,
-    max_delay_seconds: float
+    threshold_items: int = 100,
+    scale_factor: float = 1.5,
+    max_delay_seconds: float = 1.0,
+    num_workers: int = 1  # Add this parameter
 ) -> float:
     """
-    Calculates a dynamic delay.
-
-    If num_items is None or below threshold_items, base_delay_seconds is returned.
-    Otherwise, the delay is scaled up based on how many items exceed the threshold,
-    capped by max_delay_seconds.
-
-    Args:
-        base_delay_seconds: The fundamental delay to apply.
-        num_items: The number of items (e.g., repositories in a target).
-        threshold_items: The number of items after which scaling begins.
-        scale_factor: Multiplier for scaling. E.g., 1.5 means delay increases by 50%
-                      of base for each 'threshold_items' block over the initial threshold.
-                      A simpler interpretation: how much to multiply the base delay by
-                      if the number of items is (e.g.) double the threshold.
-                      Let's use a simpler linear scaling: delay = base + (excess_blocks * base * (scale_factor-1))
-        max_delay_seconds: The absolute maximum delay.
-
-    Returns:
-        The calculated delay in seconds.
-    """
-    if num_items is None or num_items <= threshold_items or threshold_items <= 0:
-        return base_delay_seconds
-
-    excess_items = num_items - threshold_items
-    # Linear scaling: for every 'threshold_items' items over the threshold, add 'scale_factor' * 'base_delay_seconds'
-    # A simpler scaling: increase = base_delay * ( (num_items / threshold_items) -1 ) * (scale_factor -1), capped.
-    # Let's try: calculated_delay = base_delay_seconds * (1 + (excess_items / threshold_items) * (scale_factor -1 if scale_factor > 1 else 0.5) )
-    calculated_delay = base_delay_seconds * (1 + (excess_items / threshold_items) * (scale_factor - 1.0 if scale_factor >= 1.0 else 0.0))
+    Calculate a dynamic delay based on the number of items and workers.
     
-    final_delay = min(calculated_delay, max_delay_seconds)
-    return max(final_delay, base_delay_seconds) # Ensure it's at least the base delay
+    Args:
+        base_delay_seconds: Base delay in seconds
+        num_items: Number of items to process
+        threshold_items: Threshold above which to scale the delay
+        scale_factor: Factor to scale the delay by
+        max_delay_seconds: Maximum delay in seconds
+        num_workers: Number of concurrent workers (default: 1)
+    
+    Returns:
+        Calculated delay in seconds
+    """
+    # Original delay calculation
+    if num_items is None or num_items <= 0 or threshold_items <= 0:
+        return base_delay_seconds
+    
+    if num_items <= threshold_items:
+        calculated_delay = base_delay_seconds
+    else:
+        excess_items = num_items - threshold_items
+        calculated_delay = base_delay_seconds * (1 + (excess_items / threshold_items) * scale_factor)
+    
+    # Adjust for number of workers
+    worker_factor = 1.0 + (0.2 * (num_workers - 1))  # 20% increase per additional worker
+    worker_adjusted_delay = calculated_delay * worker_factor
+    
+    # Cap at maximum delay
+    max_with_workers = max_delay_seconds * min(2.0, worker_factor)  # Allow up to 2x max for many workers
+    return min(worker_adjusted_delay, max_with_workers)

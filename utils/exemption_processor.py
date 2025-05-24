@@ -360,29 +360,33 @@ def _call_ai_for_exemption(
         logger.warning(f"Input text for AI exemption analysis of '{repo_name}' was truncated to fit token limit.")
 
     prompt = f"""
-    Analyze the following repository information (name, description, README content)
-    to determine if it requires a specific usage exemption based on its function
-    or the data it might handle.
+You are evaluating whether a source code repository should be exempted from code sharing requirements under the SHARE IT Act.
+Base your analysis strictly on content and function described in the repository metadata (title, description, README).
 
-    Consider these specific exemption categories:
-    - {EXEMPT_BY_LAW}: Data explicitly protected by law (e.g., HIPAA, FOIA mentioned).
-    - {EXEMPT_BY_NATIONAL_SECURITY}: Potential national security exposure.
-    - {EXEMPT_BY_AGENCY_SYSTEM}: Internal-only CDC systems (non-public facing infrastructure).
-    - {EXEMPT_BY_MISSION_SYSTEM}: Logic critical to a public health mission (e.g., clinical decision support, outbreak analysis tools).
-    - {EXEMPT_BY_CIO}: Requires CIO review (use this sparingly if unsure but seems sensitive/complex).
+Only select an exemption if explicit functional or legal evidence is present in the text.
+You may apply one of the following exemption's codes:
+{EXEMPT_BY_LAW} - The repository processes or stores legally protected data (e.g., HIPAA, PII, FOIA exclusions, IRB-sensitive datasets).
+{EXEMPT_BY_NATIONAL_SECURITY} - Contains elements tied to classified, military, or national security-sensitive content.
+{EXEMPT_BY_AGENCY_SYSTEM} - Supports internal CDC infrastructure, not intended for public or external use (e.g., internal APIs, IT operations tools).
+{EXEMPT_BY_MISSION_SYSTEM} - Directly supports CDC public health mission (e.g., disease surveillance, outbreak analysis, clinical decision logic).
+{EXEMPT_BY_CIO} - Appears sensitive or unusually complex but lacks clear evidence; defer to CIO for review (use only if borderline case).
 
-    If NO specific exemption applies based on the text, output ONLY the word "None".
+Example1: Title: survey-data-cleaner, README Content: This tool processes raw CDC health surveys containing ZIP codes, birthdates, and patient identifiers before analysis. Data is subject to HIPAA and IRB controls.
+Justification Output: {EXEMPT_BY_LAW}|The repository processes HIPAA-regulated health data with personally identifiable information (PII), as stated in the README.
+Example2: Title: outbreak-forecast-model, Description: Predicts emerging disease trends using real-time syndromic surveillance inputs.
+Output Instructions: README Content: Includes models used by CDC epidemiologists to project infection curves during outbreak scenarios (e.g., flu, COVID-19).
+Justification Output:{EXEMPT_BY_MISSION_SYSTEM}|The repository supports outbreak forecasting and is used directly in CDC's public health decision-making.
+Example3: Title: internal-logging-dashboard, README Content: Provides metrics aggregation and system logs for internal OCIO-managed infrastructure. Access restricted to CDC internal staff.
+Justification Output: {EXEMPT_BY_AGENCY_SYSTEM}|The code supports internal system monitoring for CDC infrastructure and is not intended for public or external use.
 
-    If an exemption DOES apply, output the exemption code, followed by a pipe symbol (|),
-    and then a brief justification (max 2 sentences) based *only* on the provided text.
+If no exemptions clearly apply, output: None
+If one or more apply, select one. Return the result as a pair separated by "|" (e.g., EXEMPTION_CODE|JUSTIFICATION)
 
-    Example Output (No Exemption):
-    None
-
-    Example Output (Exemption Found):
-    {EXEMPT_BY_MISSION_SYSTEM}|The repository appears to contain logic for analyzing disease outbreak patterns based on the README description.
-
-    Repository Information:
+Do not infer exemptions based on:
+-Internal email addresses (@cdc.gov)
+-Naming patterns alone (e.g., "nccdphp" or org units)
+-General lack of documentation
+Repository Information:
     ---
     {input_text}
     ---
