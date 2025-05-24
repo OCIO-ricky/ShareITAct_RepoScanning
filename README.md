@@ -54,7 +54,7 @@ Using Docker (specifically `docker-compose`) is the preferred method for running
 
 ### Option 1: Running All Configured Scans Concurrently
 
-This is ideal for a full inventory run, scanning all platforms you've configured in your `.env` file and `docker-compose.yml`. The `docker-compose.yml` file is set up to run scans for GitHub, GitLab, and Azure DevOps in parallel and merge the results producing a single `code.json` file.
+This is ideal for a full inventory run, scanning all platforms you've configured in your `.env` file and/or `docker-compose.yml`. The `docker-compose.yml` file is set up to run scans for GitHub, GitLab, and Azure DevOps in parallel and merge the results producing a single `code.json` file.
 
 **Start the scan services:**
 ```bash
@@ -63,7 +63,7 @@ docker-compose up --build -d
 -   `--build`: Builds the Docker image if it doesn't exist or if `Dockerfile` has changed.
 -   `-d`: Runs the containers in detached mode (in the background).
 
-This will start separate containers for each platform defined as a service in `docker-compose.yml` (e.g., `scan-github`, `scan-gitlab`, `scan-azure`). Each will execute its respective scan command.
+This will start separate containers for each platform defined as a service in `docker-compose.yml` (e.g., `scan-github`, `scan-gitlab`, `scan-azure`, and `merge-results`). Each will execute its respective scan command.
 
 
 ### Option 2: Running a Specific Scan or Command
@@ -126,7 +126,7 @@ If you prefer not to use Docker, or if you are contributing to the development o
     ```bash
     python -m venv venv
     # On Windows:
-    # venv\Scripts\activate
+    venv\Scripts\activate
     # On macOS/Linux:
     source venv/bin/activate
     ```
