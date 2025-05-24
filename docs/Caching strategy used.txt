@@ -1,0 +1,30 @@
+The caching strategy is fundamental to process so many repos. 
+
+Here's how it works:
+
+Cache Validation is Key: The system can't blindly trust cached data in the intermediatery json files. The lastCommitSHA fields is computed 
+on every run and appended to the json entry in the intermediatery files.  This acts as a version identifier for the repository's content. 
+If the lastCommitSHA found in the repo (during every run) differs from the one stored in the cache from the previous scan, it means the 
+repository has been updated, and the cached data (like laborHours, permissions, readme_content, exemptions, etc.) might be stale.
+
+Connector Responsibility: This initial fetch of the current lastCommitSHA and the comparison against the cached SHA is primarily the 
+responsibility of the platform-specific connector modules (e.g., clients/github_connector.py, clients/gitlab_connector.py, etc.).
+
+Workflow:
+
+When scan_and_process_single_target() in generate_codejson.py calls a platform connector (e.g., clients.github_connector.fetch_repositories), 
+it passes the previous_scan_output_file path (i.e, the intermediatery file path). The connector uses utils.caching.load_previous_scan_data() to 
+load the data from this intermediatery file. This gives it access to the lastCommitSHA recorded during the previous scan for each repository.
+For each repository it's about to process in the current scan, the connector makes an API call to the platform (GitHub, GitLab, Azure DevOps) 
+to get its current basic metadata, which critically includes the current lastCommitSHA.
+
+Comparison: The connector then compares this newly fetched current lastCommitSHA with the lastCommitSHA from the loaded cache.
+If SHAs match (and the repository's empty status, if applicable, is consistent), the repository's content is considered unchanged. 
+The connector then reuses the entire detailed entry from the cache (including laborHours, contributors, permissions, readme_content, _codeowners_content, 
+etc.) and avoids making further expensive API calls to re-fetch all that detail or re-run analyses like analyze_github_repo_sync().
+If SHAs do NOT match (or it's a new repository, or its empty status changed): The repository is considered updated. The connector proceeds 
+to fetch all its details fresh from the platform and then calls the necessary analysis functions (like analyze_github_repo_sync from 
+utils/labor_hrs_estimator.py and subsequently process_repository_exemptions from utils/exemption_processor.py via generate_codejson.py).
+
+Therefore, the fetch of the current lastCommitSHA is an indispensable part of the process for every repository encountered in a scan target, 
+as it's the trigger for deciding whether to use the cache or perform a full data refresh and analysis.

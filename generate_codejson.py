@@ -5,6 +5,8 @@ Main script for the Share IT Act Repository Scanning Tool.
 This script orchestrates the process of scanning repositories across multiple
 platforms (GitHub, GitLab, Azure DevOps), processing the collected metadata,
 and generating a `code.json` file compliant with the code.gov schema v2.0.
+Check the README for more details on how to set up the environment and run the
+script.
 """
 
 import os
@@ -17,8 +19,7 @@ import argparse
 import sys
 import threading # For processed_counter_lock
 import glob
-from datetime import datetime, timezone, timedelta
-from dotenv import load_dotenv # Still useful for non-auth configs
+from datetime import datetime, timezone # timedelta moved to script_utils
 from typing import List, Optional, Dict, Any
 
 # Import connectors - Ensure these files exist and are importable
@@ -33,25 +34,24 @@ except ImportError as e:
 
 # Import utils - Ensure these files exist and are importable
 try:
-    from utils import ExemptionLogger, RepoIdMappingManager # Updated import
+    from utils import Config, ExemptionLogger, RepoIdMappingManager
+    from utils.script_utils import (
+        setup_global_logging, setup_target_logger,
+        write_json_file, backup_existing_file, backup_file_and_leave_original,
+        parse_semver, infer_version, infer_status,
+        process_and_finalize_repo_data_list,
+        get_targets_from_cli_or_env, parse_azure_targets_from_string_list,
+        format_duration
+    )
 except ImportError as e:
     print(f"Error importing utility modules: {e}")
-    print("Please ensure 'utils' directory exists and contains ExemptionLogger.py and repo_id_mapping_manager.py") # Updated filename
+    print("Please ensure 'utils' directory exists and contains necessary files like config.py, script_utils.py etc.")
     sys.exit(1)
 
-# --- Check for packaging library for version parsing ---
-PACKAGING_AVAILABLE = False
-try:
-    import packaging.version as packaging_version
-    PACKAGING_AVAILABLE = True
-    logging.getLogger().info("Using 'packaging' library for version parsing.")
-except ImportError:
-    logging.getLogger().warning("Optional library 'packaging' not found. Version parsing will use basic regex (less reliable). Install with: pip install packaging")
 
 # --- Constants ---
-INACTIVITY_THRESHOLD_YEARS = 2
-VALID_README_STATUSES = {'maintained', 'deprecated', 'experimental', 'active', 'inactive'}
-LOG_DIR_NAME = "logs"
+# Constants like INACTIVITY_THRESHOLD_YEARS, VALID_README_STATUSES, LOG_DIR_NAME
+# have been moved to utils/script_utils.py
 INTERMEDIATE_FILE_PATTERN = "intermediate_*.json"
 CODE_JSON_SCHEMA_VERSION = "2.0"
 CODE_JSON_MEASUREMENT_TYPE = {"method": "projects"}
@@ -60,411 +60,6 @@ CODE_JSON_MEASUREMENT_TYPE = {"method": "projects"}
 ANSI_RED = "\x1b[31;1m"  # Bold Red
 ANSI_RESET = "\x1b[0m"   # Reset to default color
 
-# --- Configuration Class ---
-class Config:
-    def __init__(self):
-        load_dotenv() # Load .env for non-auth configurations
-        limit_str = os.getenv("LimitNumberOfRepos", "0").strip()
-        try:
-            self.DEBUG_REPO_LIMIT = int(limit_str)
-            if self.DEBUG_REPO_LIMIT <= 0:
-                self.DEBUG_REPO_LIMIT = None
-        except ValueError:
-            logging.getLogger(__name__).warning(f"LimitNumberOfRepos: '{limit_str}'. Defaulting to no limit.")
-            self.DEBUG_REPO_LIMIT = None
-
-        self.OUTPUT_DIR = os.getenv("OutputDir", "output").strip()
-        self.CATALOG_JSON_FILE = os.getenv("catalogJsonFile", "code.json")
-        self.EXEMPTION_LOG_FILENAME = os.getenv("ExemptedCSVFile", "exempted_log.csv")
-        self.AGENCY_NAME = os.getenv("AGENCY_NAME", "CDC")
-        self.PRIVATE_ID_FILENAME = os.getenv("PrivateIDCSVFile", "privateid_mapping.csv") 
-        
-        self.EXEMPTION_LOG_FILEPATH = os.path.join(self.OUTPUT_DIR, self.EXEMPTION_LOG_FILENAME)
-        self.PRIVATE_ID_FILEPATH = os.path.join(self.OUTPUT_DIR, self.PRIVATE_ID_FILENAME) # Reverted path
-        self.REPOS_CREATED_AFTER_DATE = os.getenv("REPOS_CREATED_AFTER_DATE", "")
-
-        # --- AI Specific Configurations ---
-        self.AI_ENABLED_ENV = os.getenv("AI_ENABLED", "False").lower() == "true"
-        self.AI_MODEL_NAME_ENV = os.getenv("AI_MODEL_NAME", "gemini-1.0-pro-latest") # Default model
-        self.AI_MAX_OUTPUT_TOKENS_ENV = int(os.getenv("AI_MAX_OUTPUT_TOKENS", "2048")) # Default max tokens
-        self.MAX_TOKENS_ENV = int(os.getenv("MAX_TOKENS", "15000")) # For AI input truncation
-        self.AI_TEMPERATURE_ENV = float(os.getenv("AI_TEMPERATURE", "0.4")) # Default AI temperature
-
-        # --- Adaptive Delay Settings ---
-        self.ADAPTIVE_DELAY_ENABLED_ENV = os.getenv("ADAPTIVE_DELAY_ENABLED", "false").lower() == "true"
-        self.ADAPTIVE_DELAY_BASE_SECONDS_ENV = float(os.getenv("ADAPTIVE_DELAY_BASE_SECONDS", "0.1"))
-        self.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV = int(os.getenv("ADAPTIVE_DELAY_THRESHOLD_REPOS", "50"))
-        self.ADAPTIVE_DELAY_MAX_SECONDS_ENV = float(os.getenv("ADAPTIVE_DELAY_MAX_SECONDS", "2.0"))
-        self.ADAPTIVE_DELAY_CACHE_MODIFIED_FACTOR_ENV = float(os.getenv("ADAPTIVE_DELAY_CACHE_MODIFIED_FACTOR", "0.10"))
-
-
-        # --- GitHub Specific API Call Throttling ---
-        self.GITHUB_API_CALL_DELAY_SECONDS_ENV = float(os.getenv("GITHUB_API_CALL_DELAY_SECONDS", "0.0"))
-
-        self.INSTRUCTIONS_URL = os.getenv("INSTRUCTIONS_PDF_URL")
-        self.EXEMPTED_NOTICE_URL = os.getenv("EXEMPTED_NOTICE_PDF_URL")
-        self.PRIVATE_REPO_CONTACT_EMAIL = os.getenv("PRIVATE_REPO_CONTACT_EMAIL", "shareit@cdc.gov")
-
-        # Platform-specific target lists from .env (used if not overridden by CLI)
-        self.GITHUB_ORGS_ENV = [org.strip() for org in os.getenv("GITHUB_ORGS", "").split(',') if org.strip()]
-        self.GITLAB_URL_ENV = os.getenv("GITLAB_URL", "https://gitlab.com")
-        self.GITLAB_GROUPS_ENV = [group.strip() for group in os.getenv("GITLAB_GROUPS", "").split(',') if group.strip()]
-        
-        self.AZURE_DEVOPS_ORG_ENV = os.getenv("AZURE_DEVOPS_ORG")
-        self.AZURE_DEVOPS_API_URL_ENV = os.getenv("AZURE_DEVOPS_API_URL", "https://dev.azure.com")
-        self.AZURE_DEVOPS_TARGETS_RAW_ENV = [t.strip() for t in os.getenv("AZURE_DEVOPS_TARGETS", "").split(',') if t.strip()]
-
-        hours_per_commit_str = os.getenv("HOURS_PER_COMMIT")
-        if hours_per_commit_str is not None:
-            try:
-                self.HOURS_PER_COMMIT_ENV = float(hours_per_commit_str)
-            except ValueError:
-                logging.getLogger(__name__).warning(
-                    f"Invalid value for HOURS_PER_COMMIT environment variable: '{hours_per_commit_str}'. "
-                    "This setting will be ignored unless overridden by CLI."
-                )
-                self.HOURS_PER_COMMIT_ENV = None
-        else:
-            self.HOURS_PER_COMMIT_ENV = None
-        
-        try:
-            self.SCANNER_MAX_WORKERS_ENV = int(os.getenv("SCANNER_MAX_WORKERS", "5")) # Default to 5 workers
-            if self.SCANNER_MAX_WORKERS_ENV <= 0: # Ensure it's a positive number
-                self.SCANNER_MAX_WORKERS_ENV = 5 
-        except ValueError:
-            logging.getLogger(__name__).warning(f"Invalid SCANNER_MAX_WORKERS value in .env. Defaulting to 5.")
-            self.SCANNER_MAX_WORKERS_ENV = 5
-
-
-# --- Logging Setup ---
-def setup_global_logging(log_level=logging.INFO):
-    log_directory = "logs"
-    log_file = os.path.join(log_directory, "generate_codejson_main.log")
-    os.makedirs(log_directory, exist_ok=True)
-    log_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
-    logger = logging.getLogger()
-    if logger.hasHandlers():
-        logger.handlers.clear()
-    logger.setLevel(log_level)
-
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(log_format)
-    logger.addHandler(console_handler)
-
-    try:
-        file_handler = logging.handlers.RotatingFileHandler(
-            log_file, maxBytes=5*1024*1024, backupCount=3, encoding='utf-8'
-        )
-        file_handler.setFormatter(log_format)
-        logger.addHandler(file_handler)
-        logging.info(f"Global logging configured. Main log: {log_file}")
-    except Exception as e:
-        logging.error(f"Failed to configure global file logging to {log_file}: {e}")
-        logging.info("Global logging configured: Outputting to console only.")
-
-def setup_target_logger(logger_name, log_file_name, output_dir, level=logging.INFO):
-    log_dir = os.path.join(output_dir, LOG_DIR_NAME)
-    os.makedirs(log_dir, exist_ok=True)
-    log_file_path = os.path.join(log_dir, log_file_name)
-
-    logger = logging.getLogger(logger_name)
-    logger.setLevel(level)
-    
-    if logger.hasHandlers():
-        for handler in list(logger.handlers):
-            logger.removeHandler(handler)
-            handler.close()
-    logger.propagate = False
-
-    fh = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
-    fh.setLevel(level)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    fh.setFormatter(formatter)
-    logger.addHandler(fh)
-    
-    return logger
-
-# --- File Operations ---
-def write_json_file(data, filepath):
-    try:
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-        logging.getLogger(__name__).info(f"Successfully wrote data to {filepath}")
-        return True
-    except Exception as e:
-        logging.getLogger(__name__).error(f"Error writing JSON to {filepath}: {e}", exc_info=True)
-        return False
-
-def backup_existing_file(output_dir, filename):
-    logger = logging.getLogger(__name__)
-    current_filepath = os.path.join(output_dir, filename)
-    if os.path.isfile(current_filepath):
-        try:
-            now = datetime.now()
-            timestamp_str = now.strftime("%Y%m%d_%H%M%S")
-            base_name, ext_dot = os.path.splitext(filename)
-            ext = ext_dot if ext_dot else ""
-            backup_filename = f"{base_name}_{timestamp_str}{ext}"
-            backup_filepath = os.path.join(output_dir, backup_filename)
-            counter = 1
-            while os.path.exists(backup_filepath):
-                 backup_filename = f"{base_name}_{timestamp_str}_{counter}{ext}"
-                 backup_filepath = os.path.join(output_dir, backup_filename)
-                 counter += 1
-            os.rename(current_filepath, backup_filepath)
-            logger.info(f"Backed up existing '{filename}' to '{backup_filename}'.")
-        except Exception as e:
-            logger.error(f"Error backing up '{filename}': {e}", exc_info=True)
-
-def backup_file_and_leave_original(output_dir, filename):
-    """
-    Creates a backup copy of an existing file while leaving the original file intact.
-    
-    Args:
-        output_dir (str): Directory where the file is located
-        filename (str): Name of the file to back up
-    """
-    logger = logging.getLogger(__name__)
-    current_filepath = os.path.join(output_dir, filename)
-    if os.path.isfile(current_filepath):
-        try:
-            now = datetime.now()
-            timestamp_str = now.strftime("%Y%m%d_%H%M%S")
-            base_name, ext_dot = os.path.splitext(filename)
-            ext = ext_dot if ext_dot else ""
-            backup_filename = f"{base_name}_{timestamp_str}{ext}"
-            backup_filepath = os.path.join(output_dir, backup_filename)
-            counter = 1
-            while os.path.exists(backup_filepath):
-                 backup_filename = f"{base_name}_{timestamp_str}_{counter}{ext}"
-                 backup_filepath = os.path.join(output_dir, backup_filename)
-                 counter += 1
-            
-            # Use shutil.copy2 instead of os.rename to preserve the original file
-            import shutil
-            shutil.copy2(current_filepath, backup_filepath)
-            
-            logger.info(f"Backed up existing '{filename}' to '{backup_filename}' (original preserved).")
-        except Exception as e:
-            logger.error(f"Error backing up '{filename}': {e}", exc_info=True)
-
-# --- Data Processing and Inference ---
-def parse_semver(tag_name):
-    if not tag_name or not isinstance(tag_name, str): return None
-    cleaned_tag = re.sub(r'^(v|release-|Release-|jenkins-\S+-)', '', tag_name.strip())
-    if PACKAGING_AVAILABLE:
-        try:
-            return packaging_version.parse(cleaned_tag)
-        except packaging_version.InvalidVersion:
-            return None
-    else:
-        if re.match(r'^\d+\.\d+(\.\d+)?($|[.-])', cleaned_tag):
-             return cleaned_tag
-        return None
-
-def infer_version(repo_data, logger_instance):
-    api_tags = repo_data.get('_api_tags', []) 
-    if not api_tags: return "N/A"
-    parsed_versions, parsed_prereleases = [], []
-    for tag_name in api_tags:
-        parsed = parse_semver(tag_name)
-        if parsed:
-            if PACKAGING_AVAILABLE:
-                if not parsed.is_prerelease: parsed_versions.append(parsed)
-                else: parsed_prereleases.append(parsed)
-            else: # Regex fallback
-                 parsed_versions.append(parsed)
-
-    if parsed_versions:
-        try:
-            latest_version = sorted(parsed_versions)[-1]
-            return str(latest_version)
-        except TypeError as te:
-            logger_instance.warning(
-                f"TypeError while sorting versions for {repo_data.get('name')}: {te}. "
-                f"Versions list (first 5 elements): {[str(v) for v in parsed_versions[:5]]}. "
-                f"Types in list (first 5 elements): {[type(v).__name__ for v in parsed_versions[:5]]}. "
-                "Returning first parsed version if available."
-            )
-            return str(parsed_versions[0]) if parsed_versions else "N/A"
-    if parsed_prereleases and PACKAGING_AVAILABLE: 
-        try:
-            latest_prerelease = sorted(parsed_prereleases)[-1]
-            return str(latest_prerelease)
-        except TypeError:
-             logger_instance.warning(f"Could not sort pre-releases for {repo_data.get('name')}. Returning first parsed pre-release if available.")
-             return str(parsed_prereleases[0]) if parsed_prereleases else "N/A"
-
-    logger_instance.debug(f"No suitable semantic version in tags for {repo_data.get('name')}")
-    return "N/A"
-
-def infer_status(repo_data, logger_instance):
-    repo_name_for_log = f"{repo_data.get('organization', '?')}/{repo_data.get('name', '?')}"
-    if repo_data.get('archived', False): 
-        logger_instance.debug(f"Status for {repo_name_for_log}: 'archived' (API flag)")
-        return "archived"
-    status_from_readme = repo_data.get('_status_from_readme') 
-    if status_from_readme and status_from_readme in VALID_README_STATUSES:
-        logger_instance.debug(f"Status for {repo_name_for_log}: '{status_from_readme}' (README)")
-        return status_from_readme
-    last_modified_str = repo_data.get('date', {}).get('lastModified')
-    if last_modified_str:
-        try:
-            last_modified_dt = datetime.fromisoformat(last_modified_str.replace('Z', '+00:00'))
-            if last_modified_dt.tzinfo is None:
-                 last_modified_dt = last_modified_dt.replace(tzinfo=timezone.utc)
-            if (datetime.now(timezone.utc) - last_modified_dt) > timedelta(days=INACTIVITY_THRESHOLD_YEARS * 365.25):
-                logger_instance.debug(f"Status for {repo_name_for_log}: 'inactive' (> {INACTIVITY_THRESHOLD_YEARS} years)")
-                return "inactive"
-        except ValueError:
-            logger_instance.warning(f"Could not parse lastModified date string '{last_modified_str}' for {repo_name_for_log}.")
-        except Exception as e:
-            logger_instance.error(f"Date comparison error for {repo_name_for_log}: {e}", exc_info=True)
-
-    logger_instance.debug(f"Status for {repo_name_for_log}: 'development' (default)")
-    return "development"
-
-def process_and_finalize_repo_data_list(
-    repos_list: List[Dict[str, Any]], 
-    cfg: Config, 
-    repo_id_mapping_mgr: RepoIdMappingManager, # Updated parameter name
-    exemption_mgr: ExemptionLogger, 
-    target_logger: logging.Logger,
-    platform: str # Added platform for prefixing
-) -> List[Dict[str, Any]]:
-    finalized_list = []
-    if not repos_list:
-        return []
-
-    for repo_data in repos_list:
-        repo_name = repo_data.get('name', 'UnknownRepo')
-        org_name = repo_data.get('organization', 'UnknownOrg')
-        is_private_or_internal = repo_data.get('repositoryVisibility', '').lower() in ['private', 'internal']
-        platform_repo_id = str(repo_data.get('repo_id', '')) # Get the platform's repo_id
-
-        target_logger.debug(f"Finalizing data for repo: {org_name}/{repo_name}")
-
-        if 'processing_error' in repo_data:
-            target_logger.error(f"Skipping finalization for {org_name}/{repo_name} due to previous error: {repo_data['processing_error']}")
-            finalized_list.append({
-                "name": repo_name,
-                "organization": org_name,
-                "processing_error": repo_data['processing_error']
-            })
-            continue
-
-        try:
-            prefixed_repo_id_for_code_json = None
-            if is_private_or_internal and platform_repo_id:
-                private_emails_data = repo_data.get('_private_contact_emails', []) # Renamed for clarity
-                contact_emails_for_csv = '' # Initialize as empty string
-
-                if isinstance(private_emails_data, list):
-                    # Filter out None or empty strings before joining
-                    valid_emails = [email for email in private_emails_data if email and isinstance(email, str)]
-                    contact_emails_for_csv = ';'.join(valid_emails)
-                elif isinstance(private_emails_data, str): # Should ideally not happen if _private_contact_emails is always a list
-                    contact_emails_for_csv = private_emails_data
-                
-                # Ensure entry in mapping file (stores raw platform_repo_id and URL)
-                prefixed_repo_id_for_code_json = f"{platform.lower()}_{platform_repo_id}" # Create prefixed ID first
-                repo_id_mapping_mgr.get_or_create_mapping_entry(
-                    platform_repo_id=platform_repo_id, # Pass the original platform_repo_id
-                    organization=org_name,
-                    repo_name=repo_name, 
-                    repository_url=repo_data.get('repositoryURL', ''), # Pass the URL
-                    contact_emails_str_arg=contact_emails_for_csv, # Pass the semicolon-separated string
-                    platform_prefix=platform.lower() # Pass the prefix
-                )
-                
-                # Create prefixed ID for code.json's privateID field
-                repo_data['privateID'] = prefixed_repo_id_for_code_json 
-            else:
-                if is_private_or_internal and not platform_repo_id:
-                    target_logger.warning(f"Repo {org_name}/{repo_name} is private/internal but has no platform_repo_id. Cannot set 'privateID' field or map.")
-                repo_data.pop('privateID', None) # Remove if not private/internal or no repo_id
-
-            usage_type = repo_data.get('permissions', {}).get('usageType')
-            is_exempt = usage_type and usage_type.lower().startswith('exempt')
-
-            if is_private_or_internal:
-                if is_exempt and cfg.EXEMPTED_NOTICE_URL:
-                    repo_data['repositoryURL'] = cfg.EXEMPTED_NOTICE_URL
-                    target_logger.debug(f"Private/Internal & Exempt repo {repo_name}: Using EXEMPTED_NOTICE_URL for repositoryURL.")
-                elif cfg.INSTRUCTIONS_URL:
-                    repo_data['repositoryURL'] = cfg.INSTRUCTIONS_URL
-                    target_logger.debug(f"Private/Internal repo {repo_name}: Using INSTRUCTIONS_URL for repositoryURL.")
-                else:
-                    target_logger.warning(f"Private/Internal repo {repo_name}: Neither EXEMPTED_NOTICE_URL (if exempt) nor INSTRUCTIONS_URL is set. Actual repo URL will be used (may expose internal path).")
-            
-            if is_exempt:
-                exemption_text = repo_data.get('permissions', {}).get('exemptionText', '')
-                # Log exemption with the prefixed_repo_id if available, otherwise a placeholder
-                log_id_for_exemption = None 
-                if prefixed_repo_id_for_code_json: # This is set for private/internal with a valid platform_repo_id
-                    log_id_for_exemption = prefixed_repo_id_for_code_json
-                # For private/internal repos that are exempt but somehow missing a platform_repo_id (edge case)
-                elif is_private_or_internal and not prefixed_repo_id_for_code_json: 
-                    log_id_for_exemption = f"NoPlatformRepoID-{platform.lower()}-{org_name}-{repo_name}"
-                # No 'else' for public, as 'is_exempt' will be false for them.
-                if not log_id_for_exemption: 
-                    if is_private_or_internal: # Fallback if private/internal but no platform_repo_id
-                         log_id_for_exemption = f"NoPlatformRepoID-{platform.lower()}-{org_name}-{repo_name}"
-                    # For public, no privateID is set, so no specific ID needed for exemption log unless desired
-                exemption_mgr.log_exemption(log_id_for_exemption or f"Public-{org_name}-{repo_name}", repo_name, usage_type, exemption_text)
-
-            # Default organization for ALL repositories (public or private)
-            # if ExemptionProcessor flagged its current organization value as generic.
-            if repo_data.get('_is_generic_organization', False):
-                old_org_for_log = repo_data.get('organization', 'N/A')
-                repo_data['organization'] = cfg.AGENCY_NAME # Set the default organization
-                target_logger.info(f"Repo: {org_name}/{repo_name} has generic org ('{old_org_for_log}'). Defaulting organization to '{cfg.AGENCY_NAME}'.")
-
-            repo_data['status'] = infer_status(repo_data, target_logger)
-            if repo_data.get('version', 'N/A') == 'N/A':
-                 repo_data['version'] = infer_version(repo_data, target_logger)
-
-            if 'date' in repo_data and isinstance(repo_data['date'], dict):
-                for key, value in list(repo_data['date'].items()):
-                    if isinstance(value, datetime):
-                        repo_data['date'][key] = value.isoformat()
-                    elif value is None:
-                         repo_data['date'].pop(key)
-                if not repo_data['date']:
-                    repo_data.pop('date')
-
-            repo_data.pop('_api_tags', None)
-            repo_data.pop('archived', None) 
-            repo_data.pop('_status_from_readme', None) 
-            repo_data.pop('_is_generic_organization', None)
-            # leave on the _private_contact_emails field as it is used when caching the repo data
-
-            cleaned_repo_data = {}
-            for k, v in repo_data.items():
-                if v is None:
-                    continue 
-                if isinstance(v, dict):
-                    cleaned_v = {nk: nv for nk, nv in v.items() if nv is not None}
-                    if cleaned_v:
-                        cleaned_repo_data[k] = cleaned_v
-                elif isinstance(v, list):
-                     cleaned_list = [item for item in v if item is not None]
-                     if cleaned_list: # Only add if list is not empty after cleaning
-                        cleaned_repo_data[k] = cleaned_list
-                else:
-                    cleaned_repo_data[k] = v
-            finalized_list.append(cleaned_repo_data)
-
-        except Exception as e:
-            target_logger.error(f"Error during final processing for {org_name}/{repo_name}: {e}", exc_info=True)
-            finalized_list.append({
-                "name": repo_name,
-                "organization": org_name,
-                "processing_error": f"Finalization stage: {e}"
-            })
-    return finalized_list
 
 # --- Core Scanning and Merging Functions ---
 def scan_and_process_single_target(
@@ -480,6 +75,16 @@ def scan_and_process_single_target(
     platform_url: Optional[str] = None,
     hours_per_commit: Optional[float] = None 
 ) -> bool:
+    """ 
+    This function orchestrates the scanning of a specific target (like a GitHub organization or GitLab group) on a given platform. 
+    It calls the appropriate platform connector to fetch repository data, potentially using a previous scan's intermediate file for 
+    caching. After fetching, it finalizes the repository data (handling private IDs, exemptions, URL updates, etc.) and then writes 
+    the processed information to a new intermediate JSON file for that specific target. It also manages target-specific logging and 
+    error handling for the scan of that single target.
+    NOTE: For subsequent scans, the script uses the generated intermediate file from the previous run for a given target as a cache. 
+          If a repository within that target hasn't changed (determined by its commit SHA), its data is loaded from this cached file, 
+          significantly speeding up future runs by avoiding redundant API calls and data processing.
+    """
     target_logger_name = f"{platform}.{target_identifier.replace('/', '_').replace('.', '_')}"
     target_log_filename = f"{platform}_{target_identifier.replace('/', '_').replace('.', '_')}.log"
     target_logger = setup_target_logger(target_logger_name, target_log_filename, cfg.OUTPUT_DIR)
@@ -598,7 +203,16 @@ def scan_and_process_single_target(
         target_logger.info(f"--- Finished scan for {platform} target: {target_identifier} (Write Error) ---")
         return False 
 
-def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> bool: # Removed repo_id_mapping_mgr
+def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> bool: # Removed repo_id_mapping_mgrNOTE
+    """
+    Merges intermediate catalog files into a single catalog. 
+    Args:
+        cfg (Config): Configuration object.
+        main_logger (logging.Logger): Logger for main operations.
+        repo_id_mapping_mgr (RepoIdMappingManager): Manager for repository ID mappings. (privateid's)
+        returns:
+        bool: True if merge operation is successful, False otherwise.
+    """
     main_logger.info("--- Starting Merge Operation ---")
     search_path = os.path.join(cfg.OUTPUT_DIR, INTERMEDIATE_FILE_PATTERN)
     intermediate_files = glob.glob(search_path)
@@ -684,6 +298,51 @@ def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> boo
     if write_json_file(final_code_json_structure, final_catalog_filepath):
         main_logger.info(f"Successfully merged {len(processed_projects_for_final_catalog)} projects into {final_catalog_filepath}")
         main_logger.info("--- Merge Operation Finished Successfully ---")
+
+        # --- Calculate and Log Final Statistics ---
+        stats = {
+            "total_projects_in_catalog": 0,
+            "public_projects_count": 0,
+            "private_projects_count": 0, # Includes 'internal' after normalization
+            "exempted_projects_count": 0,
+            "exemptions_by_type_overall": {}, # e.g., {"exemptByLaw": 10, "exemptNonCode": 5}
+            "exempted_count_by_organization": {} # e.g., {"OrgA": 5, "OrgB": 2}
+        }
+
+        for project_data in final_code_json_structure["projects"]:
+            if "processing_error" in project_data and len(project_data.keys()) <= 3:
+                # This was an error placeholder, not a real project entry for catalog stats
+                continue
+
+            stats["total_projects_in_catalog"] += 1
+            org_name = project_data.get("organization", "UnknownOrganization")
+            # Visibility here is after normalization in the loop above
+            visibility = project_data.get("repositoryVisibility", "").lower()
+            usage_type = project_data.get("permissions", {}).get("usageType", "")
+
+            if visibility == "public":
+                stats["public_projects_count"] += 1
+            elif visibility == "private": # 'internal' has been normalized to 'private'
+                stats["private_projects_count"] += 1
+
+            if usage_type and usage_type.lower().startswith("exempt"):
+                stats["exempted_projects_count"] += 1
+                stats["exemptions_by_type_overall"][usage_type] = stats["exemptions_by_type_overall"].get(usage_type, 0) + 1
+                stats["exempted_count_by_organization"][org_name] = stats["exempted_count_by_organization"].get(org_name, 0) + 1
+        
+        main_logger.info("--- Final Catalog Statistics ---")
+        main_logger.info(f"Total Projects in Catalog: {stats['total_projects_in_catalog']}")
+        main_logger.info(f"  Public Projects: {stats['public_projects_count']}")
+        main_logger.info(f"  Private Projects (incl. internal): {stats['private_projects_count']}")
+        main_logger.info(f"Total Exempted Projects: {stats['exempted_projects_count']}")
+        if stats["exempted_projects_count"] > 0:
+            main_logger.info("  Exemptions by Type (Overall):")
+            for ex_type, count in sorted(stats["exemptions_by_type_overall"].items()):
+                main_logger.info(f"    - {ex_type}: {count}")
+            main_logger.info("  Exempted Count by Organization:")
+            for org, count in sorted(stats["exempted_count_by_organization"].items()):
+                main_logger.info(f"    - {org}: {count}")
+        # --- End Final Statistics ---
         return not merge_errors 
     else:
         main_logger.error(f"Failed to write final merged catalog to {final_catalog_filepath}")
@@ -747,48 +406,6 @@ def _get_and_validate_token(
     main_logger.info(f"Using {platform_name} token from {source}.")
     return token_to_use
 
-# --- Helper for Time Formatting ---
-def format_duration(total_seconds: float) -> str:
-    """Converts total seconds into a string of hours, minutes, and rounded seconds."""
-    if total_seconds < 0: # Should not happen with time differences
-        return "0 seconds"
-
-    # Round the total_seconds first to avoid cascading rounding issues if very close to a minute/hour boundary
-    # For example, 59.999 seconds should become 1 minute, 0 seconds, not 0 minutes, 60 seconds.
-    # However, for display purposes, it's often better to round at the final step (seconds display).
-    # Let's stick to rounding only the final seconds part for now as per the request.
-
-    hours = int(total_seconds // 3600)
-    remaining_seconds_after_hours = total_seconds % 3600
-    minutes = int(remaining_seconds_after_hours // 60)
-    
-    # Round the final seconds component
-    final_seconds_float = remaining_seconds_after_hours % 60
-    rounded_seconds = int(round(final_seconds_float))
-
-    # Adjust minutes and hours if rounding seconds caused a carry-over
-    if rounded_seconds == 60:
-        rounded_seconds = 0
-        minutes += 1
-        if minutes == 60:
-            minutes = 0
-            hours += 1
-
-    parts = []
-    if hours > 0:
-        parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
-    if minutes > 0:
-        parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
-    
-    # Always include seconds if they are non-zero, or if no other parts are present.
-    # Or if hours/minutes are present, include seconds even if 0 for consistency.
-    if rounded_seconds > 0 or not parts or (hours > 0 or minutes > 0):
-        parts.append(f"{rounded_seconds} second{'s' if rounded_seconds != 1 else ''}")
-    
-    if not parts: # This case handles if total_seconds was < 0.5 and rounded to 0 seconds
-        return "0 seconds"
-        
-    return ", ".join(parts)
 # --- Main CLI Function ---
 def main_cli(): 
     script_start_time = time.time() # Record the start time of the script

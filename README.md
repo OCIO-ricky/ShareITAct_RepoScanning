@@ -1,7 +1,12 @@
 # 🏛️ Share IT Act – Repository Scanning Tool
 
-This repository contains a Python-based scanning utility designed to discover, analyze, and catalog custom-developed source code across CDC repositories. The tool supports compliance with the [SHARE IT Act (Public Law 118-187)](https://www.congress.gov/bill/118th-congress/house-bill/1390) by generating machine-readable `code.json` metadata following [code.gov schema v2.0](https://code.gov/meta/schema/2.0.0/schema.json).
+This repository contains a Python-based scanning utility designed to discover, analyze, and catalog custom-developed source code across CDC repositories. The tool supports compliance with the [SHARE IT Act (Public Law 118-187)](https://www.congress.gov/bill/118th-congress/house-bill/1390) by generating machine-readable `code.json` metadata following the [code.gov schema v2.0](https://code.gov/meta/schema/2.0.0/schema.json).
 
+This document outlines how to set up and run the repository scanning tool. **The preferred and most efficient method is to use Docker**, as this approach simplifies the setup, enhances portability, and allows for **concurrent scans** across multiple platforms (e.g., GitHub, GitLab, and Azure DevOps simultaneously).
+
+For associated business-side documentation and process details, please visit the internal CDC's EA site: [https://ocio-ricky.github.io/ShareIT-Act/](https://ocio-ricky.github.io/ShareIT-Act/)
+
+---
 ## 🚀 Features
 
 - Leverages AI to:

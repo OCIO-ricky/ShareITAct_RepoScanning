@@ -116,10 +116,19 @@ def _get_file_content_azure(git_client: GitClient, repository_id: str, project_n
     return None
 
 
-def _get_readme_content_azure_devops(connection, repo_id, project_name, cfg_obj: Optional[Any], dynamic_delay_to_apply: float, num_workers: int = 1) -> tuple[Optional[str], Optional[str]]:
+def _get_readme_content_azure_devops(
+    git_client: GitClient,
+    repo_id: str,
+    project_name: str,
+    repo_default_branch: Optional[str],
+    repo_web_url: str,
+    cfg_obj: Optional[Any],
+    dynamic_delay_to_apply: float,
+    num_workers: int = 1
+) -> tuple[Optional[str], Optional[str]]:
     common_readme_names = ["README.md", "README.txt", "README"]
     if not repo_default_branch:
-        logger.warning(f"Cannot fetch README for repo ID {repository_id} in {project_name}: No default branch identified.")
+        logger.warning(f"Cannot fetch README for repo ID {repo_id} in {project_name}: No default branch identified.")
         return None, None
     for readme_name in common_readme_names:
         content = _get_file_content_azure(git_client, repository_id, project_name, readme_name, repo_default_branch)
@@ -127,36 +136,51 @@ def _get_readme_content_azure_devops(connection, repo_id, project_name, cfg_obj:
             url_readme_name = readme_name.lstrip('/')
             branch_name_for_url = repo_default_branch.replace('refs/heads/', '')
             readme_url = f"{repo_web_url}?path=/{url_readme_name}&version=GB{branch_name_for_url}&_a=contents"
-            logger.debug(f"Successfully fetched README '{readme_name}' for repo ID {repository_id}")
+            logger.debug(f"Successfully fetched README '{readme_name}' for repo ID {repo_id}")
             if dynamic_delay_to_apply > 0:
                 logger.debug(f"Azure DevOps applying SYNC post-API call delay (get README file): {dynamic_delay_to_apply:.2f}s")
                 time.sleep(dynamic_delay_to_apply)
             return content, readme_url
-    logger.debug(f"No common README file found for repo ID {repository_id}")
+    logger.debug(f"No common README file found for repo ID {repo_id}")
     return None, None
 
-def _get_codeowners_content_azure_devops(connection, repo_id, project_name, cfg_obj: Optional[Any], dynamic_delay_to_apply: float, num_workers: int = 1) -> Optional[str]:
+def _get_codeowners_content_azure_devops(
+    git_client: GitClient,
+    repo_id: str,
+    project_name: str,
+    repo_default_branch: Optional[str],
+    cfg_obj: Optional[Any],
+    dynamic_delay_to_apply: float,
+    num_workers: int = 1
+) -> Optional[str]:
     codeowners_locations = ["CODEOWNERS", ".azuredevops/CODEOWNERS", "docs/CODEOWNERS", ".vsts/CODEOWNERS"]
     if not repo_default_branch:
-        logger.warning(f"Cannot fetch CODEOWNERS for repo ID {repository_id} in {project_name}: No default branch identified.")
+        logger.warning(f"Cannot fetch CODEOWNERS for repo ID {repo_id} in {project_name}: No default branch identified.")
         return None
     for location in codeowners_locations:
         normalized_location = location.lstrip('/')
         content = _get_file_content_azure(git_client, repository_id, project_name, normalized_location, repo_default_branch)
         if content:
-            logger.debug(f"Successfully fetched CODEOWNERS from '{location}' for repo ID {repository_id}")
+            logger.debug(f"Successfully fetched CODEOWNERS from '{location}' for repo ID {repo_id}")
             if dynamic_delay_to_apply > 0:
                 logger.debug(f"Azure DevOps applying SYNC post-API call delay (get CODEOWNERS file): {dynamic_delay_to_apply:.2f}s")
                 time.sleep(dynamic_delay_to_apply)
             return content
-    logger.debug(f"No CODEOWNERS file found in standard locations for repo ID {repository_id}")
+    logger.debug(f"No CODEOWNERS file found in standard locations for repo ID {repo_id}")
     return None
 
-def _fetch_tags_azure_devops(connection, repo_id, project_name, cfg_obj: Optional[Any], dynamic_delay_to_apply: float, num_workers: int = 1) -> List[str]:
+def _fetch_tags_azure_devops(
+    git_client: GitClient,
+    repo_id: str,
+    project_name: str,
+    cfg_obj: Optional[Any],
+    dynamic_delay_to_apply: float,
+    num_workers: int = 1
+) -> List[str]:
     if not AZURE_SDK_AVAILABLE: return []
     tag_names = []
     try:
-        logger.debug(f"Fetching tags for repo ID: {repository_id} in project {project_name}")
+        logger.debug(f"Fetching tags for repo ID: {repo_id} in project {project_name}")
         refs = git_client.get_refs(repository_id=repository_id, project=project_name, filter="tags/")
         if dynamic_delay_to_apply > 0:
             logger.debug(f"Azure DevOps applying SYNC post-API call delay (get tags/refs): {dynamic_delay_to_apply:.2f}s")
@@ -164,11 +188,11 @@ def _fetch_tags_azure_devops(connection, repo_id, project_name, cfg_obj: Optiona
         for ref in refs:
             if ref.name and ref.name.startswith("refs/tags/"):
                 tag_names.append(ref.name.replace("refs/tags/", ""))
-        logger.debug(f"Found {len(tag_names)} tags for repo ID {repository_id}")
+        logger.debug(f"Found {len(tag_names)} tags for repo ID {repo_id}")
     except AzureDevOpsServiceError as e:
-        logger.error(f"Azure DevOps API error fetching tags for repo ID {repository_id}: {e}", exc_info=False)
+        logger.error(f"Azure DevOps API error fetching tags for repo ID {repo_id}: {e}", exc_info=False)
     except Exception as e:
-        logger.error(f"Unexpected error fetching tags for repo ID {repository_id}: {e}", exc_info=True)
+        logger.error(f"Unexpected error fetching tags for repo ID {repo_id}: {e}", exc_info=True)
     return tag_names
 
 def _process_single_azure_devops_repository(
@@ -259,10 +283,25 @@ def _process_single_azure_devops_repository(
                 time.sleep(dynamic_post_api_call_delay_seconds)
         except Exception as proj_vis_err:
             logger.warning(f"Could not determine project visibility for {repo_full_name}: {proj_vis_err}. Defaulting to 'private'.")
-
-        readme_content, readme_html_url = _get_readme_content_azure_devops(connection, repo.id, project_name, cfg_obj, dynamic_post_api_call_delay_seconds, num_workers)
-        codeowners_content = _get_codeowners_content_azure_devops(connection, repo.id, project_name, cfg_obj, dynamic_post_api_call_delay_seconds, num_workers)
-        repo_git_tags = _fetch_tags_azure_devops(connection, repo.id, project_name, cfg_obj, dynamic_post_api_call_delay_seconds, num_workers)
+        
+        readme_content, readme_html_url = _get_readme_content_azure_devops(
+            git_client=git_client,
+            repo_id=repo.id,
+            project_name=project_name,
+            repo_default_branch=repo.default_branch,
+            repo_web_url=repo.web_url,
+            cfg_obj=cfg_obj,
+            dynamic_delay_to_apply=dynamic_post_api_call_delay_seconds,
+            num_workers=num_workers
+        )
+        codeowners_content = _get_codeowners_content_azure_devops(
+            git_client=git_client, repo_id=repo.id, project_name=project_name, repo_default_branch=repo.default_branch,
+            cfg_obj=cfg_obj, dynamic_delay_to_apply=dynamic_post_api_call_delay_seconds, num_workers=num_workers
+        )
+        repo_git_tags = _fetch_tags_azure_devops(
+            git_client=git_client, repo_id=repo.id, project_name=project_name,
+            cfg_obj=cfg_obj, dynamic_delay_to_apply=dynamic_post_api_call_delay_seconds, num_workers=num_workers
+        )
 
         repo_data.update({
             "description": repo.project.description if repo.project and repo.project.description else "",
@@ -270,8 +309,8 @@ def _process_single_azure_devops_repository(
             "repositoryVisibility": repo_visibility, "status": "development", "version": "N/A", "laborHours": 0,
             "languages": [], "tags": [], 
             "date": {"created": created_at_iso, "lastModified": pushed_at_iso},
-            "permissions": {"usageType": "openSource", "exemptionText": None, "licenses": []},
-            "contact": {}, "contractNumber": None, "readme_content": readme_content_str,
+            "permissions": {"usageType": "openSource", "exemptionText": None, "licenses": []}, # readme_content_str was a typo
+            "contact": {}, "contractNumber": None, "readme_content": readme_content, # Use the fetched readme_content
             "_codeowners_content": codeowners_content_str,
             "repo_id": repo.id, # Add repo_id back
             "readme_url": readme_html_url, 
@@ -331,6 +370,41 @@ def _process_single_azure_devops_repository(
         logger.error(f"Unexpected error processing repo {repo.name} in {project_name}: {e_repo}. Skipping.", exc_info=True)
         return {"name": repo.name, "organization": organization_name, "_azure_project_name": project_name, "processing_error": f"Unexpected Error: {e_repo}"}
 
+def _setup_azure_devops_credentials(
+    pat_token: Optional[str],
+    spn_client_id: Optional[str],
+    spn_client_secret: Optional[str],
+    spn_tenant_id: Optional[str],
+    logger_instance: logging.Logger
+) -> Tuple[Optional[Any], str]:
+    """
+    Sets up Azure DevOps credentials using either Service Principal or PAT.
+    Returns a tuple of (credentials_object, auth_method_string).
+    Returns (None, "") if authentication setup fails.
+    """
+    if not AZURE_SDK_AVAILABLE:
+        logger_instance.error("Azure SDK not available, cannot set up credentials.")
+        return None, ""
+
+    if not are_spn_details_placeholders(spn_client_id, spn_client_secret, spn_tenant_id):
+        logger_instance.info("Attempting Azure DevOps authentication using Service Principal.")
+        if not ServicePrincipalCredentials:
+            logger_instance.error("ServicePrincipalCredentials class not available. Cannot use SPN auth.")
+            return None, ""
+        credentials = ServicePrincipalCredentials(
+            client=spn_client_id, secret=spn_client_secret, tenant=spn_tenant_id, resource=AZURE_DEVOPS_RESOURCE_ID
+        )
+        return credentials, "Service Principal"
+    elif not is_placeholder_token(pat_token):
+        logger_instance.info("Attempting Azure DevOps authentication using Personal Access Token (PAT).")
+        if not BasicAuthentication:
+            logger_instance.error("BasicAuthentication class not available. Cannot use PAT auth.")
+            return None, ""
+        return BasicAuthentication('', pat_token), "PAT"
+    else:
+        logger_instance.error("Azure DevOps authentication failed: Neither valid SPN details nor a PAT were provided, or they are placeholders.")
+        return None, ""
+
 def fetch_repositories(
     token: Optional[str],
     target_path: str,
@@ -342,9 +416,9 @@ def fetch_repositories(
     max_workers: int = 5,  # Ensure this parameter exists
     cfg_obj: Optional[Any] = None,
     previous_scan_output_file: Optional[str] = None,
-    client_id: Optional[str] = None,
-    client_secret: Optional[str] = None,
-    tenant_id: Optional[str] = None
+    spn_client_id: Optional[str] = None, # Renamed for clarity to match internal usage
+    spn_client_secret: Optional[str] = None, # Renamed
+    spn_tenant_id: Optional[str] = None # Renamed
 ) -> list[dict]:
     """
     Fetches repository details from a specific Azure DevOps organization/project.
@@ -361,9 +435,9 @@ def fetch_repositories(
                      This affects rate limiting calculations.
         cfg_obj: Configuration object containing settings for API calls, delays, and exemption processing.
         previous_scan_output_file: Path to previous scan results for caching optimization.
-        client_id: Service Principal Client ID (alternative to token).
-        client_secret: Service Principal Client Secret (alternative to token).
-        tenant_id: Service Principal Tenant ID (alternative to token).
+        spn_client_id: Service Principal Client ID (alternative to token).
+        spn_client_secret: Service Principal Client Secret (alternative to token).
+        spn_tenant_id: Service Principal Tenant ID (alternative to token).
     
     Returns:
         A list of dictionaries, each containing processed metadata for a repository.
@@ -372,6 +446,11 @@ def fetch_repositories(
     if not AZURE_SDK_AVAILABLE:
         logger.error("Azure DevOps SDK not available. Skipping Azure DevOps scan.")
         return []
+    
+    if '/' not in target_path:
+        logger.error(f"Invalid Azure DevOps target_path format: '{target_path}'. Expected 'organization/project'.")
+        return []
+    organization_name, project_name = target_path.split('/', 1)
 
     # Parse the REPOS_CREATED_AFTER_DATE from cfg_obj
     repos_created_after_filter_date: Optional[datetime] = None
@@ -390,31 +469,16 @@ def fetch_repositories(
     organization_url = f"{azure_devops_api_url}/{organization_name}"
 
     processed_repo_list: List[Dict[str, Any]] = []
-    credentials = None
-    auth_method = ""
 
     try:
-        if not are_spn_details_placeholders(spn_client_id, spn_client_secret, spn_tenant_id):
-            logger.info("Attempting Azure DevOps authentication using Service Principal.")
-            if not ServicePrincipalCredentials: 
-                logger.error("ServicePrincipalCredentials class not available. Cannot use SPN auth.")
-                return []
-            credentials = ServicePrincipalCredentials(
-                client=spn_client_id,
-                secret=spn_client_secret,
-                tenant=spn_tenant_id,
-                resource=AZURE_DEVOPS_RESOURCE_ID
-            )
-            auth_method = "Service Principal"
-        elif not is_placeholder_token(pat_token):
-            logger.info("Attempting Azure DevOps authentication using Personal Access Token (PAT).")
-            if not BasicAuthentication: 
-                logger.error("BasicAuthentication class not available. Cannot use PAT auth.")
-                return []
-            credentials = BasicAuthentication('', pat_token) 
-            auth_method = "PAT"
-        else:
-            logger.error("Azure DevOps authentication failed: Neither valid Service Principal details nor a PAT were provided via CLI, or they are placeholders.")
+        credentials, auth_method = _setup_azure_devops_credentials(
+            pat_token=token, # Assuming 'token' here is the PAT if SPN is not used
+            spn_client_id=spn_client_id,
+            spn_client_secret=spn_client_secret,
+            spn_tenant_id=spn_tenant_id,
+            logger_instance=logger
+        )
+        if not credentials:
             return []
 
         connection = Connection(base_url=organization_url, creds=credentials)
@@ -695,11 +759,10 @@ if __name__ == '__main__':
         counter_lock = threading.Lock()
         repositories = fetch_repositories(
             pat_token=test_pat_token,
-            spn_client_id=test_spn_client_id,
+            target_path=test_target_full_path, # Pass the combined path
+            spn_client_id=test_spn_client_id, # Pass SPN details
             spn_client_secret=test_spn_client_secret,
             spn_tenant_id=test_spn_tenant_id,
-            organization_name=test_org_name, 
-            project_name=test_proj_name, 
             processed_counter=counter, 
             processed_counter_lock=counter_lock, 
             debug_limit=None,
