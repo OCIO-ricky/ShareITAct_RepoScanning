@@ -21,7 +21,9 @@ import threading # For processed_counter_lock
 import glob
 from datetime import datetime, timezone # timedelta moved to script_utils
 from typing import List, Optional, Dict, Any
+from utils.script_utils import setup_global_logging
 
+setup_global_logging()
 # Import connectors - Ensure these files exist and are importable
 try:
     import clients.github_connector
@@ -36,7 +38,7 @@ except ImportError as e:
 try:
     from utils import Config, ExemptionLogger, RepoIdMappingManager
     from utils.script_utils import (
-        setup_global_logging, setup_target_logger,
+        setup_target_logger,
         write_json_file, backup_existing_file, backup_file_and_leave_original,
         parse_semver, infer_version, infer_status,
         process_and_finalize_repo_data_list,
