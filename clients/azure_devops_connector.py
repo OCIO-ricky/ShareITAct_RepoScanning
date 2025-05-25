@@ -697,9 +697,9 @@ def fetch_repositories(
                             if modified_match:
                                 modified_at_log_str = modified_at_dt.strftime('%Y-%m-%d %H:%M:%S %Z') if modified_at_dt else 'N/A'
                                 log_message_parts = [
-                                    f"ADO: Private repo '{repo_stub_full_name_for_log}' included "
+                                    f"ADO: Private repo '{repo_stub_full_name_for_log}' included. "
                                 ]
-                                log_message_parts.append(f"due to modified date ({modified_at_log_str }).")
+                                log_message_parts.append(f"Last modified on ({modified_at_log_str }).")
                                 logger.info(" ".join(log_message_parts))
                             else:
                                 # Skip this private repo

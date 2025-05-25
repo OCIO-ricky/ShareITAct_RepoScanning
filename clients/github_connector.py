@@ -674,12 +674,12 @@ def fetch_repositories(
                             modified_at_log_str = modified_at_dt.strftime('%Y-%m-%d %H:%M:%S %Z') if modified_at_dt else 'N/A'
                             
                             log_message_parts = [
-                                f"GitHub: Private repo '{repo_stub.full_name}' included "
+                                f"GitHub: Private repo '{repo_stub.full_name}' included. "
                             ]
                             if created_match:
-                                log_message_parts.append(f"due to Creation date ({created_at_log_str}).")
+                                log_message_parts.append(f"Created on ({created_at_log_str}).")
                             elif modified_match:
-                                log_message_parts.append(f"due to Modification date ({modified_at_log_str}).")
+                                log_message_parts.append(f"Last modified on ({modified_at_log_str}).")
                             logger.info(" ".join(log_message_parts))
                             # Repo passes, so it continues to further processing.
                         else:
