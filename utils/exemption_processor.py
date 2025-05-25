@@ -61,6 +61,8 @@ except ImportError:
     InvalidArgument, PermissionDenied = None, None # Define for type hinting and checks
     genai = None # Ensure genai is defined even if import fails
 
+print(f"DEBUG exemption_processor: AI_LIBRARY_IMPORTED = {AI_LIBRARY_IMPORTED}") # Temporary print
+
 logger = logging.getLogger(__name__)
 logger.info(f"Initial AI library import status (google.generativeai): {AI_LIBRARY_IMPORTED}")
 
@@ -134,6 +136,7 @@ logger.info(f"Using AI_DELAY_ENABLED value: {AI_DELAY_ENABLED}")
 
 AI_ORGANIZATION_ENABLED = os.getenv("AI_ORGANIZATION_ENABLED", "False").lower() == "true" # This can stay
 logger.info(f"AI Organization Inference Enabled: {AI_ORGANIZATION_ENABLED}")
+print(f"DEBUG AI Organization Inference Enabled: {AI_ORGANIZATION_ENABLED}")
 
 PRIVATE_CONTACT_EMAIL_DEFAULT = os.getenv("PRIVATE_REPO_CONTACT_EMAIL", "shareit@cdc.gov")
 PUBLIC_CONTACT_EMAIL_DEFAULT = os.getenv("DEFAULT_CONTACT_EMAIL", "shareit@cdc.gov")
@@ -189,6 +192,7 @@ else:
     logger.info("Google Generative AI library not imported. AI processing will be disabled for this module.")
     _MODULE_AI_ENABLED_STATUS = False
 logger.info(f"Module-level AI readiness (API key & library): {_MODULE_AI_ENABLED_STATUS}")
+print(f"Module-level AI readiness (API key & library): {_MODULE_AI_ENABLED_STATUS}")
 
 
 # --- Marker Regular Expressions ---
@@ -230,7 +234,7 @@ def _call_ai_for_organization(
 ) -> str | None:
     global _MODULE_AI_ENABLED_STATUS 
     if not _MODULE_AI_ENABLED_STATUS or not genai or not AI_ORGANIZATION_ENABLED: # Check AI_ORGANIZATION_ENABLED flag
-        logger.debug("AI processing, AI organization inference, or SSL verification is disabled. Skipping AI organization call.")
+        logger.debug("AI processing, AI organization inference is disabled. Skipping AI organization call.")
         return None
 
     repo_name_for_ai = repo_data.get('name', '')

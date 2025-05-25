@@ -19,6 +19,11 @@ from utils.delay_calculator import calculate_dynamic_delay # Import the calculat
 from utils.caching import load_previous_scan_data, PLATFORM_CACHE_CONFIG
 from utils.dateparse import parse_repos_created_after_date # Import the new utility
 from utils.labor_hrs_estimator import analyze_gitlab_repo_sync # Import the labor hrs estimator
+from utils.fetch_utils import (
+    fetch_optional_content_with_retry,
+    FETCH_ERROR_FORBIDDEN, FETCH_ERROR_NOT_FOUND, FETCH_ERROR_EMPTY_REPO_API,
+    FETCH_ERROR_API_ERROR, FETCH_ERROR_UNEXPECTED
+)
 
 
 import gitlab # python-gitlab library
@@ -58,6 +63,21 @@ logger = logging.getLogger(__name__)
 
 PLACEHOLDER_GITLAB_TOKEN = "YOUR_GITLAB_PAT" # Common placeholder for GitLab PAT
 
+# --- Constants for the fetch_utils utility ---
+GITLAB_EXCEPTION_MAP = {
+    'forbidden_exception': lambda e: isinstance(e, GitlabGetError) and e.response_code == 403,
+    'not_found_exception': lambda e: isinstance(e, GitlabGetError) and e.response_code == 404,
+    # GitLab's project.files.get() on an empty repo usually results in a 404 for the file.
+    # The project.empty_repo attribute is checked before calling these file fetches.
+    # So, a specific empty_repo_check_func for file content might not be strictly needed here
+    # if 404s are treated as NOT_FOUND. If the API could return a different error for
+    # file access on an empty repo that isn't a 404, this would need adjustment.
+    'empty_repo_check_func': lambda e: False, # Placeholder, as 404 is primary for missing files
+    'generic_platform_exception': gitlab.exceptions.GitlabError # Base for other GitLab errors
+}
+MAX_QUICK_CONTENT_RETRIES_GITLAB = 2
+QUICK_CONTENT_RETRY_DELAY_SECONDS_GITLAB = 3
+
 def is_placeholder_token(token: Optional[str]) -> bool:
     """Checks if the GitLab token is missing or a known placeholder."""
     return not token or token == PLACEHOLDER_GITLAB_TOKEN
@@ -68,62 +88,101 @@ def _get_readme_content_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_dela
     Fetches and decodes the README content for a given GitLab project object.
     Tries common README filenames. Returns content and URL.
     """
+    # Wrapper for the dynamic delay to be passed to the utility
+    def _gitlab_dynamic_delay_wrapper():
+        if dynamic_delay_to_apply > 0:
+            logger.debug(f"GitLab applying SYNC pre-API call delay (get README file): {dynamic_delay_to_apply:.2f}s")
+            time.sleep(dynamic_delay_to_apply)
+
     common_readme_names = ["README.md", "README.txt", "README", "readme.md"]
     if not project_obj.default_branch:
         logger.warning(f"Cannot fetch README for {project_obj.path_with_namespace}: No default branch set.")
-        return None, None
+        return None, None, False # content, url, is_empty_repo_error
+
     for readme_name in common_readme_names:
-        try:
-            readme_file = project_obj.files.get(file_path=readme_name, ref=project_obj.default_branch)
-            readme_content_bytes = base64.b64decode(readme_file.content)
-            readme_content_str = readme_content_bytes.decode('utf-8', errors='replace')
-            readme_url = f"{project_obj.web_url}/-/blob/{project_obj.default_branch}/{readme_name.lstrip('/')}"
-            logger.debug(f"Successfully fetched README '{readme_name}' for {project_obj.path_with_namespace}")
-            if dynamic_delay_to_apply > 0:
-                logger.debug(f"GitLab applying SYNC post-API call delay (get README file): {dynamic_delay_to_apply:.2f}s")
-                time.sleep(dynamic_delay_to_apply)
-            return readme_content_str, readme_url
-        except GitlabGetError as e:
-            if e.response_code == 404:
-                logger.debug(f"README '{readme_name}' not found in {project_obj.path_with_namespace}")
-                continue
-            else:
-                logger.error(f"GitLab API error fetching README '{readme_name}' for {project_obj.path_with_namespace}: {e}", exc_info=False)
-                return None, None 
-        except Exception as e:
-            logger.error(f"Unexpected error decoding README '{readme_name}' for {project_obj.path_with_namespace}: {e}", exc_info=True)
-            return None, None
+        fetch_lambda = lambda: project_obj.files.get(file_path=readme_name, ref=project_obj.default_branch)
+
+        raw_file_object, error_type = fetch_optional_content_with_retry(
+            fetch_callable=fetch_lambda,
+            content_description=f"README '{readme_name}'",
+            repo_identifier=project_obj.path_with_namespace,
+            platform_exception_map=GITLAB_EXCEPTION_MAP,
+            max_quick_retries=MAX_QUICK_CONTENT_RETRIES_GITLAB,
+            quick_retry_delay_seconds=QUICK_CONTENT_RETRY_DELAY_SECONDS_GITLAB,
+            logger_instance=logger,
+            dynamic_delay_func=_gitlab_dynamic_delay_wrapper
+        )
+
+        if error_type == FETCH_ERROR_EMPTY_REPO_API: # Should not be hit if empty_repo_check_func is False
+            return None, None, True
+        if error_type == FETCH_ERROR_NOT_FOUND:
+            continue # Try next readme name
+        if error_type in [FETCH_ERROR_FORBIDDEN, FETCH_ERROR_API_ERROR, FETCH_ERROR_UNEXPECTED]:
+            logger.error(f"Stopping README fetch for {project_obj.path_with_namespace} due to error: {error_type}")
+            return None, None, False
+
+        if raw_file_object: # Success
+            try:
+                readme_content_bytes = base64.b64decode(raw_file_object.content)
+                readme_content_str = readme_content_bytes.decode('utf-8', errors='replace')
+                readme_url = f"{project_obj.web_url}/-/blob/{project_obj.default_branch}/{readme_name.lstrip('/')}"
+                logger.debug(f"Successfully fetched README '{readme_name}' for {project_obj.path_with_namespace}")
+                return readme_content_str, readme_url, False
+            except Exception as e_decode:
+                logger.error(f"Unexpected error decoding README '{readme_name}' for {project_obj.path_with_namespace}: {e_decode}", exc_info=True)
+                return None, None, False
+
     logger.debug(f"No common README file found for {project_obj.path_with_namespace}")
-    return None, None
+    return None, None, False
 
 
-def _get_codeowners_content_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_delay_to_apply: float, num_workers: int = 1) -> Optional[str]:
+def _get_codeowners_content_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_delay_to_apply: float, num_workers: int = 1) -> tuple[Optional[str], bool]:
     """Fetches CODEOWNERS content from standard locations in a GitLab project."""
+    # Wrapper for the dynamic delay
+    def _gitlab_dynamic_delay_wrapper():
+        if dynamic_delay_to_apply > 0:
+            logger.debug(f"GitLab applying SYNC pre-API call delay (get CODEOWNERS file): {dynamic_delay_to_apply:.2f}s")
+            time.sleep(dynamic_delay_to_apply)
+
     common_paths = ["CODEOWNERS", ".gitlab/CODEOWNERS", "docs/CODEOWNERS"]
     if not project_obj.default_branch:
         logger.warning(f"Cannot fetch CODEOWNERS for {project_obj.path_with_namespace}: No default branch set.")
-        return None
+        return None, False # content, is_empty_repo_error
+
     for path in common_paths:
-        try:
-            content_file = project_obj.files.get(file_path=path.lstrip('/'), ref=project_obj.default_branch)
-            content_bytes = base64.b64decode(content_file.content)
-            content_str = content_bytes.decode('utf-8', errors='replace')
-            logger.debug(f"Successfully fetched CODEOWNERS from '{path}' for {project_obj.path_with_namespace}")
-            if dynamic_delay_to_apply > 0:
-                logger.debug(f"GitLab applying SYNC post-API call delay (get CODEOWNERS file): {dynamic_delay_to_apply:.2f}s")
-                time.sleep(dynamic_delay_to_apply)
-            return content_str
-        except GitlabGetError as e:
-            if e.response_code == 404:
-                continue
-            else:
-                logger.error(f"GitLab API error fetching CODEOWNERS at {path} for {project_obj.path_with_namespace}: {e}", exc_info=False)
-                return None
-        except Exception as e:
-            logger.error(f"Unexpected error fetching CODEOWNERS at {path} for {project_obj.path_with_namespace}: {e}", exc_info=True)
-            return None
+        fetch_lambda = lambda: project_obj.files.get(file_path=path.lstrip('/'), ref=project_obj.default_branch)
+
+        raw_file_object, error_type = fetch_optional_content_with_retry(
+            fetch_callable=fetch_lambda,
+            content_description=f"CODEOWNERS from '{path}'",
+            repo_identifier=project_obj.path_with_namespace,
+            platform_exception_map=GITLAB_EXCEPTION_MAP,
+            max_quick_retries=MAX_QUICK_CONTENT_RETRIES_GITLAB,
+            quick_retry_delay_seconds=QUICK_CONTENT_RETRY_DELAY_SECONDS_GITLAB,
+            logger_instance=logger,
+            dynamic_delay_func=_gitlab_dynamic_delay_wrapper
+        )
+
+        if error_type == FETCH_ERROR_EMPTY_REPO_API:
+            return None, True
+        if error_type == FETCH_ERROR_NOT_FOUND:
+            continue
+        if error_type in [FETCH_ERROR_FORBIDDEN, FETCH_ERROR_API_ERROR, FETCH_ERROR_UNEXPECTED]:
+            logger.error(f"Stopping CODEOWNERS fetch for {project_obj.path_with_namespace} due to error: {error_type}")
+            return None, False
+        
+        if raw_file_object: # Success
+            try:
+                content_bytes = base64.b64decode(raw_file_object.content)
+                content_str = content_bytes.decode('utf-8', errors='replace')
+                logger.debug(f"Successfully fetched CODEOWNERS from '{path}' for {project_obj.path_with_namespace}")
+                return content_str, False
+            except Exception as e_decode:
+                logger.error(f"Unexpected error decoding CODEOWNERS from '{path}' for {project_obj.path_with_namespace}: {e_decode}", exc_info=True)
+                return None, False
+
     logger.debug(f"No CODEOWNERS file found in standard locations for {project_obj.path_with_namespace}")
-    return None
+    return None, False
 
 
 def _fetch_tags_gitlab(project_obj, cfg_obj: Optional[Any], dynamic_delay_to_apply: float, num_workers: int = 1) -> List[str]:
@@ -256,8 +315,12 @@ def _process_single_gitlab_project(
         except Exception as lang_err:
             logger.warning(f"Could not fetch languages for {repo_full_name}: {lang_err}", exc_info=False)
 
-        readme_content, readme_html_url = _get_readme_content_gitlab(project, cfg_obj, dynamic_post_api_call_delay_seconds, num_workers)
-        codeowners_content = _get_codeowners_content_gitlab(project, cfg_obj, dynamic_post_api_call_delay_seconds, num_workers)
+        readme_content, readme_html_url, readme_empty_err = _get_readme_content_gitlab(project, cfg_obj, dynamic_post_api_call_delay_seconds, num_workers)
+        codeowners_content, codeowners_empty_err = _get_codeowners_content_gitlab(project, cfg_obj, dynamic_post_api_call_delay_seconds, num_workers)
+
+        if not repo_data.get('_is_empty_repo', False): # If not already marked empty by project attribute
+            repo_data['_is_empty_repo'] = readme_empty_err or codeowners_empty_err
+
         repo_topics = project.tag_list if hasattr(project, 'tag_list') else []
         repo_git_tags = _fetch_tags_gitlab(project, cfg_obj, dynamic_post_api_call_delay_seconds, num_workers)
 
@@ -280,7 +343,7 @@ def _process_single_gitlab_project(
             "languages": all_languages_list,
             "tags": repo_topics,
             "date": {"created": created_at_dt.isoformat() if created_at_dt else None, "lastModified": last_activity_at_dt.isoformat() if last_activity_at_dt else None},
-            "permissions": {"usageType": "openSource", 
+            "permissions": {"usageType": None, 
                             "exemptionText": None, 
                             "licenses": licenses_list},
             "contact": {}, 

@@ -18,11 +18,14 @@ from utils.delay_calculator import calculate_dynamic_delay # Import the calculat
 from utils.caching import load_previous_scan_data, PLATFORM_CACHE_CONFIG
 from datetime import timezone, datetime
 from utils.dateparse import parse_repos_created_after_date # Import the new utility
+from utils.fetch_utils import (
+    fetch_optional_content_with_retry,
+    FETCH_ERROR_FORBIDDEN, FETCH_ERROR_NOT_FOUND, FETCH_ERROR_EMPTY_REPO_API,
+    FETCH_ERROR_API_ERROR, FETCH_ERROR_UNEXPECTED
+)
 from utils.labor_hrs_estimator import analyze_github_repo_sync # Import the estimator
 
-from github import (
-    Github, GithubException, UnknownObjectException, RateLimitExceededException
-)
+from github import Github, GithubException, UnknownObjectException, RateLimitExceededException
 
 # ANSI escape codes for coloring output
 ANSI_YELLOW = "\x1b[33;1m"
@@ -51,6 +54,21 @@ except ImportError:
 logger = logging.getLogger(__name__)
 # DONT CHANGE THIS PLACEHOLDER
 PLACEHOLDER_GITHUB_TOKEN = "YOUR_GITHUB_PAT"
+
+# --- Constants for the new utility ---
+GITHUB_EXCEPTION_MAP = {
+    'forbidden_exception': lambda e: isinstance(e, GithubException) and hasattr(e, 'status') and e.status == 403,
+    'not_found_exception': UnknownObjectException,
+    'empty_repo_check_func': lambda e: (
+        isinstance(e, GithubException) and
+        e.status == 404 and # PyGithub often uses 404 for empty repo on get_contents
+        isinstance(e.data, dict) and
+        e.data.get('message') == 'This repository is empty.'
+    ),
+    'generic_platform_exception': GithubException
+}
+MAX_QUICK_CONTENT_RETRIES = 2  # Number of quick retries for 403 on optional content
+QUICK_CONTENT_RETRY_DELAY_SECONDS = 3 # Delay between these quick retries
 
 
 def apply_dynamic_github_delay(cfg_obj: Optional[Any], num_repos_in_target: Optional[int], num_workers: int = 1):
@@ -91,65 +109,86 @@ def _get_readme_details_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos_in_
     Tries common README filenames.
     Returns: (content, url, is_empty_repo_error_occurred)
     """
+    # Wrapper for the dynamic delay to be passed to the utility
+    def _github_dynamic_delay_wrapper():
+        apply_dynamic_github_delay(cfg_obj, num_repos_in_target, num_workers)
+
     common_readme_names = ["README.md", "README.txt", "README", "readme.md"]
     for readme_name in common_readme_names:
-        try:
-            apply_dynamic_github_delay(cfg_obj, num_repos_in_target, num_workers) # Apply delay BEFORE the call
-            readme_file = repo_obj.get_contents(readme_name)
-            readme_content_bytes = base64.b64decode(readme_file.content)
+        fetch_lambda = lambda: repo_obj.get_contents(readme_name)
+
+        raw_file_object, error_type = fetch_optional_content_with_retry(
+            fetch_callable=fetch_lambda,
+            content_description=f"README '{readme_name}'",
+            repo_identifier=repo_obj.full_name,
+            platform_exception_map=GITHUB_EXCEPTION_MAP,
+            max_quick_retries=MAX_QUICK_CONTENT_RETRIES,
+            quick_retry_delay_seconds=QUICK_CONTENT_RETRY_DELAY_SECONDS,
+            logger_instance=logger,
+            dynamic_delay_func=_github_dynamic_delay_wrapper
+        )
+
+        if error_type == FETCH_ERROR_EMPTY_REPO_API:
+            return None, None, True # Signal empty repo
+        if error_type == FETCH_ERROR_NOT_FOUND:
+            continue # Try next readme name
+        if error_type in [FETCH_ERROR_FORBIDDEN, FETCH_ERROR_API_ERROR, FETCH_ERROR_UNEXPECTED]:
+            logger.error(f"Stopping README fetch for {repo_obj.full_name} due to error: {error_type}")
+            return None, None, False # Indicate error, not necessarily empty repo
+        
+        if raw_file_object: # Success from fetch_optional_content_with_retry
             try:
+                readme_content_bytes = base64.b64decode(raw_file_object.content)
                 readme_content_str = readme_content_bytes.decode('utf-8')
             except UnicodeDecodeError:
                 try:
                     readme_content_str = readme_content_bytes.decode('latin-1')
                 except Exception:
                     readme_content_str = readme_content_bytes.decode('utf-8', errors='ignore')
-            
-            readme_url = readme_file.html_url 
+            readme_url = raw_file_object.html_url
             logger.debug(f"Successfully fetched README '{readme_name}' (URL: {readme_url}) for {repo_obj.full_name}")
             return readme_content_str, readme_url, False
-        except UnknownObjectException:
-            logger.debug(f"README '{readme_name}' not found in {repo_obj.full_name}")
-            continue
-        except GithubException as e:
-            if e.status == 404 and isinstance(e.data, dict) and e.data.get('message') == 'This repository is empty.':
-                logger.info(f"Fetching README '{readme_name}' for {repo_obj.full_name} failed: GitHub API indicates repository is empty.")
-                return None, None, True # Signal empty repo error
-            else:
-                logger.error(f"GitHub API warning fetching README '{readme_name}' for {repo_obj.full_name}: {e.status} {getattr(e, 'data', str(e))}", exc_info=False)
-                return None, None, False # Stop if other API error, not an empty repo error
-        except Exception as e:
-            logger.error(f"Unexpected error decoding README '{readme_name}' for {repo_obj.full_name}: {e}", exc_info=True)
-            return None, None, False
+        # If raw_file_object is None and no critical error_type stopped us, it implies not found for this name
+
     logger.debug(f"No common README file found for {repo_obj.full_name}")
     return None, None, False
 
 def _get_codeowners_content_pygithub(repo_obj, cfg_obj: Optional[Any], num_repos_in_target: Optional[int], num_workers: int = 1) -> Optional[str]:
     """
     Fetches CODEOWNERS content from standard locations.
-    Returns: (content, is_empty_repo_error_occurred)
+    Returns: Tuple[Optional[str], bool] where bool indicates if an empty repo signal was encountered.
     """
+    # Wrapper for the dynamic delay
+    def _github_dynamic_delay_wrapper():
+        apply_dynamic_github_delay(cfg_obj, num_repos_in_target, num_workers)
+
     codeowners_locations = ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"]
     for location in codeowners_locations:
-        try:
-            apply_dynamic_github_delay(cfg_obj, num_repos_in_target, num_workers) # Apply delay BEFORE the call
-            codeowners_file = repo_obj.get_contents(location)
-            codeowners_content = codeowners_file.decoded_content.decode('utf-8', errors='replace')
+        fetch_lambda = lambda: repo_obj.get_contents(location)
+
+        raw_file_object, error_type = fetch_optional_content_with_retry(
+            fetch_callable=fetch_lambda,
+            content_description=f"CODEOWNERS from '{location}'",
+            repo_identifier=repo_obj.full_name,
+            platform_exception_map=GITHUB_EXCEPTION_MAP,
+            max_quick_retries=MAX_QUICK_CONTENT_RETRIES,
+            quick_retry_delay_seconds=QUICK_CONTENT_RETRY_DELAY_SECONDS,
+            logger_instance=logger,
+            dynamic_delay_func=_github_dynamic_delay_wrapper
+        )
+        if error_type == FETCH_ERROR_EMPTY_REPO_API:
+            return None, True # Signal empty repo
+        if error_type == FETCH_ERROR_NOT_FOUND:
+            continue # Try next location
+        if error_type in [FETCH_ERROR_FORBIDDEN, FETCH_ERROR_API_ERROR, FETCH_ERROR_UNEXPECTED]:
+            logger.error(f"Stopping CODEOWNERS fetch for {repo_obj.full_name} due to error: {error_type}")
+            return None, False # Indicate error, not necessarily empty repo
+        
+        if raw_file_object: # Success
+            codeowners_content = raw_file_object.decoded_content.decode('utf-8', errors='replace')
             logger.debug(f"Successfully fetched CODEOWNERS from '{location}' for {repo_obj.full_name}")
             return codeowners_content, False
-        except UnknownObjectException:
-            logger.debug(f"CODEOWNERS file not found at '{location}' in {repo_obj.full_name}")
-            continue
-        except GithubException as e:
-            if e.status == 404 and isinstance(e.data, dict) and e.data.get('message') == 'This repository is empty.':
-                logger.info(f"Fetching CODEOWNERS from '{location}' for {repo_obj.full_name} failed: {ANSI_YELLOW}GitHub API indicates repository is empty.{ANSI_RESET}")
-                return None, True # Signal empty repo error
-            else:
-                logger.error(f"{ANSI_RED}GitHub API warning fetching CODEOWNERS from '{location}' for {repo_obj.full_name}{ANSI_RESET}: {e.status} {getattr(e, 'data', str(e))}", exc_info=False)
-                return None, False # Stop if other API error, not an empty repo error
-        except Exception as e:
-            logger.error(f"{ANSI_RED}Unexpected error decoding CODEOWNERS from '{location}' for {repo_obj.full_name}:{ANSI_RESET} {e}", exc_info=True)
-            return None, False
+
     logger.debug(f"No CODEOWNERS file found in standard locations for {repo_obj.full_name}")
     return None, False
 
@@ -349,7 +388,7 @@ def _process_single_github_repository(
                 "lastModified": pushed_at_dt.isoformat() if pushed_at_dt else (updated_at_dt.isoformat() if updated_at_dt else None),
             },
             "permissions": {
-                "usageType": "openSource", 
+                "usageType": None, # Initialize to None for full data fetch
                 "exemptionText": None,
                 "licenses": licenses_list
             },

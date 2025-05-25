@@ -19,6 +19,11 @@ from utils.delay_calculator import calculate_dynamic_delay # Import the calculat
 from utils.dateparse import parse_repos_created_after_date # Import the new utility
 from utils.caching import load_previous_scan_data, PLATFORM_CACHE_CONFIG
 from utils.labor_hrs_estimator import _create_summary_dataframe # Import the labor hrs estimator
+from utils.fetch_utils import (
+    fetch_optional_content_with_retry,
+    FETCH_ERROR_FORBIDDEN, FETCH_ERROR_NOT_FOUND, FETCH_ERROR_EMPTY_REPO_API,
+    FETCH_ERROR_API_ERROR, FETCH_ERROR_UNEXPECTED
+)
 
 ANSI_YELLOW = "\x1b[33;1m"
 ANSI_RESET = "\x1b[0m"
@@ -31,7 +36,7 @@ try:
     from msrest.authentication import BasicAuthentication, ServicePrincipalCredentials
     from azure.devops.v7_1.git import GitClient
     from azure.devops.v7_1.core import CoreClient
-    from azure.devops.v7_1.git.models import GitRepository # type: ignore
+    from azure.devops.v7_1.git.models import GitRepository, ItemContentType # type: ignore
     from azure.devops.exceptions import AzureDevOpsServiceError
     AZURE_SDK_AVAILABLE = True
 except ImportError as e:
@@ -40,6 +45,7 @@ except ImportError as e:
     CoreClient = type('CoreClient', (object,), {})
     AzureDevOpsServiceError = type('AzureDevOpsServiceError', (Exception,), {})
     Connection = type('Connection', (object,), {})
+    ItemContentType = type('ItemContentType', (object,), {}) # Dummy for ItemContentType
     GitRepository = type('GitRepository', (object,), {}) # Define dummy for type hints
     BasicAuthentication = type('BasicAuthentication', (object,), {})
     ServicePrincipalCredentials = type('ServicePrincipalCredentials', (object,), {}) # Add dummy for SPN
@@ -77,6 +83,22 @@ PLACEHOLDER_AZURE_TENANT_ID = "YOUR_AZURE_TENANT_ID"
 
 AZURE_DEVOPS_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798" # Static Azure DevOps resource ID
 
+# --- Constants for the fetch_utils utility ---
+AZURE_DEVOPS_EXCEPTION_MAP = {
+    'forbidden_exception': lambda e: isinstance(e, AzureDevOpsServiceError) and hasattr(e, 'status_code') and e.status_code == 403,
+    'not_found_exception': lambda e: isinstance(e, AzureDevOpsServiceError) and (
+        (hasattr(e, 'status_code') and e.status_code == 404) or
+        ("TF401019" in str(e)) or # "Item not found"
+        ("does not exist" in str(e).lower()) # Another common not found message
+    ),
+    # Azure DevOps get_item_text might just return 404 if the repo is empty and file path doesn't exist.
+    # A more direct empty check is repo.size == 0 or no default_branch before calling.
+    'empty_repo_check_func': lambda e: False, # Placeholder, as 404 is primary for missing files
+    'generic_platform_exception': AzureDevOpsServiceError
+}
+MAX_QUICK_CONTENT_RETRIES_AZURE = 2
+QUICK_CONTENT_RETRY_DELAY_SECONDS_AZURE = 3
+
 def is_placeholder_token(token: Optional[str]) -> bool:
     """Checks if the Azure DevOps PAT is missing or a known placeholder."""
     return not token or token == PLACEHOLDER_AZURE_TOKEN
@@ -87,35 +109,6 @@ def are_spn_details_placeholders(client_id: Optional[str], client_secret: Option
            not client_secret or client_secret == PLACEHOLDER_AZURE_CLIENT_SECRET or \
            not tenant_id or tenant_id == PLACEHOLDER_AZURE_TENANT_ID
 
-
-def _get_file_content_azure(git_client: GitClient, repository_id: str, project_name: str, file_path: str, repo_default_branch: Optional[str]) -> Optional[str]:
-    if not AZURE_SDK_AVAILABLE: return None
-    if not repo_default_branch: # Keep this line
-        logger.warning(f"Cannot fetch file '{file_path}' for repo ID {repository_id} in {project_name}: No default branch identified.")
-        return None
-    try:
-        normalized_file_path = file_path.lstrip('/')
-        item_content_stream = git_client.get_item_text(
-            repository_id=repository_id,
-            path=normalized_file_path,
-            project=project_name,
-            download=True,
-            version_descriptor={'version': repo_default_branch}
-        )
-        content_str = ""
-        for chunk in item_content_stream:
-            content_str += chunk.decode('utf-8', errors='replace')
-        return content_str
-    except AzureDevOpsServiceError as e:
-        if "TF401019" in str(e) or "Item not found" in str(e) or (hasattr(e, 'status_code') and e.status_code == 404):
-            logger.debug(f"File '{file_path}' not found in repo ID {repository_id} (project: {project_name}). Error: {e}")
-        else:
-            logger.error(f"Azure DevOps API error fetching file '{file_path}' for repo ID {repository_id}: {e}", exc_info=False)
-    except Exception as e:
-        logger.error(f"Unexpected error fetching file '{file_path}' for repo ID {repository_id}: {e}", exc_info=True)
-    return None
-
-
 def _get_readme_content_azure_devops(
     git_client: GitClient,
     repo_id: str,
@@ -125,24 +118,62 @@ def _get_readme_content_azure_devops(
     cfg_obj: Optional[Any],
     dynamic_delay_to_apply: float,
     num_workers: int = 1
-) -> tuple[Optional[str], Optional[str]]:
+) -> tuple[Optional[str], Optional[str], bool]: # Added bool for is_empty_repo_error
+    """Fetches README content and URL for an Azure DevOps repository."""
+    # Wrapper for the dynamic delay
+    def _azure_dynamic_delay_wrapper():
+        if dynamic_delay_to_apply > 0:
+            logger.debug(f"Azure DevOps applying SYNC pre-API call delay (get README file): {dynamic_delay_to_apply:.2f}s")
+            time.sleep(dynamic_delay_to_apply)
+
     common_readme_names = ["README.md", "README.txt", "README"]
     if not repo_default_branch:
         logger.warning(f"Cannot fetch README for repo ID {repo_id} in {project_name}: No default branch identified.")
-        return None, None
+        return None, None, False
+
     for readme_name in common_readme_names:
-        content = _get_file_content_azure(git_client, repository_id, project_name, readme_name, repo_default_branch)
-        if content:
+        normalized_readme_name = readme_name.lstrip('/')
+        
+        def fetch_lambda():
+            # get_item_text returns a stream of decoded strings
+            item_content_stream = git_client.get_item_text(
+                repository_id=repo_id,
+                path=normalized_readme_name,
+                project=project_name,
+                download=True, # Ensures content is fetched
+                version_descriptor={'version': repo_default_branch}
+            )
+            return "".join(chunk for chunk in item_content_stream) # Concatenate chunks
+
+        # The 'raw_file_object' here will be the concatenated string content
+        readme_content_str, error_type = fetch_optional_content_with_retry(
+            fetch_callable=fetch_lambda,
+            content_description=f"README '{readme_name}'",
+            repo_identifier=f"ADO:{project_name}/{repo_id}",
+            platform_exception_map=AZURE_DEVOPS_EXCEPTION_MAP,
+            max_quick_retries=MAX_QUICK_CONTENT_RETRIES_AZURE,
+            quick_retry_delay_seconds=QUICK_CONTENT_RETRY_DELAY_SECONDS_AZURE,
+            logger_instance=logger,
+            dynamic_delay_func=_azure_dynamic_delay_wrapper
+        )
+
+        if error_type == FETCH_ERROR_EMPTY_REPO_API: # Should not be hit based on current map
+            return None, None, True
+        if error_type == FETCH_ERROR_NOT_FOUND:
+            continue # Try next readme name
+        if error_type in [FETCH_ERROR_FORBIDDEN, FETCH_ERROR_API_ERROR, FETCH_ERROR_UNEXPECTED]:
+            logger.error(f"Stopping README fetch for ADO repo ID {repo_id} due to error: {error_type}")
+            return None, None, False
+
+        if readme_content_str is not None: # Success and content is not None (empty string is valid content)
             url_readme_name = readme_name.lstrip('/')
             branch_name_for_url = repo_default_branch.replace('refs/heads/', '')
             readme_url = f"{repo_web_url}?path=/{url_readme_name}&version=GB{branch_name_for_url}&_a=contents"
             logger.debug(f"Successfully fetched README '{readme_name}' for repo ID {repo_id}")
-            if dynamic_delay_to_apply > 0:
-                logger.debug(f"Azure DevOps applying SYNC post-API call delay (get README file): {dynamic_delay_to_apply:.2f}s")
-                time.sleep(dynamic_delay_to_apply)
-            return content, readme_url
+            return readme_content_str, readme_url, False
+
     logger.debug(f"No common README file found for repo ID {repo_id}")
-    return None, None
+    return None, None, False
 
 def _get_codeowners_content_azure_devops(
     git_client: GitClient,
@@ -152,22 +183,57 @@ def _get_codeowners_content_azure_devops(
     cfg_obj: Optional[Any],
     dynamic_delay_to_apply: float,
     num_workers: int = 1
-) -> Optional[str]:
+) -> tuple[Optional[str], bool]: # Added bool for is_empty_repo_error
+    """Fetches CODEOWNERS content for an Azure DevOps repository."""
+    # Wrapper for the dynamic delay
+    def _azure_dynamic_delay_wrapper():
+        if dynamic_delay_to_apply > 0:
+            logger.debug(f"Azure DevOps applying SYNC pre-API call delay (get CODEOWNERS file): {dynamic_delay_to_apply:.2f}s")
+            time.sleep(dynamic_delay_to_apply)
+
     codeowners_locations = ["CODEOWNERS", ".azuredevops/CODEOWNERS", "docs/CODEOWNERS", ".vsts/CODEOWNERS"]
     if not repo_default_branch:
         logger.warning(f"Cannot fetch CODEOWNERS for repo ID {repo_id} in {project_name}: No default branch identified.")
-        return None
+        return None, False
+
     for location in codeowners_locations:
         normalized_location = location.lstrip('/')
-        content = _get_file_content_azure(git_client, repository_id, project_name, normalized_location, repo_default_branch)
-        if content:
+
+        def fetch_lambda():
+            item_content_stream = git_client.get_item_text(
+                repository_id=repo_id,
+                path=normalized_location,
+                project=project_name,
+                download=True,
+                version_descriptor={'version': repo_default_branch}
+            )
+            return "".join(chunk for chunk in item_content_stream)
+
+        codeowners_content_str, error_type = fetch_optional_content_with_retry(
+            fetch_callable=fetch_lambda,
+            content_description=f"CODEOWNERS from '{location}'",
+            repo_identifier=f"ADO:{project_name}/{repo_id}",
+            platform_exception_map=AZURE_DEVOPS_EXCEPTION_MAP,
+            max_quick_retries=MAX_QUICK_CONTENT_RETRIES_AZURE,
+            quick_retry_delay_seconds=QUICK_CONTENT_RETRY_DELAY_SECONDS_AZURE,
+            logger_instance=logger,
+            dynamic_delay_func=_azure_dynamic_delay_wrapper
+        )
+
+        if error_type == FETCH_ERROR_EMPTY_REPO_API:
+            return None, True
+        if error_type == FETCH_ERROR_NOT_FOUND:
+            continue
+        if error_type in [FETCH_ERROR_FORBIDDEN, FETCH_ERROR_API_ERROR, FETCH_ERROR_UNEXPECTED]:
+            logger.error(f"Stopping CODEOWNERS fetch for ADO repo ID {repo_id} due to error: {error_type}")
+            return None, False
+
+        if codeowners_content_str is not None: # Success
             logger.debug(f"Successfully fetched CODEOWNERS from '{location}' for repo ID {repo_id}")
-            if dynamic_delay_to_apply > 0:
-                logger.debug(f"Azure DevOps applying SYNC post-API call delay (get CODEOWNERS file): {dynamic_delay_to_apply:.2f}s")
-                time.sleep(dynamic_delay_to_apply)
-            return content
+            return codeowners_content_str, False
+
     logger.debug(f"No CODEOWNERS file found in standard locations for repo ID {repo_id}")
-    return None
+    return None, False
 
 def _fetch_tags_azure_devops(
     git_client: GitClient,
@@ -284,7 +350,7 @@ def _process_single_azure_devops_repository(
         except Exception as proj_vis_err:
             logger.warning(f"Could not determine project visibility for {repo_full_name}: {proj_vis_err}. Defaulting to 'private'.")
         
-        readme_content, readme_html_url = _get_readme_content_azure_devops(
+        readme_content, readme_html_url, readme_empty_err = _get_readme_content_azure_devops(
             git_client=git_client,
             repo_id=repo.id,
             project_name=project_name,
@@ -294,10 +360,13 @@ def _process_single_azure_devops_repository(
             dynamic_delay_to_apply=dynamic_post_api_call_delay_seconds,
             num_workers=num_workers
         )
-        codeowners_content = _get_codeowners_content_azure_devops(
+        codeowners_content, codeowners_empty_err = _get_codeowners_content_azure_devops(
             git_client=git_client, repo_id=repo.id, project_name=project_name, repo_default_branch=repo.default_branch,
             cfg_obj=cfg_obj, dynamic_delay_to_apply=dynamic_post_api_call_delay_seconds, num_workers=num_workers
         )
+        if not repo_data.get('_is_empty_repo', False): # If not already marked empty
+            repo_data['_is_empty_repo'] = readme_empty_err or codeowners_empty_err
+
         repo_git_tags = _fetch_tags_azure_devops(
             git_client=git_client, repo_id=repo.id, project_name=project_name,
             cfg_obj=cfg_obj, dynamic_delay_to_apply=dynamic_post_api_call_delay_seconds, num_workers=num_workers
@@ -309,9 +378,9 @@ def _process_single_azure_devops_repository(
             "repositoryVisibility": repo_visibility, "status": "development", "version": "N/A", "laborHours": 0,
             "languages": [], "tags": [], 
             "date": {"created": created_at_iso, "lastModified": pushed_at_iso},
-            "permissions": {"usageType": "openSource", "exemptionText": None, "licenses": []}, # readme_content_str was a typo
+            "permissions": {"usageType": None, "exemptionText": None, "licenses": []}, # readme_content_str was a typo
             "contact": {}, "contractNumber": None, "readme_content": readme_content, # Use the fetched readme_content
-            "_codeowners_content": codeowners_content_str,
+            "_codeowners_content": codeowners_content, # Use the fetched codeowners_content
             "repo_id": repo.id, # Add repo_id back
             "readme_url": readme_html_url, 
             "_api_tags": repo_git_tags, "archived": repo.is_disabled if hasattr(repo, 'is_disabled') else False
