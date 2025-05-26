@@ -89,8 +89,8 @@ services:
       python generate_codejson.py merge
 
 # ---------------------------------
-# DEBUG
-# THe next container runs nothing automatically. 
+# DEBUG  (OPTIONAL )
+# THe next container runs nothing automatically. Its like an open terminal.
 # You can use it to manually run a scanner command or utility via its terminal window (Exec tab).
 # Examples: 
 # $> python generate_codejson.py github --gh-tk <PAT> --orgs cdcent --limit 30
