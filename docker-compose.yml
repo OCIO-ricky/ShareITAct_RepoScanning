@@ -97,23 +97,22 @@ services:
 # $> python utils/azure_setup_test.py
 # ---------------------------------
 
-#services:
-  session-scanner:
-    build:
-      context: . # Use the Dockerfile in the current directory
-      dockerfile: Dockerfile
-    image: cdc-repo-scanner:latest 
-    container_name: cdc_repo_scanner_app # Optional: give a specific name to the running container
-    # Mount volumes for persistent data and configuration
-    # This replaces the -v flags from the docker run command
-    volumes:
-      - ./output:/app/output   # Mounts host's ./output to /app/output in container
-      - ./logs:/app/logs       # Mounts host's ./logs to /app/logs in container
-      - .env:/app/.env
+  # session-scanner:
+  #   build:
+  #     context: . # Use the Dockerfile in the current directory
+  #     dockerfile: Dockerfile
+  #   image: cdc-repo-scanner:latest 
+  #   container_name: cdc_repo_scanner_app # Optional: give a specific name to the running container
+  #   # Mount volumes for persistent data and configuration
+  #   # This replaces the -v flags from the docker run command
+  #   volumes:
+  #     - ./output:/app/output   # Mounts host's ./output to /app/output in container
+  #     - ./logs:/app/logs       # Mounts host's ./logs to /app/logs in container
+  #     - .env:/app/.env
 
-    # Load environment variables from the .env file in the current directory
-    env_file:
-      - .env
-    # Keep stdin open and allocate a TTY for the main process (e.g., bash)
-    stdin_open: true
-    tty: true
+  #   # Load environment variables from the .env file in the current directory
+  #   env_file:
+  #     - .env
+  #   # Keep stdin open and allocate a TTY for the main process (e.g., bash)
+  #   stdin_open: true
+  #   tty: true
