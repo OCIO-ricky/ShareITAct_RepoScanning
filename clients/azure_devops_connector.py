@@ -33,7 +33,8 @@ ANSI_RED = "\x1b[31;1m" # Added for consistency in warning messages
 # --- Try importing Azure DevOps SDK ---
 try:
     from azure.devops.connection import Connection
-    from msrest.authentication import BasicAuthentication, ServicePrincipalCredentials
+    from msrest.authentication import BasicAuthentication # For PAT (Personal Access Token)
+    from azure.identity import ClientSecretCredential # For Service Principal with client secret
     from azure.devops.v7_1.git import GitClient
     from azure.devops.v7_1.core import CoreClient
     from azure.devops.v7_1.git.models import GitRepository, ItemContentType # type: ignore
@@ -47,8 +48,8 @@ except ImportError as e:
     Connection = type('Connection', (object,), {})
     ItemContentType = type('ItemContentType', (object,), {}) # Dummy for ItemContentType
     GitRepository = type('GitRepository', (object,), {}) # Define dummy for type hints
-    BasicAuthentication = type('BasicAuthentication', (object,), {})
-    ServicePrincipalCredentials = type('ServicePrincipalCredentials', (object,), {}) # Add dummy for SPN
+    BasicAuthentication = type('BasicAuthentication', (object,), {}) # Dummy for PAT
+    ClientSecretCredential = type('ClientSecretCredential', (object,), {}) # Dummy for SPN with secret
     # Log which specific import failed if possible
     logging.getLogger(__name__).warning(
        f"Failed to import a component required for Azure DevOps SDK. Full error: {e}. "
@@ -63,7 +64,8 @@ except ImportError:
         "Exemption processing will be skipped by the Azure DevOps connector (using mock)."
     )
     class MockExemptionProcessor:
-        def process_repository_exemptions(self, repo_data: Dict[str, Any], default_org_identifiers: Optional[List[str]] = None) -> Dict[str, Any]:
+        #def process_repository_exemptions(self, repo_data: Dict[str, Any], default_org_identifiers: Optional[List[str]] = None) -> Dict[str, Any]:
+        def process_repository_exemptions(self, repo_data: Dict[str, Any], default_org_identifiers: Optional[List[str]] = None, **kwargs: Any) -> Dict[str, Any]:
             repo_data.setdefault('_status_from_readme', None)
             repo_data.setdefault('_private_contact_emails', [])
             repo_data.setdefault('contact', {})
@@ -457,11 +459,11 @@ def _setup_azure_devops_credentials(
 
     if not are_spn_details_placeholders(spn_client_id, spn_client_secret, spn_tenant_id):
         logger_instance.info("Attempting Azure DevOps authentication using Service Principal.")
-        if not ServicePrincipalCredentials:
-            logger_instance.error("ServicePrincipalCredentials class not available. Cannot use SPN auth.")
+        if not ClientSecretCredential: # Check for the correctly imported class
+            logger_instance.error("ClientSecretCredential class not available. Cannot use SPN auth.")
             return None, ""
-        credentials = ServicePrincipalCredentials(
-            client=spn_client_id, secret=spn_client_secret, tenant=spn_tenant_id, resource=AZURE_DEVOPS_RESOURCE_ID
+        credentials = ClientSecretCredential( # Instantiate the correctly imported class
+            tenant_id=spn_tenant_id, client_id=spn_client_id, client_secret=spn_client_secret # Corrected argument names
         )
         return credentials, "Service Principal"
     elif not is_placeholder_token(pat_token):
