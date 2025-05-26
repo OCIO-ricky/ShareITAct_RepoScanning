@@ -37,7 +37,7 @@ try:
     from azure.identity import ClientSecretCredential # For Service Principal with client secret
     from azure.devops.v7_1.git import GitClient
     from azure.devops.v7_1.core import CoreClient
-    from azure.devops.v7_1.git.models import GitRepository, ItemContentType # type: ignore
+    from azure.devops.v7_1.git.models import GitRepository 
     from azure.devops.exceptions import AzureDevOpsServiceError
     AZURE_SDK_AVAILABLE = True
 except ImportError as e:
@@ -46,7 +46,6 @@ except ImportError as e:
     CoreClient = type('CoreClient', (object,), {})
     AzureDevOpsServiceError = type('AzureDevOpsServiceError', (Exception,), {})
     Connection = type('Connection', (object,), {})
-    ItemContentType = type('ItemContentType', (object,), {}) # Dummy for ItemContentType
     GitRepository = type('GitRepository', (object,), {}) # Define dummy for type hints
     BasicAuthentication = type('BasicAuthentication', (object,), {}) # Dummy for PAT
     ClientSecretCredential = type('ClientSecretCredential', (object,), {}) # Dummy for SPN with secret
