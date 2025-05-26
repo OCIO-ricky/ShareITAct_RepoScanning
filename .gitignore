@@ -39,3 +39,5 @@ logs/
 *.env
 .env.local
 .env.*.local
+*.csv
+*.json

@@ -40,11 +40,12 @@ RUN update-ca-certificates
 COPY requirements.txt ./
 
 # 4. Install Dependencies
-RUN pip install --no-cache-dir --trusted-host pypi.python.org --trusted-host pypi.org -r requirements.txt
+# The '|| true' ensures the command doesn't fail if a package isn't already installed.
+RUN pip uninstall -y msrest azure-core azure-devops azure-identity || true && \
+    pip install --no-cache-dir --trusted-host pypi.python.org --trusted-host pypi.org -r requirements.txt
 
 # 5. Copy Application Code
 COPY . .
 
 # 6. Command to Run
-# CMD ["python", "generate_codejson.py"]
 CMD ["bash"]   

@@ -62,18 +62,17 @@ services:
 # -------------------------
 # MERGE THESE THE RESULTS
 # -------------------
-  #   container_name: scanner-azure-instance
-  # This service will run after scan-github and scan-gitlab complete successfully.
+  # This service will run after and if scan-github, scan-gitlab, and scan-azure complete successfully.
   merge-results:
     build: . # Uses the same Dockerfile as other services
     container_name: scanner-merge-instance
     depends_on:
-      scan-github:
+     scan-github:
+       condition: service_completed_successfully
+     scan-gitlab:
+       condition: service_completed_successfully
+     scan-azure:
         condition: service_completed_successfully
-      scan-gitlab:
-        condition: service_completed_successfully
-#      scan-azure:
-#        condition: service_completed_successfully
     environment:
       - AI_ENABLED=false
       - TZ=America/New_York
@@ -86,9 +85,9 @@ services:
 
 # ---------------------------------
 # DEBUG
-# Just creates a container but runs nothing. 
-# You can then open the container's terminal or shell and run a scanner command.
-# Example: 
+# THe enxt commented lines creates a container but runs nothing automatically. 
+# You can use it to run a scanner command via its terminal window (Exec) in docker desktop.
+# Example: type a command like this inside the container:
 # #> python generate_codejson.py github --gh-tk <PAT> --orgs cdcent --limit 30
 # ---------------------------------
 
