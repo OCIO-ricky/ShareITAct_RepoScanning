@@ -61,7 +61,7 @@ def fetch_optional_content_with_retry(
                 dynamic_delay_func() # Apply dynamic delay before the API call
 
             raw_file_object = fetch_callable()
-            logger_instance.debug(f"Successfully fetched raw object for {content_description} from {repo_identifier}")
+            logger_instance.debug(f"Successfully fetched raw object for {content_description} from {repo_identifier}", extra={'org_group': repo_identifier})
             return raw_file_object, None # Success
         except Exception as e:
              # Check for forbidden error
@@ -76,15 +76,16 @@ def fetch_optional_content_with_retry(
                 logger_instance.warning(
                     f"Attempt {attempt + 1}/{max_quick_retries + 1}: "
                     f"403 Forbidden accessing {content_description} for {repo_identifier}. "
-                    f"Details: {getattr(e, 'status', 'N/A')} {getattr(e, 'data', str(e))}"
-                )
+                    f"Details: {getattr(e, 'status', 'N/A')} {getattr(e, 'data', str(e))}",
+                    extra={'org_group': repo_identifier}
+                ) # type: ignore
                 if attempt < max_quick_retries:
                     time.sleep(quick_retry_delay_seconds)
                     continue # Retry
-                logger_instance.error(f"Failed to access {content_description} for {repo_identifier} after {max_quick_retries + 1} attempts due to 403 Forbidden.")
+                logger_instance.error(f"Failed to access {content_description} for {repo_identifier} after {max_quick_retries + 1} attempts due to 403 Forbidden.", extra={'org_group': repo_identifier})
                 return None, FETCH_ERROR_FORBIDDEN
             if empty_repo_check and empty_repo_check(e):
-                logger_instance.info(f"Fetching {content_description} for {repo_identifier} failed: API indicates repository is empty. Details: {getattr(e, 'status', getattr(e, 'response_code', 'N/A'))} {getattr(e, 'data', str(e))}")
+                logger_instance.info(f"Fetching {content_description} for {repo_identifier} failed: API indicates repository is empty. Details: {getattr(e, 'status', getattr(e, 'response_code', 'N/A'))} {getattr(e, 'data', str(e))}", extra={'org_group': repo_identifier})
                 return None, FETCH_ERROR_EMPTY_REPO_API
             # Check for not found error
             is_not_found = False
@@ -95,13 +96,13 @@ def fetch_optional_content_with_retry(
                     is_not_found = isinstance(e, not_found_check)
             
             if is_not_found:
-                logger_instance.debug(f"{content_description} not found for {repo_identifier} (expected for optional files).")
+                logger_instance.debug(f"{content_description} not found for {repo_identifier} (expected for optional files).", extra={'org_group': repo_identifier})
                 return None, FETCH_ERROR_NOT_FOUND
             if generic_platform_exception_type and isinstance(e, generic_platform_exception_type):
-                logger_instance.error(f"Platform API error fetching {content_description} for {repo_identifier}: {getattr(e, 'status', getattr(e, 'response_code', 'N/A'))} {getattr(e, 'data', str(e))}", exc_info=False)
+                logger_instance.error(f"Platform API error fetching {content_description} for {repo_identifier}: {getattr(e, 'status', getattr(e, 'response_code', 'N/A'))} {getattr(e, 'data', str(e))}", exc_info=False, extra={'org_group': repo_identifier})
                 return None, FETCH_ERROR_API_ERROR
             
-            logger_instance.error(f"Unexpected error fetching {content_description} for {repo_identifier} (Attempt {attempt + 1}): {e}", exc_info=True)
+            logger_instance.error(f"Unexpected error fetching {content_description} for {repo_identifier} (Attempt {attempt + 1}): {e}", exc_info=True, extra={'org_group': repo_identifier})
             return None, FETCH_ERROR_UNEXPECTED # Stop on first unexpected error
             
     return None, FETCH_ERROR_UNEXPECTED # Should ideally not be reached if loop completes due to return/continue

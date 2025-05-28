@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 ANSI_RED = "\x1b[31;1m"  # Bold Red
 ANSI_RESET = "\x1b[0m"   # Reset to default color
 
+EXEMPTION_LOGGER_SYSTEM_CONTEXT = "ExemptionLoggerSystem"
+
 class ExemptionLogger:
     """Handles loading and logging repository exemptions to a CSV file."""
 
@@ -60,21 +62,21 @@ class ExemptionLogger:
 
             # Check if file exists *before* trying to open
             if not os.path.isfile(self.log_file_path):
-                logger.debug(f"_ensure_log_file_header: File '{self.log_file_path}' does not exist. Writing header.")
+                logger.debug(f"_ensure_log_file_header: File '{self.log_file_path}' does not exist. Writing header.", extra={'org_group': EXEMPTION_LOGGER_SYSTEM_CONTEXT})
                 try:
                     # Open in 'w' mode ONLY to write the header if file is missing
                     with open(self.log_file_path, 'w', newline='', encoding='utf-8') as csvfile:
                         writer = csv.DictWriter(csvfile, fieldnames=self.fieldnames)
                         writer.writeheader()
-                    logger.info(f"Initialized log file with header: {self.log_file_path}")
+                    logger.info(f"Initialized log file with header: {self.log_file_path}", extra={'org_group': EXEMPTION_LOGGER_SYSTEM_CONTEXT})
                 except IOError as e:
-                    logger.error(f"Error initializing log file {self.log_file_path}: {e}")
+                    logger.error(f"Error initializing log file {self.log_file_path}: {e}", extra={'org_group': EXEMPTION_LOGGER_SYSTEM_CONTEXT})
                     raise # Re-raise critical error
             # else: # If file exists, do nothing in this function during this debug step
             #    logger.debug(f"Log file {self.log_file_path} already exists. Header check/verification skipped.")
 
         except Exception as e:
-            logger.error(f"Error checking or initializing log file {self.log_file_path}: {e}")
+            logger.error(f"Error checking or initializing log file {self.log_file_path}: {e}", extra={'org_group': EXEMPTION_LOGGER_SYSTEM_CONTEXT})
             raise # Re-raise critical error
 
 
@@ -83,7 +85,7 @@ class ExemptionLogger:
         try:
             # Ensure file exists before trying to read
             if not os.path.isfile(self.log_file_path) or os.path.getsize(self.log_file_path) == 0:
-                 logger.info(f"Exemption log file '{self.log_file_path}' is empty or non-existent. No existing entries to load.")
+                 logger.info(f"Exemption log file '{self.log_file_path}' is empty or non-existent. No existing entries to load.", extra={'org_group': EXEMPTION_LOGGER_SYSTEM_CONTEXT})
                  return
 
             with open(self.log_file_path, 'r', newline='', encoding='utf-8') as csvfile:
@@ -91,13 +93,13 @@ class ExemptionLogger:
                 # Peek at the first line to check header before creating DictReader
                 first_line = csvfile.readline()
                 if not first_line:
-                    logger.warning(f"Exemption log file '{self.log_file_path}' appears empty after opening.")
+                    logger.warning(f"Exemption log file '{self.log_file_path}' appears empty after opening.", extra={'org_group': EXEMPTION_LOGGER_SYSTEM_CONTEXT})
                     return
                 # Ensure comparison handles potential BOM or extra whitespace
                 actual_header = [h.strip() for h in first_line.strip().split(',')]
 
                 if actual_header != self.EXPECTED_HEADER:
-                     logger.error(f"Header mismatch loading log file '{self.log_file_path}'. Expected: {self.EXPECTED_HEADER}, Found: {actual_header}. Cannot load entries.")
+                     logger.error(f"Header mismatch loading log file '{self.log_file_path}'. Expected: {self.EXPECTED_HEADER}, Found: {actual_header}. Cannot load entries.", extra={'org_group': EXEMPTION_LOGGER_SYSTEM_CONTEXT})
                      return
 
                 # Reset file pointer and create DictReader
@@ -113,19 +115,20 @@ class ExemptionLogger:
                         self.logged_exemptions_by_private_id.add(private_id_from_csv)
                         count += 1
                     else:
-                         logger.warning(f"{ANSI_RED}Skipping row {row_num} with missing privateID in '{self.log_file_path}': {row}{ANSI_RESET}")
-            logger.info(f"Loaded {count} existing exemption entries (repo names) from {self.log_file_path}")
+                         logger.warning(f"{ANSI_RED}Skipping row {row_num} with missing privateID in '{self.log_file_path}': {row}{ANSI_RESET}", extra={'org_group': EXEMPTION_LOGGER_SYSTEM_CONTEXT})
+            logger.info(f"Loaded {count} existing exemption entries (repo names) from {self.log_file_path}", extra={'org_group': EXEMPTION_LOGGER_SYSTEM_CONTEXT})
         except FileNotFoundError:
             # Should be handled by _ensure_log_file_header, but good safety check
-            logger.error(f"{ANSI_RED}Exemption log file unexpectedly not found at {self.log_file_path} during load.{ANSI_RESET}")
+            logger.error(f"{ANSI_RED}Exemption log file unexpectedly not found at {self.log_file_path} during load.{ANSI_RESET}", extra={'org_group': EXEMPTION_LOGGER_SYSTEM_CONTEXT})
         except Exception as e:
-            logger.error(f"{ANSI_RED}Error loading exemption log{ANSI_RESET} {self.log_file_path}: {e}", exc_info=True)
+            logger.error(f"{ANSI_RED}Error loading exemption log{ANSI_RESET} {self.log_file_path}: {e}", exc_info=True, extra={'org_group': EXEMPTION_LOGGER_SYSTEM_CONTEXT})
 
     def log_exemption(self, private_id_value: str, repo_name: str, usage_type: str, exemption_text: str):
         """Logs an exemption entry to the CSV file if not already logged."""
+        org_group_context_for_log = private_id_value # private_id_value often contains org/repo
         # Check if already logged in this session or loaded from file
         if private_id_value in self.logged_exemptions_by_private_id:
-            logger.debug(f"Exemption for privateID '{private_id_value}' (Repo: '{repo_name}') already logged. Skipping.")
+            logger.debug(f"Exemption for privateID '{private_id_value}' (Repo: '{repo_name}') already logged. Skipping.", extra={'org_group': org_group_context_for_log})
             return False # Indicate not logged this time
 
         log_entry = {
@@ -139,12 +142,12 @@ class ExemptionLogger:
         
         with self.lock: # Acquire lock before file operations
             try:
-                logger.debug(f"log_exemption: Attempting to log for '{repo_name}'. Checking file '{self.log_file_path}' before open.")
+                logger.debug(f"log_exemption: Attempting to log for '{repo_name}'. Checking file '{self.log_file_path}' before open.", extra={'org_group': org_group_context_for_log})
                 # Log first line before appending
                 # This debug check might be less useful with locking, but kept for now
                 if os.path.exists(self.log_file_path):
                      with open(self.log_file_path, 'r', encoding='utf-8') as check_file:
-                         logger.debug(f"log_exemption: First line before append for '{repo_name}': '{check_file.readline().strip()}'")
+                         logger.debug(f"log_exemption: First line before append for '{repo_name}': '{check_file.readline().strip()}'", extra={'org_group': org_group_context_for_log})
 
                 with open(self.log_file_path, 'a', newline='', encoding='utf-8') as csvfile:
                     is_empty = csvfile.tell() == 0
@@ -156,13 +159,13 @@ class ExemptionLogger:
 
                 self.logged_exemptions_by_private_id.add(private_id_value)
                 self.new_exemptions_logged_count += 1
-                logger.debug(f"Logged exemption for '{repo_name}'")
+                logger.debug(f"Logged exemption for '{repo_name}'", extra={'org_group': org_group_context_for_log})
                 return True
             except IOError as e:
-                logger.error(f"Error writing to log file {self.log_file_path}: {e}")
+                logger.error(f"Error writing to log file {self.log_file_path}: {e}", extra={'org_group': org_group_context_for_log})
                 return False
             except Exception as e:
-                logger.error(f"Unexpected error logging exemption for {repo_name}: {e}", exc_info=True)
+                logger.error(f"Unexpected error logging exemption for {repo_name}: {e}", exc_info=True, extra={'org_group': org_group_context_for_log})
                 return False
         # Lock is released automatically when exiting 'with self.lock:' block
 
@@ -177,7 +180,7 @@ class ExemptionLogger:
         In the current implementation, logging happens immediately, so this method
         primarily serves as a confirmation or for future batching capabilities.
         """
-        logger.info(f"All {self.new_exemptions_logged_count} new exemptions were logged to {self.log_file_path}.")
+        logger.info(f"All {self.new_exemptions_logged_count} new exemptions were logged to {self.log_file_path}.", extra={'org_group': EXEMPTION_LOGGER_SYSTEM_CONTEXT})
  
 # Example usage (if needed for testing, otherwise remove)
 # if __name__ == '__main__':

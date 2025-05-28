@@ -20,10 +20,15 @@ import sys
 import threading # For processed_counter_lock
 import glob
 from datetime import datetime, timezone # timedelta moved to script_utils
-from typing import List, Optional, Dict, Any
-from utils.script_utils import setup_global_logging
-
+from typing import List, Optional, Dict, Any # Keep this line
+# Changed to import setup_global_logging from logging_config
+from utils.logging_config import setup_global_logging 
 setup_global_logging()
+
+# Set the logging level for gql.transport.requests to WARNING to suppress INFO logs
+gql_transport_logger = logging.getLogger("gql.transport.requests")
+gql_transport_logger.setLevel(logging.WARNING)
+
 # Import connectors - Ensure these files exist and are importable
 try:
     import clients.github_connector
@@ -96,15 +101,15 @@ def scan_and_process_single_target(
     previous_intermediate_filename = f"intermediate_{platform}_{target_identifier.replace('/', '_').replace('.', '_')}.json"
     previous_intermediate_filepath = os.path.join(cfg.OUTPUT_DIR, previous_intermediate_filename)
     
-    target_logger.info(f"--- Starting scan for {platform} target: {target_identifier} ---")
+    target_logger.info(f"--- Starting scan for {platform} target: {target_identifier} ---", extra={'org_group': target_identifier})
     if hours_per_commit is None or hours_per_commit == 0: hours_per_commit = None
 
     fetched_repos = []
     connector_success = False 
 
     if limit_to_pass is not None and global_repo_counter[0] >= limit_to_pass:        
-        target_logger.warning(f"Global debug limit ({limit_to_pass}) reached. Skipping scan for {target_identifier}.")
-        target_logger.info(f"--- Finished scan for {platform} target: {target_identifier} (Skipped due to limit) ---")
+        target_logger.warning(f"Global debug limit ({limit_to_pass}) reached. Skipping scan for {target_identifier}.", extra={'org_group': target_identifier})
+        target_logger.info(f"--- Finished scan for {platform} target: {target_identifier} (Skipped due to limit) ---", extra={'org_group': target_identifier})
         return True 
 
     try:
@@ -140,19 +145,22 @@ def scan_and_process_single_target(
             if '/' not in target_identifier:
                  target_logger.error(f"Invalid Azure DevOps target format: '{target_identifier}'. Expected Org/Project.")
                  return False
-            org_name, project_name = target_identifier.split('/', 1)
+            # The ADO connector's fetch_repositories now takes target_path ("org/project")
+            # and internally handles splitting if needed.
             fetched_repos = clients.azure_devops_connector.fetch_repositories(
-                pat_token=auth_params.get("pat_token"),
-                spn_client_id=auth_params.get("spn_client_id"),
-                spn_client_secret=auth_params.get("spn_client_secret"),
-                spn_tenant_id=auth_params.get("spn_tenant_id"),
-                organization_name=org_name, 
-                project_name=project_name, 
+                token=auth_params.get("pat_token"), # 'token' is for PAT
+                target_path=target_identifier,      # Pass the full "org/project" path
                 processed_counter=global_repo_counter,
-                processed_counter_lock=processed_counter_lock, # Added missing argument
+                processed_counter_lock=processed_counter_lock,
                 debug_limit=limit_to_pass, 
+                azure_devops_url=platform_url, # This will be None if not set by CLI, connector handles default
                 hours_per_commit=hours_per_commit,
-                max_workers=cfg.SCANNER_MAX_WORKERS_ENV
+                max_workers=cfg.SCANNER_MAX_WORKERS_ENV,
+                cfg_obj=cfg, # Pass the cfg object
+                previous_scan_output_file=previous_intermediate_filepath, # Pass cache file
+                spn_client_id=auth_params.get("spn_client_id"), # Explicitly pass SPN details
+                spn_client_secret=auth_params.get("spn_client_secret"),
+                spn_tenant_id=auth_params.get("spn_tenant_id")
             )
             connector_success = True
         else:
@@ -160,13 +168,13 @@ def scan_and_process_single_target(
             return False
         
         if fetched_repos:
-            target_logger.info(f"Connector returned {len(fetched_repos)} repositories for {target_identifier}.")
+            target_logger.info(f"Connector returned {len(fetched_repos)} repositories for {target_identifier}.", extra={'org_group': target_identifier})
         else:
-            target_logger.info(f"Connector returned no repositories for {target_identifier}.")
+            target_logger.info(f"Connector returned no repositories for {target_identifier}.", extra={'org_group': target_identifier})
 
     except Exception as e:
-        target_logger.critical(f"Critical error during {platform} connector execution for {target_identifier}: {e}", exc_info=True)
-        target_logger.info(f"--- Finished scan for {platform} target: {target_identifier} (Critical Connector Error) ---")
+        target_logger.critical(f"Critical error during {platform} connector execution for {target_identifier}: {e}", exc_info=True, extra={'org_group': target_identifier})
+        target_logger.info(f"--- Finished scan for {platform} target: {target_identifier} (Critical Connector Error) ---", extra={'org_group': target_identifier})
         return False 
 
     default_org_ids_for_exemption_processor = [target_identifier] 
@@ -175,10 +183,10 @@ def scan_and_process_single_target(
 
 
     if not fetched_repos and connector_success :
-        target_logger.info(f"No repositories to process for {target_identifier} or limit reached within connector.")
+        target_logger.info(f"No repositories to process for {target_identifier} or limit reached within connector.", extra={'org_group': target_identifier})
         intermediate_data = [] 
     else:
-        target_logger.info(f"Finalizing {len(fetched_repos)} repositories for {target_identifier}...")
+        target_logger.info(f"Finalizing {len(fetched_repos)} repositories for {target_identifier}...", extra={'org_group': target_identifier})
         intermediate_data = process_and_finalize_repo_data_list(
             [repo for repo in fetched_repos if repo is not None and not repo.get("processing_error")], 
             cfg, repo_id_mapping_mgr, exemption_mgr, target_logger, platform # Pass platform
@@ -193,16 +201,17 @@ def scan_and_process_single_target(
      # Log the content for mynodejs specifically before writing to intermediate file
     for item_to_log in intermediate_data: # intermediate_data is a list of dicts
         if isinstance(item_to_log, dict) and item_to_log.get("name") == "mynodejs":
-            target_logger.info(f"Repo: mynodejs - Permissions content for intermediate file: {item_to_log.get('permissions')}")
+            repo_org_group = f"{item_to_log.get('organization', target_identifier)}/{item_to_log.get('name', 'UnknownRepo')}"
+            target_logger.info(f"Repo: mynodejs - Permissions content for intermediate file: {item_to_log.get('permissions')}", extra={'org_group': repo_org_group})
             break
    
     if write_json_file(intermediate_data, intermediate_filepath):
-        target_logger.info(f"Successfully wrote intermediate data to {intermediate_filepath}")
-        target_logger.info(f"--- Finished scan for {platform} target: {target_identifier} ---")
+        target_logger.info(f"Successfully wrote intermediate data to {intermediate_filepath}", extra={'org_group': target_identifier})
+        target_logger.info(f"--- Finished scan for {platform} target: {target_identifier} ---", extra={'org_group': target_identifier})
         return True 
     else:
-        target_logger.error(f"Failed to write intermediate data for {target_identifier}.")
-        target_logger.info(f"--- Finished scan for {platform} target: {target_identifier} (Write Error) ---")
+        target_logger.error(f"Failed to write intermediate data for {target_identifier}.", extra={'org_group': target_identifier})
+        target_logger.info(f"--- Finished scan for {platform} target: {target_identifier} (Write Error) ---", extra={'org_group': target_identifier})
         return False 
 
 def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> bool: # Removed repo_id_mapping_mgrNOTE
@@ -258,8 +267,9 @@ def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> boo
     for project_data in all_projects:
         now_iso = datetime.now(timezone.utc).isoformat() # For metadataLastUpdated
         # Skip if it's just an error placeholder from a failed connector run for a target
+        project_org_group = f"{project_data.get('organization', 'UnknownOrg')}/{project_data.get('name', 'UnknownRepo')}"
         if "processing_error" in project_data and len(project_data.keys()) <= 3: # e.g. name, org, error
-            main_logger.warning(f"Skipping project entry during merge due to processing_error: {project_data.get('name', 'Unknown')}")
+            main_logger.warning(f"Skipping project entry during merge due to processing_error: {project_data.get('name', 'Unknown')}", extra={'org_group': project_org_group})
             processed_projects_for_final_catalog.append(project_data) # Keep error record
             continue
 
@@ -277,11 +287,11 @@ def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> boo
         repo_visibility_original = updated_project_data.get("repositoryVisibility", "").lower()
         if repo_visibility_original == "internal":
             updated_project_data["repositoryVisibility"] = "private" 
-            main_logger.debug(f"Repo {updated_project_data.get('name')}: Standardized visibility from 'internal' to 'private' for final output.")
+            main_logger.debug(f"Repo {updated_project_data.get('name')}: Standardized visibility from 'internal' to 'private' for final output.", extra={'org_group': project_org_group})
         
         # The 'privateID' field (now containing prefixed repo_id) comes from the intermediate file.
         # No need to generate or modify it here.
-        main_logger.debug(f"Repo {updated_project_data.get('name')}: Using privateID '{updated_project_data.get('privateID')}' from intermediate file.")
+        main_logger.debug(f"Repo {updated_project_data.get('name')}: Using privateID '{updated_project_data.get('privateID')}' from intermediate file.", extra={'org_group': project_org_group})
 
        # Remove _is_empty_repo and lastCommitSHA if they exist
         updated_project_data.pop('_private_contact_emails', None)

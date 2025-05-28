@@ -38,14 +38,15 @@ def load_previous_scan_data(file_path: str, platform: str) -> Dict[str, Dict]:
     """
     previous_data_map: Dict[str, Dict] = {}
     if not os.path.exists(file_path):
-        logger.info(f"No previous scan data file found at {file_path}. Proceeding with full scan for this target.")
+        # Try to derive org_slug for context even if file not found
+        org_slug_context = _parse_org_from_filename(file_path, platform) or platform
+        logger.info(f"No previous scan data file found at {file_path}. Proceeding with full scan for this target.", extra={'org_group': org_slug_context})
         return previous_data_map
 
     platform_key = platform.lower()
     cache_config = PLATFORM_CACHE_CONFIG.get(platform_key)
-
     if not cache_config:
-        logger.error(f"Unsupported platform '{platform}' for caching. Cannot determine key fields. Check PLATFORM_CACHE_CONFIG.")
+        logger.error(f"Unsupported platform '{platform}' for caching. Cannot determine key fields. Check PLATFORM_CACHE_CONFIG.", extra={'org_group': platform})
         return previous_data_map
 
     id_field_in_cache = cache_config["id_field"]
@@ -67,13 +68,13 @@ def load_previous_scan_data(file_path: str, platform: str) -> Dict[str, Dict]:
                 # Fallback for GitHub: try to construct fullName from org_slug (from filename) and repo name
                 repo_name_from_cache = repo_entry.get('name')
                 if repo_name_from_cache:
-                    repo_key_str = f"{org_slug_from_filename}/{repo_name_from_cache}"
-                    logger.debug(f"Derived GitHub key '{repo_key_str}' from filename and repo name for entry: {str(repo_entry)[:100]}...")
+                    repo_key_str = f"{org_slug_from_filename}/{repo_name_from_cache}" # org_slug_from_filename is the org context
+                    logger.debug(f"Derived GitHub key '{repo_key_str}' from filename and repo name for entry: {str(repo_entry)[:100]}...", extra={'org_group': org_slug_from_filename})
             # Fallback for GitLab/Azure: if the canonical 'repo_id' (as per updated config) is missing, try 'id'
             # This handles caches generated when 'id' was the primary field.
             elif platform_key in ["gitlab", "azure"] and repo_id_value is None and repo_entry.get('id') is not None:
                 repo_key_str = str(repo_entry.get('id'))
-                logger.debug(f"Using fallback 'id' as key for {platform_key} entry (repo_id not found): {repo_key_str} from {str(repo_entry)[:100]}...")
+                logger.debug(f"Using fallback 'id' as key for {platform_key} entry (repo_id not found): {repo_key_str} from {str(repo_entry)[:100]}...", extra={'org_group': org_slug_from_filename or platform_key})
             # Further fallbacks if primary ID and 'repo_id' are missing
             elif platform_key == "gitlab": # Fallback to path_with_namespace if 'id' and 'repo_id' are missing
                     repo_key_str = repo_entry.get('path_with_namespace')
@@ -90,19 +91,20 @@ def load_previous_scan_data(file_path: str, platform: str) -> Dict[str, Dict]:
                 if repo_entry.get(commit_sha_field_in_cache):
                     previous_data_map[repo_key_str] = repo_entry
                 else:
-                    logger.debug(f"Previous entry for '{repo_key_str}' (Platform: {platform}) in {file_path} "
-                                 f"missing '{commit_sha_field_in_cache}'. Will not be used for caching.")
+                    # Use repo_key_str as context if available, else org_slug_from_filename
+                    log_context_for_missing_sha = repo_key_str if "/" in str(repo_key_str) else (org_slug_from_filename or platform_key)
+                    logger.debug(f"Previous entry for '{repo_key_str}' (Platform: {platform}) in {file_path} missing '{commit_sha_field_in_cache}'. Will not be used for caching.", extra={'org_group': log_context_for_missing_sha})
             else:
                 logger.warning(f"Could not determine a unique key for an entry in {file_path} "
                                f"(Platform: {platform}, Name: {repo_entry.get('name', 'N/A')}). "
-                               f"Expected ID field: '{id_field_in_cache}'. Entry snippet: {str(repo_entry)[:100]}...")
+                               f"Expected ID field: '{id_field_in_cache}'. Entry snippet: {str(repo_entry)[:100]}...", extra={'org_group': org_slug_from_filename or platform_key})
 
-        logger.info(f"Successfully loaded {len(previous_data_map)} cacheable entries from previous scan: {file_path} for platform {platform}")
+        logger.info(f"Successfully loaded {len(previous_data_map)} cacheable entries from previous scan: {file_path} for platform {platform}", extra={'org_group': org_slug_from_filename or platform_key})
     except json.JSONDecodeError as e:
-        logger.error(f"JSON decoding error loading previous scan data from {file_path}: {e}", exc_info=True)
+        logger.error(f"JSON decoding error loading previous scan data from {file_path}: {e}", exc_info=True, extra={'org_group': org_slug_from_filename or platform_key})
     except IOError as e:
-        logger.error(f"IOError loading previous scan data from {file_path}: {e}", exc_info=True)
+        logger.error(f"IOError loading previous scan data from {file_path}: {e}", exc_info=True, extra={'org_group': org_slug_from_filename or platform_key})
     except Exception as e: # Catch any other unexpected errors
-        logger.error(f"Unexpected error loading or parsing previous scan data from {file_path}: {e}", exc_info=True)
+        logger.error(f"Unexpected error loading or parsing previous scan data from {file_path}: {e}", exc_info=True, extra={'org_group': org_slug_from_filename or platform_key})
 
     return previous_data_map

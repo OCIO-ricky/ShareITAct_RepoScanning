@@ -4,7 +4,8 @@ requests
 python-dateutil # For parsing dates reliably
 google-generativeai
 PyGithub
-python-gitlab
+python-gitlab[graphql]>=4.12.1   #  (used by GiLab connector, ensure version with gitlab.GraphQL)
+gql[requests] # GraphQL client for Python (used by GitHub connector)
 azure-devops
 azure-identity
 pandas

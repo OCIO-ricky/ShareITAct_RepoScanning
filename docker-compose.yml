@@ -2,14 +2,14 @@
 # Builds and run multiple docker containers to
 # processs concurrently the multiple platforms.
 # ---------------------------------
-# Just run: docker-compose up -d
+# Just run: docker-compose up -d --build
 # (to rebuilt image): docker-compose build --no-cache
 # ---------------------------------
 services:
 
   scan-github:
     image: cdc-repo-scanner:latest
-    build: . # Builds using the Dockerfile in the current directory (your project root)
+    build: . # Add this line to tell Docker Compose to build this image locally
     container_name: scanner-github-instance
     environment:
       # These environment variables will read values from the .env file, unless you override them here.
@@ -28,7 +28,7 @@ services:
  
   scan-gitlab:
     image: cdc-repo-scanner:latest
-    build: .
+#    depends_on: [scan-github] # Ensures scan-github attempts to build/start first
     container_name: scanner-gitlab-instance
     environment:
       - GITLAB_TOKEN=${GITLAB_TOKEN}
@@ -46,7 +46,7 @@ services:
 
   scan-azure:
     image: cdc-repo-scanner:latest
-    build: .
+    depends_on: [scan-github] # Ensures scan-github attempts to build/start first
     container_name: scanner-azure-instance
     environment:
       - AZURE_DEVOPS_TOKEN=${AZURE_DEVOPS_TOKEN}
@@ -69,7 +69,6 @@ services:
   # This service will run after and if scan-github, scan-gitlab, and scan-azure complete successfully.
   merge-results:
     image: cdc-repo-scanner:latest
-    build: . # Uses the same Dockerfile as other services
     container_name: scanner-merge-instance
     depends_on:
      scan-github:
@@ -90,7 +89,7 @@ services:
 
 # ---------------------------------
 # DEBUG  (OPTIONAL )
-# THe next container runs nothing automatically. Its like an open terminal.
+# The next container runs nothing automatically. Its like an open terminal.
 # You can use it to manually run a scanner command or utility via its terminal window (Exec tab).
 # Examples: 
 # $> python generate_codejson.py github --gh-tk <PAT> --orgs cdcent --limit 30

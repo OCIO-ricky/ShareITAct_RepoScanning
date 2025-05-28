@@ -123,15 +123,16 @@ class RepoIdMappingManager:
         Updates URL, organization, and contact emails if the entry exists and they differ.
         contact_emails_str_arg: A semicolon-separated string of contact emails, or None.
         """
+        org_group_context_for_log = f"{organization}/{repo_name}"
         if not platform_repo_id:
-            self.logger.info(f"get_or_create_mapping_entry: platform_repo_id is MISSING for {organization}/{repo_name}. Generating random suffix for PrivateID.")
-            self.logger.error(f"Platform Repo ID is missing for {organization}/{repo_name}. Cannot generate PrivateID. Using random suffix.")
+            self.logger.info(f"get_or_create_mapping_entry: platform_repo_id is MISSING for {organization}/{repo_name}. Generating random suffix for PrivateID.", extra={'org_group': org_group_context_for_log})
+            self.logger.error(f"Platform Repo ID is missing for {organization}/{repo_name}. Cannot generate PrivateID. Using random suffix.", extra={'org_group': org_group_context_for_log})
             private_id_value = f"{platform_prefix}_random_{self._generate_random_suffix()}"
         else:
             private_id_value = f"{platform_prefix}_{str(platform_repo_id)}"
 
         if not repository_url:
-            self.logger.warning(f"RepositoryURL is missing for {organization}/{repo_name} (PrivateID: {private_id_value}). Mapping entry will lack URL.")
+            self.logger.warning(f"RepositoryURL is missing for {organization}/{repo_name} (PrivateID: {private_id_value}). Mapping entry will lack URL.", extra={'org_group': org_group_context_for_log})
 
      #   self.logger.info(f"get_or_create_mapping_entry CALLED. PrivateID to check/create: '{private_id_value}' for repo: {organization}/{repo_name}. Incoming Org: '{organization}'. Emails str: '{contact_emails_str_arg}'")
 
@@ -142,7 +143,7 @@ class RepoIdMappingManager:
                 email.strip().lower() for email in contact_emails_str_arg.split(';') if email.strip()
             )))
         elif contact_emails_str_arg: # Log if it's not a string but also not None/empty
-             self.logger.warning(f"contact_emails_str_arg for {private_id_value} was not a string: {type(contact_emails_str_arg)}. Treating as no emails.")
+             self.logger.warning(f"contact_emails_str_arg for {private_id_value} was not a string: {type(contact_emails_str_arg)}. Treating as no emails.", extra={'org_group': org_group_context_for_log})
              # parsed_incoming_emails_list remains []
 
         with self.lock:
@@ -156,7 +157,7 @@ class RepoIdMappingManager:
                 org_needs_update = current_org_in_mapping != organization
            #     self.logger.info(f"{ANSI_RED}PRIVATEID_MANAGER - Org check for {private_id_value}: Incoming='{organization}', Existing='{current_org_in_mapping}', NeedsUpdate={org_needs_update}{ANSI_RESET}")
                 if org_needs_update:
-                    self.logger.info(f"Updating Organization for PrivateID {private_id_value}. Old: '{current_org_in_mapping}', New: '{organization}'.")
+                    self.logger.info(f"Updating Organization for PrivateID {private_id_value}. Old: '{current_org_in_mapping}', New: '{organization}'.", extra={'org_group': org_group_context_for_log})
                     existing_data['org'] = organization
                     updated = True
                 
@@ -165,7 +166,7 @@ class RepoIdMappingManager:
                 url_needs_update = current_url_in_mapping != repository_url
             #    self.logger.info(f"{ANSI_RED}PRIVATEID_MANAGER - URL check for {private_id_value}: Incoming='{repository_url}', Existing='{current_url_in_mapping}', NeedsUpdate={url_needs_update}{ANSI_RESET}")
                 if url_needs_update:
-                    self.logger.info(f"Updating RepositoryURL for PrivateID {private_id_value}. Old: '{current_url_in_mapping}', New: '{repository_url}'.")
+                    self.logger.info(f"Updating RepositoryURL for PrivateID {private_id_value}. Old: '{current_url_in_mapping}', New: '{repository_url}'.", extra={'org_group': org_group_context_for_log})
                     existing_data['url'] = repository_url
                     updated = True
 
@@ -174,7 +175,7 @@ class RepoIdMappingManager:
                 repo_name_needs_update = current_repo_name_in_mapping != repo_name
             #    self.logger.info(f"{ANSI_RED}PRIVATEID_MANAGER - RepoName check for {private_id_value}: Incoming='{repo_name}', Existing='{current_repo_name_in_mapping}', NeedsUpdate={repo_name_needs_update}{ANSI_RESET}")
                 if repo_name_needs_update:
-                    self.logger.info(f"Updating RepositoryName for PrivateID {private_id_value}. Old: '{current_repo_name_in_mapping}', New: '{repo_name}'.")
+                    self.logger.info(f"Updating RepositoryName for PrivateID {private_id_value}. Old: '{current_repo_name_in_mapping}', New: '{repo_name}'.", extra={'org_group': org_group_context_for_log})
                     existing_data['repo'] = repo_name
                     updated = True
 
@@ -183,7 +184,7 @@ class RepoIdMappingManager:
                 emails_need_update = parsed_incoming_emails_list != existing_emails_list
             #    self.logger.info(f"{ANSI_RED}PRIVATEID_MANAGER - Emails check for {private_id_value}: ParsedIncoming={parsed_incoming_emails_list}, ExistingLoaded={existing_emails_list}, NeedsUpdate={emails_need_update}{ANSI_RESET}")
                 if emails_need_update:
-                    self.logger.info(f"Updating contact emails for PrivateID {private_id_value}. Old: {';'.join(existing_emails_list)}, New: {';'.join(parsed_incoming_emails_list)}")
+                    self.logger.info(f"Updating contact emails for PrivateID {private_id_value}. Old: {';'.join(existing_emails_list)}, New: {';'.join(parsed_incoming_emails_list)}", extra={'org_group': org_group_context_for_log})
                     existing_data['emails'] = parsed_incoming_emails_list
                     self.updated_email_count += 1
                     updated = True

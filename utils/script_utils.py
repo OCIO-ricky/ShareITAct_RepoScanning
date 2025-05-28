@@ -17,6 +17,7 @@ from typing import List, Optional, Dict, Any
 from .config import Config
 from .exemption_logger import ExemptionLogger
 from .privateid_manager import RepoIdMappingManager
+from .logging_config import ContextualLogFormatter # Import ContextualLogFormatter
 
 # --- Check for packaging library for version parsing ---
 PACKAGING_AVAILABLE = False
@@ -76,13 +77,15 @@ def setup_target_logger(logger_name, log_file_name, output_dir, level=logging.IN
     
     if logger.hasHandlers():
         for handler in list(logger.handlers):
-            logger.removeHandler(handler)
+            # logger.removeHandler(handler) # This might be too aggressive if other parts of app add handlers
+            # Instead, check if it's one of ours or just clear and re-add. For simplicity, clear.
             handler.close()
     logger.propagate = False
 
     fh = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
     fh.setLevel(level)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    # Use ContextualLogFormatter for target-specific logs
+    formatter = ContextualLogFormatter('%(asctime)s - [%(org_group)s] - %(name)s - %(levelname)s - %(message)s')
     fh.setFormatter(formatter)
     logger.addHandler(fh)
     
@@ -171,6 +174,7 @@ def infer_version(repo_data: Dict[str, Any], logger_instance: logging.Logger) ->
     """
     Infers the version of the repository based on the tags.
     """
+    repo_org_group_context = f"{repo_data.get('organization', 'UnknownOrg')}/{repo_data.get('name', 'UnknownRepo')}"
     api_tags = repo_data.get('_api_tags', []) 
     if not api_tags: return "N/A"
     parsed_versions, parsed_prereleases = [], []
@@ -187,20 +191,21 @@ def infer_version(repo_data: Dict[str, Any], logger_instance: logging.Logger) ->
         try:
             latest_version = sorted(parsed_versions)[-1]
             return str(latest_version)
-        except TypeError as te: # Catch if list contains mixed types (e.g. Version and str)
+        except TypeError as te:
             logger_instance.warning(
                 f"TypeError while sorting versions for {repo_data.get('name')}: {te}. "
                 f"Versions list (first 5 elements): {[str(v) for v in parsed_versions[:5]]}. "
                 f"Types in list (first 5 elements): {[type(v).__name__ for v in parsed_versions[:5]]}. "
-                "Returning first parsed version if available."
-            )
+                "Returning first parsed version if available.",
+                extra={'org_group': repo_org_group_context}
+            ) # Catch if list contains mixed types (e.g. Version and str)
             return str(parsed_versions[0]) if parsed_versions else "N/A"
     if parsed_prereleases and PACKAGING_AVAILABLE and packaging_version: 
         try:
             latest_prerelease = sorted(parsed_prereleases)[-1]
             return str(latest_prerelease)
         except TypeError:
-             logger_instance.warning(f"Could not sort pre-releases for {repo_data.get('name')}. Returning first parsed pre-release if available.")
+             logger_instance.warning(f"Could not sort pre-releases for {repo_data.get('name')}. Returning first parsed pre-release if available.", extra={'org_group': repo_org_group_context})
              return str(parsed_prereleases[0]) if parsed_prereleases else "N/A"
 
     logger_instance.debug(f"No suitable semantic version in tags for {repo_data.get('name')}")
@@ -208,12 +213,13 @@ def infer_version(repo_data: Dict[str, Any], logger_instance: logging.Logger) ->
 
 def infer_status(repo_data: Dict[str, Any], logger_instance: logging.Logger) -> str:
     repo_name_for_log = f"{repo_data.get('organization', '?')}/{repo_data.get('name', '?')}"
+    # repo_name_for_log is already in 'org/repo' format, suitable for org_group
     if repo_data.get('archived', False): 
-        logger_instance.debug(f"Status for {repo_name_for_log}: 'archived' (API flag)")
+        logger_instance.debug(f"Status for {repo_name_for_log}: 'archived' (API flag)", extra={'org_group': repo_name_for_log})
         return "archived"
     status_from_readme = repo_data.get('_status_from_readme') 
     if status_from_readme and status_from_readme in VALID_README_STATUSES:
-        logger_instance.debug(f"Status for {repo_name_for_log}: '{status_from_readme}' (README)")
+        logger_instance.debug(f"Status for {repo_name_for_log}: '{status_from_readme}' (README)", extra={'org_group': repo_name_for_log})
         return status_from_readme
     last_modified_str = repo_data.get('date', {}).get('lastModified')
     if last_modified_str:
@@ -222,12 +228,12 @@ def infer_status(repo_data: Dict[str, Any], logger_instance: logging.Logger) -> 
             if last_modified_dt.tzinfo is None:
                  last_modified_dt = last_modified_dt.replace(tzinfo=timezone.utc)
             if (datetime.now(timezone.utc) - last_modified_dt) > timedelta(days=INACTIVITY_THRESHOLD_YEARS * 365.25):
-                logger_instance.debug(f"Status for {repo_name_for_log}: 'inactive' (> {INACTIVITY_THRESHOLD_YEARS} years)")
+                logger_instance.debug(f"Status for {repo_name_for_log}: 'inactive' (> {INACTIVITY_THRESHOLD_YEARS} years)", extra={'org_group': repo_name_for_log})
                 return "inactive"
         except ValueError:
-            logger_instance.warning(f"Could not parse lastModified date string '{last_modified_str}' for {repo_name_for_log}.")
+            logger_instance.warning(f"Could not parse lastModified date string '{last_modified_str}' for {repo_name_for_log}.", extra={'org_group': repo_name_for_log})
         except Exception as e:
-            logger_instance.error(f"Date comparison error for {repo_name_for_log}: {e}", exc_info=True)
+            logger_instance.error(f"Date comparison error for {repo_name_for_log}: {e}", exc_info=True, extra={'org_group': repo_name_for_log})
 
     logger_instance.debug(f"Status for {repo_name_for_log}: 'development' (default)")
     return "development"
@@ -238,86 +244,146 @@ def process_and_finalize_repo_data_list(
     repo_id_mapping_mgr: RepoIdMappingManager,
     exemption_mgr: ExemptionLogger, 
     target_logger: logging.Logger,
-    platform: str
+    platform: str # Added platform parameter
 ) -> List[Dict[str, Any]]:
-    # Function body remains the same as in generate_codejson.py
-    # ... (Copy the exact body of process_and_finalize_repo_data_list here) ...
-    # For brevity, I'm not repeating the full body here, but you should copy it.
-    # Ensure all its internal logic uses the passed `cfg`, `repo_id_mapping_mgr`, etc.
-    # and that `infer_status` and `infer_version` are called correctly (they are now local to this file).
+    """
+    Processes a list of repository data dictionaries, applying exemptions,
+    generating private IDs, inferring status/version, and cleaning data.
+    """
     finalized_list = []
     if not repos_list:
         return []
 
-    for repo_data in repos_list:
-        repo_name = repo_data.get('name', 'UnknownRepo')
-        org_name = repo_data.get('organization', 'UnknownOrg')
-        is_private_or_internal = repo_data.get('repositoryVisibility', '').lower() in ['private', 'internal']
-        platform_repo_id = str(repo_data.get('repo_id', '')) 
-
-        target_logger.debug(f"Finalizing data for repo: {org_name}/{repo_name}")
-
-        if 'processing_error' in repo_data:
-            target_logger.error(f"Skipping finalization for {org_name}/{repo_name} due to previous error: {repo_data['processing_error']}")
-            finalized_list.append({"name": repo_name, "organization": org_name, "processing_error": repo_data['processing_error']})
+    for repo_data_item in repos_list:
+        if not isinstance(repo_data_item, dict):
+            target_logger.warning(f"Skipping non-dictionary item in repos_list: {type(repo_data_item)}")
             continue
+
+        repo_name = repo_data_item.get('name', 'UnknownRepo')
+        org_name = repo_data_item.get('organization', 'UnknownOrg')
+        repo_org_group_context = f"{org_name}/{repo_name}"
+        
+        target_logger.debug(f"Finalizing data for repo: {org_name}/{repo_name}", extra={'org_group': repo_org_group_context})
+
+        if 'processing_error' in repo_data_item:
+            target_logger.error(f"Skipping finalization for {org_name}/{repo_name} due to previous error: {repo_data_item['processing_error']}", extra={'org_group': repo_org_group_context})
+            # Include essential fields even for errored items for traceability
+            finalized_list.append({
+                "name": repo_name, 
+                "organization": org_name, 
+                "_azure_project_name": repo_data_item.get("_azure_project_name"), # Keep if ADO
+                "processing_error": repo_data_item['processing_error']
+            })
+            continue
+        
         try:
-            # ... (rest of the function body from generate_codejson.py)
-            # Ensure to replace calls to infer_status, infer_version with the local ones.
-            # Example: repo_data['status'] = infer_status(repo_data, target_logger)
-            #          repo_data['version'] = infer_version(repo_data, target_logger)
-            # The full body is omitted here for brevity in the diff.
-            # You would copy the exact logic from the original file.
-            # This is a placeholder for the actual logic:
-            prefixed_repo_id_for_code_json = None # Placeholder
+            # --- Exemption Processing ---
+            # Exemption processor is now called before this function by the main script.
+            # We assume repo_data_item already has exemption-related fields populated.
+            # This function will now focus on privateID, URL updates, status/version, and cleanup.
+
+            # --- PrivateID and URL Handling ---
+            is_private_or_internal = repo_data_item.get('repositoryVisibility', '').lower() in ['private', 'internal']
+            platform_repo_id = str(repo_data_item.get('repo_id', '')) # Ensure it's a string for prefixing
+            prefixed_repo_id_for_code_json = None
+
             if is_private_or_internal and platform_repo_id:
-                private_emails_data = repo_data.get('_private_contact_emails', []) 
-                contact_emails_for_csv = ';'.join(filter(None, private_emails_data)) if isinstance(private_emails_data, list) else (private_emails_data if isinstance(private_emails_data, str) else '')
-                prefixed_repo_id_for_code_json = f"{platform.lower()}_{platform_repo_id}"
-                repo_id_mapping_mgr.get_or_create_mapping_entry(
-                    platform_repo_id=platform_repo_id, organization=org_name, repo_name=repo_name, 
-                    repository_url=repo_data.get('repositoryURL', ''), contact_emails_str_arg=contact_emails_for_csv, platform_prefix=platform.lower()
+                # _private_contact_emails should be a list of strings from exemption_processor
+                private_emails_data = repo_data_item.get('_private_contact_emails', []) 
+                contact_emails_for_csv = ';'.join(filter(None, private_emails_data)) if isinstance(private_emails_data, list) else ''
+                
+                prefixed_repo_id_for_code_json = repo_id_mapping_mgr.get_or_create_mapping_entry(
+                    platform_repo_id=platform_repo_id,
+                    organization=org_name,
+                    repo_name=repo_name,
+                    repository_url=repo_data_item.get('repositoryURL', ''),
+                    contact_emails_str_arg=contact_emails_for_csv,
+                    platform_prefix=platform.lower() # Pass the platform prefix
                 )
-                repo_data['privateID'] = prefixed_repo_id_for_code_json
+                repo_data_item['privateID'] = prefixed_repo_id_for_code_json
             else:
-                repo_data.pop('privateID', None)
-            usage_type = repo_data.get('permissions', {}).get('usageType')
+                repo_data_item.pop('privateID', None) # Remove if not private/internal or no ID
+
+            # Update repositoryURL based on exemption status and privacy
+            usage_type = repo_data_item.get('permissions', {}).get('usageType')
             is_exempt = usage_type and usage_type.lower().startswith('exempt')
+
             if is_private_or_internal:
-                if is_exempt and cfg.EXEMPTED_NOTICE_URL: repo_data['repositoryURL'] = cfg.EXEMPTED_NOTICE_URL
-                elif cfg.INSTRUCTIONS_URL: repo_data['repositoryURL'] = cfg.INSTRUCTIONS_URL
+                if is_exempt and cfg.EXEMPTED_NOTICE_URL:
+                    repo_data_item['repositoryURL'] = cfg.EXEMPTED_NOTICE_URL
+                elif cfg.INSTRUCTIONS_URL: # Fallback for non-exempt private/internal
+                    repo_data_item['repositoryURL'] = cfg.INSTRUCTIONS_URL
+            
+            # Log exemption if applicable
             if is_exempt:
-                log_id_for_exemption = prefixed_repo_id_for_code_json or (f"NoPlatformRepoID-{platform.lower()}-{org_name}-{repo_name}" if is_private_or_internal else f"Public-{org_name}-{repo_name}")
-                exemption_mgr.log_exemption(log_id_for_exemption, repo_name, usage_type, repo_data.get('permissions', {}).get('exemptionText', ''))
-            if repo_data.get('_is_generic_organization', False): repo_data['organization'] = cfg.AGENCY_NAME
-            repo_data['status'] = infer_status(repo_data, target_logger) # Uses local infer_status
-            if repo_data.get('version', 'N/A') == 'N/A': repo_data['version'] = infer_version(repo_data, target_logger) # Uses local infer_version
-            if 'date' in repo_data and isinstance(repo_data['date'], dict):
-                for key, value in list(repo_data['date'].items()):
-                    if isinstance(value, datetime): repo_data['date'][key] = value.isoformat()
-                    elif value is None: repo_data['date'].pop(key)
-                if not repo_data['date']: repo_data.pop('date')
-            repo_data.pop('_api_tags', None); repo_data.pop('archived', None); repo_data.pop('_status_from_readme', None); repo_data.pop('_is_generic_organization', None)
-            cleaned_repo_data = {k: v for k, v in repo_data.items() if v is not None} # Simplified cleaning for example
-            # Proper cleaning for nested dicts/lists should be copied
-            final_list_item = {}
-            for k, v_item in repo_data.items():
-                if v_item is None: continue
+                log_id_for_exemption = prefixed_repo_id_for_code_json or \
+                                     (f"NoPlatformRepoID-{platform.lower()}-{org_name}-{repo_name}" if is_private_or_internal else f"Public-{org_name}-{repo_name}")
+                exemption_mgr.log_exemption(
+                    log_id_for_exemption,
+                    repo_name,
+                    usage_type,
+                    repo_data_item.get('permissions', {}).get('exemptionText', '')
+                )
+
+            # --- Organization Finalization ---
+            # _is_generic_organization flag is set by exemption_processor
+            if repo_data_item.get('_is_generic_organization', False):
+                repo_data_item['organization'] = cfg.AGENCY_NAME
+
+            # --- Status and Version Inference ---
+            repo_data_item['status'] = infer_status(repo_data_item, target_logger)
+            if repo_data_item.get('version', 'N/A') == 'N/A': # Only infer if not already set
+                repo_data_item['version'] = infer_version(repo_data_item, target_logger)
+
+            # --- Date Formatting ---
+            if 'date' in repo_data_item and isinstance(repo_data_item['date'], dict):
+                for key, value in list(repo_data_item['date'].items()): # Iterate over a copy for safe removal
+                    if isinstance(value, datetime):
+                        repo_data_item['date'][key] = value.isoformat()
+                    elif value is None: # Remove None date fields
+                        repo_data_item['date'].pop(key, None)
+                if not repo_data_item['date']: # If date dict becomes empty, remove it
+                    repo_data_item.pop('date', None)
+            
+            # --- Final Cleanup of Temporary/Internal Fields ---
+            repo_data_item.pop('_api_tags', None)
+            repo_data_item.pop('archived', None) # 'archived' status is captured in 'status' field
+            repo_data_item.pop('_status_from_readme', None)
+            repo_data_item.pop('_is_generic_organization', None)
+            # _is_empty_repo and lastCommitSHA are removed in merge_intermediate_catalogs
+            # _private_contact_emails is also removed in merge_intermediate_catalogs
+
+            # Remove top-level None values and empty nested structures
+            final_cleaned_item = {}
+            for k, v_item in repo_data_item.items():
+                if v_item is None:
+                    continue
                 if isinstance(v_item, dict):
                     cleaned_v_item = {nk: nv for nk, nv in v_item.items() if nv is not None}
-                    if cleaned_v_item: final_list_item[k] = cleaned_v_item
+                    if cleaned_v_item: # Only add if dict is not empty after cleaning
+                        final_cleaned_item[k] = cleaned_v_item
                 elif isinstance(v_item, list):
                     cleaned_list_item = [item for item in v_item if item is not None]
-                    if cleaned_list_item: final_list_item[k] = cleaned_list_item
-                else: final_list_item[k] = v_item
-            finalized_list.append(final_list_item)
+                    if cleaned_list_item: # Only add if list is not empty after cleaning
+                        final_cleaned_item[k] = cleaned_list_item
+                else:
+                    final_cleaned_item[k] = v_item
+            
+            finalized_list.append(final_cleaned_item)
 
         except Exception as e:
-            target_logger.error(f"Error during final processing for {org_name}/{repo_name}: {e}", exc_info=True)
-            finalized_list.append({"name": repo_name, "organization": org_name, "processing_error": f"Finalization stage: {e}"})
+            target_logger.error(f"Error during final processing for {org_name}/{repo_name}: {e}", exc_info=True, extra={'org_group': repo_org_group_context})
+            finalized_list.append({
+                "name": repo_name, 
+                "organization": org_name, 
+                "_azure_project_name": repo_data_item.get("_azure_project_name"),
+                "processing_error": f"Finalization stage: {e}"
+            })
+            
     return finalized_list
 
 # --- CLI Argument Parsing Helpers ---
+# These are used by generate_codejson.py's main_cli
 def get_targets_from_cli_or_env(cli_arg_value: Optional[str], env_config_value: List[str], entity_name_plural: str, main_logger: logging.Logger) -> List[str]: 
     targets = []
     source = ""

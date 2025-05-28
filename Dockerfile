@@ -26,7 +26,12 @@ RUN mkdir -p /usr/local/share/ca-certificates/
 # (Optional) Set the environment variable for requests
 #ENV REQUESTS_CA_BUNDLE=/app/my-corp-ca.crt
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        build-essential \
+        libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
 # Handle certificates
 ## COPY ./zscaler/CDC-CSPO-PA.crt /usr/local/share/ca-certificates/
 COPY ./zscaler/ZScalerRootCA.crt /usr/local/share/ca-certificates/
