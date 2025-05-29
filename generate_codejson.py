@@ -444,8 +444,33 @@ def _get_and_validate_token(
 def main_cli(): 
     script_start_time = time.time() # Record the start time of the script
 
+    # --- BEGIN PRE-CONFIG DIAGNOSTIC ---
+    # This attempts to load .env directly to see what os.getenv() reports.
+    # This is for diagnosis if the Config class seems to get a truncated list.
+    try:
+        from dotenv import load_dotenv as load_dotenv_direct # Temporary import for direct test
+        import os as os_direct # Temporary import for direct test
+        
+        # Assuming .env is in the current working directory when generate_codejson.py is run
+        env_path_direct = os_direct.path.join(os_direct.getcwd(), '.env')
+        # Create a temporary logger for this pre-config diagnostic
+        pre_config_diag_logger = logging.getLogger("pre_config_diag")
+        pre_config_diag_logger.info(f"DIAGNOSTIC_PRE_CONFIG: Attempting to load .env from: {env_path_direct}")
+        found_dotenv_direct = load_dotenv_direct(dotenv_path=env_path_direct, override=False) # override=False is important
+        pre_config_diag_logger.info(f"DIAGNOSTIC_PRE_CONFIG: load_dotenv_direct found .env: {found_dotenv_direct}")
+        raw_github_orgs_direct = os_direct.getenv("GITHUB_ORGS")
+        pre_config_diag_logger.info(f"DIAGNOSTIC_PRE_CONFIG: Raw GITHUB_ORGS from os.getenv after explicit load_dotenv_direct: '{raw_github_orgs_direct}'")
+    except Exception as e_pre_diag:
+        logging.getLogger("pre_config_diag").error(f"Error in PRE-CONFIG DIAGNOSTIC block: {e_pre_diag}")
+    # --- END PRE-CONFIG DIAGNOSTIC ---
+
     cfg = Config()
     setup_global_logging()
+    # --- BEGIN DIAGNOSTIC LOGGING ---
+    main_logger_diag = logging.getLogger(__name__) 
+    main_logger_diag.info(f"DIAGNOSTIC: Initial GITHUB_ORGS_ENV from cfg.GITHUB_ORGS_ENV: {cfg.GITHUB_ORGS_ENV} (type: {type(cfg.GITHUB_ORGS_ENV)})")
+    main_logger_diag.info(f"DIAGNOSTIC: Initial DEBUG_REPO_LIMIT from cfg.DEBUG_REPO_LIMIT: {cfg.DEBUG_REPO_LIMIT} (type: {type(cfg.DEBUG_REPO_LIMIT)})")
+    # --- END DIAGNOSTIC LOGGING ---
     main_logger = logging.getLogger(__name__) 
 
     parser = argparse.ArgumentParser(description="Share IT Act Repository Scanning Tool")
@@ -503,12 +528,17 @@ def main_cli():
         if cli_limit_val > 0:
             limit_for_scans = cli_limit_val
             main_logger.info(f"CLI override: Repository processing limit set to {limit_for_scans} for this run.")
-        else: # limit <= 0 means no limit for this run
+        else: # CLI limit is 0 or less, meaning no limit
             main_logger.info(f"CLI override: --limit set to {cli_limit_val}, effectively no limit for this run (processing all).")
-    elif cfg.DEBUG_REPO_LIMIT is not None: 
-        limit_for_scans = cfg.DEBUG_REPO_LIMIT
-        main_logger.info(f"Using repository processing limit from .env: {limit_for_scans}.")
-    else:
+            limit_for_scans = None # Explicitly set to None for "no limit"
+    elif cfg.DEBUG_REPO_LIMIT is not None:
+        if cfg.DEBUG_REPO_LIMIT > 0: # Only apply .env limit if it's greater than 0
+            limit_for_scans = cfg.DEBUG_REPO_LIMIT
+            main_logger.info(f"Using repository processing limit from .env: {limit_for_scans}.")
+        else: # .env limit is 0 or less, meaning no limit
+            main_logger.info(f"Repository processing limit from .env is {cfg.DEBUG_REPO_LIMIT}, effectively no limit for this run (processing all).")
+            limit_for_scans = None # Explicitly set to None for "no limit"
+    else: # No CLI limit, and DEBUG_REPO_LIMIT is None (e.g., key not in .env or value was empty)
         main_logger.info("No repository processing limit set (processing all).")
 
     # Determine hours_per_commit (CLI > .env > None/Disabled)
@@ -557,6 +587,11 @@ def main_cli():
             targets_to_scan = get_targets_from_cli_or_env(args.orgs, cfg.GITHUB_ORGS_ENV, "GitHub.com organizations", main_logger)
             main_logger.info("Targeting public GitHub.com")
 
+        # --- BEGIN DIAGNOSTIC LOGGING ---
+        main_logger_diag.info(f"DIAGNOSTIC: Targets to scan for GitHub: {targets_to_scan}")
+        main_logger_diag.info(f"DIAGNOSTIC: Length of targets_to_scan: {len(targets_to_scan) if targets_to_scan else 0}")
+        main_logger_diag.info(f"DIAGNOSTIC: limit_for_scans before loop: {limit_for_scans} (type: {type(limit_for_scans)})")
+        # --- END DIAGNOSTIC LOGGING ---
         if not targets_to_scan: 
             main_logger.info(f"No {target_entity_name} specified to scan.")
             sys.exit(0)
