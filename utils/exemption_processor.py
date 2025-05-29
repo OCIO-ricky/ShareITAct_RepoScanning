@@ -193,7 +193,7 @@ if AI_LIBRARY_IMPORTED: # Only proceed if the google.generativeai library was su
                         logger.info("SSL connectivity test to Google AI API passed.")
                         _MODULE_AI_ENABLED_STATUS = True # Module *can* use AI if enabled by config
                 except (socket.timeout, socket.error, ssl.SSLError, ConnectionError) as ssl_err:
-                    logger.error(f"{ANSI_RED}SSL connectivity test failed for Google AI API: {ssl_err}. AI processing will be disabled to prevent hangs.{ANSI_RESET}")
+                    logger.error(f"{ANSI_RED}SSL connectivity test failed. AI processing will be disabled to prevent hangs.{ANSI_RESET} Error: {ssl_err}")
                     _MODULE_AI_ENABLED_STATUS = False
                 except Exception as ssl_test_err:
                     logger.warning(f"Unexpected error during SSL connectivity test: {ssl_test_err}. AI processing will be disabled as a precaution.")
