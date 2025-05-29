@@ -320,10 +320,10 @@ def _process_single_azure_devops_repository(
                     default_ids_for_exemption_cache.append(project_name)
                 if cfg_obj:
                     repo_data_to_process = exemption_processor.process_repository_exemptions(
-                        repo_data_to_process, default_org_identifiers=default_ids_for_exemption_cache,
-                        ai_is_enabled_from_config=cfg_obj.AI_ENABLED_ENV, ai_model_name_from_config=cfg_obj.AI_MODEL_NAME_ENV,
-                        ai_temperature_from_config=cfg_obj.AI_TEMPERATURE_ENV, ai_max_output_tokens_from_config=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV,
-                        ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV)
+                        repo_data_to_process,
+                        scm_org_for_logging=organization_name,
+                        cfg_obj=cfg_obj, 
+                        default_org_identifiers=default_ids_for_exemption_cache)
                 return repo_data_to_process # Return cached and re-processed data
 
     current_logger.info(f"No SHA: Processing Azure DevOps repo: {repo_full_name} (ID: {repo_id_str}) with full data fetch.")
@@ -427,20 +427,19 @@ def _process_single_azure_devops_repository(
         if cfg_obj:
             repo_data = exemption_processor.process_repository_exemptions(
                 repo_data,
-                default_org_identifiers=default_ids_for_exemption,
-                ai_is_enabled_from_config=cfg_obj.AI_ENABLED_ENV,
-                ai_model_name_from_config=cfg_obj.AI_MODEL_NAME_ENV,
-                ai_temperature_from_config=cfg_obj.AI_TEMPERATURE_ENV,
-                ai_max_output_tokens_from_config=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV,
-                ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV
-            )
+                scm_org_for_logging=organization_name,
+                cfg_obj=cfg_obj, 
+                default_org_identifiers=default_ids_for_exemption)
         else:
             current_logger.warning(
                 f"cfg_obj not provided to _process_single_azure_devops_repository for {repo_full_name}. "
                 "Exemption processor will use its default AI parameter values."
             )
             repo_data = exemption_processor.process_repository_exemptions(
-                repo_data, default_org_identifiers=default_ids_for_exemption
+                repo_data, 
+                scm_org_for_logging=organization_name,
+                cfg_obj=cfg_obj, 
+                default_org_identifiers=default_ids_for_exemption
             )
         if inter_repo_adaptive_delay_seconds > 0: # This is the inter-repository adaptive delay
             current_logger.debug(f"Azure DevOps repo {repo_full_name}: Applying INTER-REPO adaptive delay of {inter_repo_adaptive_delay_seconds:.2f}s")

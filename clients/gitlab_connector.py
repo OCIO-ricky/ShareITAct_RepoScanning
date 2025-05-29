@@ -166,11 +166,10 @@ def _process_single_gitlab_project(
                     if cfg_obj:
                         repo_data_to_process = exemption_processor.process_repository_exemptions(
                             repo_data_to_process,
-                            group_full_path, # scm_org_for_logging
-                            default_org_identifiers=[group_full_path],
-                            ai_is_enabled_from_config=cfg_obj.AI_ENABLED_ENV, ai_model_name_from_config=cfg_obj.AI_MODEL_NAME_ENV,
-                            ai_temperature_from_config=cfg_obj.AI_TEMPERATURE_ENV, ai_max_output_tokens_from_config=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV,
-                            ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV)
+                            scm_org_for_logging=group_full_path, 
+                            cfg_obj=cfg_obj,
+                            default_org_identifiers=[group_full_path]
+                    )
                     return repo_data_to_process
 
         current_logger.info(f"CACHE MISS or no SHA (pre-GraphQL): Processing GitLab project: {project_rest_stub.path_with_namespace} (ID: {project_stub_id}) with GraphQL full data fetch.")
@@ -334,16 +333,15 @@ def _process_single_gitlab_project(
         if cfg_obj:
             repo_data = exemption_processor.process_repository_exemptions(
                 repo_data,
-                group_full_path, # scm_org_for_logging
-                default_org_identifiers=[group_full_path],
-                ai_is_enabled_from_config=cfg_obj.AI_ENABLED_ENV, ai_model_name_from_config=cfg_obj.AI_MODEL_NAME_ENV,
-                ai_temperature_from_config=cfg_obj.AI_TEMPERATURE_ENV, ai_max_output_tokens_from_config=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV,
-                ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV)
+                scm_org_for_logging=group_full_path, 
+                cfg_obj=cfg_obj,
+                default_org_identifiers=[group_full_path])
         else:
             current_logger.warning(f"cfg_obj not provided to _process_single_gitlab_project for {repo_full_name}.")
             repo_data = exemption_processor.process_repository_exemptions(
                 repo_data,
-                group_full_path, # scm_org_for_logging
+                scm_org_for_logging=group_full_path, 
+                cfg_obj=cfg_obj, # No cfg_obj, so no adaptive delay or other cfg-based processing
                 default_org_identifiers=[group_full_path])
         if inter_repo_adaptive_delay_seconds > 0:
             current_logger.debug(f"GitLab project {repo_full_name}: Applying INTER-REPO adaptive delay of {inter_repo_adaptive_delay_seconds:.2f}s")

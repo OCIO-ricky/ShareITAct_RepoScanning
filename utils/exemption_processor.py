@@ -40,6 +40,7 @@ from dotenv import load_dotenv
 import time
 from typing import List, Optional, Dict, Any
 
+from .config import Config # For type hinting cfg_obj
 
 # --- SSL Verification Control & urllib3 Warning Suppression ---
 import warnings
@@ -50,11 +51,10 @@ except ImportError:
     class InsecureRequestWarning(Warning): # type: ignore
         pass
 
-
 # --- Try importing the AI library ---
 try:
     import google.generativeai as genai
-    from google.api_core.exceptions import InvalidArgument, PermissionDenied
+    from google.api_core import exceptions as google_api_exceptions
     AI_LIBRARY_IMPORTED = True # Indicates the library itself is available
 except ImportError:
     AI_LIBRARY_IMPORTED = False
@@ -62,6 +62,13 @@ except ImportError:
     genai = None # Ensure genai is defined even if import fails
 
 logger = logging.getLogger(__name__)
+
+# For catching requests.exceptions.SSLError if underlying auth uses it, or for other SSL errors
+try:
+    import requests
+except ImportError:
+    requests = None # type: ignore
+
 logger.info(f"Initial AI library import status (google.generativeai): {AI_LIBRARY_IMPORTED}")
 
 # ANSI escape codes for coloring output
@@ -173,10 +180,29 @@ if AI_LIBRARY_IMPORTED: # Only proceed if the google.generativeai library was su
             if genai: # Ensure genai is not None (it wouldn't be if AI_LIBRARY_IMPORTED is True)
                 genai.configure(api_key=GOOGLE_API_KEY)
                 logger.info("Google Generative AI configured successfully with the provided API key.")
-                _MODULE_AI_ENABLED_STATUS = True # Module *can* use AI if enabled by config
+                
+                # Add SSL connectivity test here
+                try:
+                    import socket
+                    import ssl
+                    hostname = "generativelanguage.googleapis.com"
+                    port = 443
+                    sock = socket.create_connection((hostname, port), timeout=5)
+                    context = ssl.create_default_context()
+                    with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+                        logger.info("SSL connectivity test to Google AI API passed.")
+                        _MODULE_AI_ENABLED_STATUS = True # Module *can* use AI if enabled by config
+                except (socket.timeout, socket.error, ssl.SSLError, ConnectionError) as ssl_err:
+                    logger.error(f"{ANSI_RED}SSL connectivity test failed for Google AI API: {ssl_err}. AI processing will be disabled to prevent hangs.{ANSI_RESET}")
+                    _MODULE_AI_ENABLED_STATUS = False
+                except Exception as ssl_test_err:
+                    logger.warning(f"Unexpected error during SSL connectivity test: {ssl_test_err}. AI processing will be disabled as a precaution.")
+                    _MODULE_AI_ENABLED_STATUS = False
+                    
             else: # Should not happen if AI_LIBRARY_IMPORTED is True
                 logger.error("Google Generative AI library was marked as imported, but 'genai' module is None. AI processing disabled.")
                 _MODULE_AI_ENABLED_STATUS = False
+                
         except Exception as ai_config_err:
             # Check if the configuration error is due to an invalid API key
             err_str = str(ai_config_err).lower()
@@ -223,22 +249,27 @@ def _programmatic_org_from_repo_name(repo_name: str, current_org: str, default_o
 
 def _call_ai_for_organization(
     repo_data: dict,
-    ai_model_name: str,
-    ai_temperature: float,
-    ai_max_output_tokens: int,
-    max_input_tokens_for_readme: int, # This is from cfg.MAX_TOKENS_ENV
-    org_group_context_for_log: str
+    cfg_obj: Config, # Changed to accept Config object
+    org_group_context_for_log: str,
 ) -> str | None:
     global _MODULE_AI_ENABLED_STATUS 
-    if not _MODULE_AI_ENABLED_STATUS or not genai or not AI_ORGANIZATION_ENABLED: # Check AI_ORGANIZATION_ENABLED flag
+
+    if not cfg_obj.AI_ENABLED_ENV: # Check global AI enable flag from config
+        logger.debug("AI processing is globally disabled in .env. Skipping AI organization call.", extra={'org_group': org_group_context_for_log})
+        return None
+    if cfg_obj.AI_AUTO_DISABLED_SSL_ERROR:
+        logger.warning(f"{ANSI_YELLOW}AI features were auto-disabled due to a previous SSL certificate error. Skipping AI organization call for '{repo_data.get('name', 'UnknownRepo')}'.{ANSI_RESET}", extra={'org_group': org_group_context_for_log})
+        return None
+    if not _MODULE_AI_ENABLED_STATUS or not genai or not cfg_obj.AI_ORGANIZATION_ENABLED_ENV: # Check module status and specific org inference enable
         logger.debug("AI processing, AI organization inference is disabled. Skipping AI organization call.", extra={'org_group': org_group_context_for_log})
         return None
 
     repo_name_for_ai = repo_data.get('name', '')
     description_for_ai = repo_data.get('description', '')
     tags_list = repo_data.get('tags', [])
-    tags_for_ai = ', '.join(tags_list) if tags_list else ''
+    tags_for_ai = ', '.join(map(str,tags_list)) if tags_list else '' # Ensure tags are strings
     readme_content_for_ai = repo_data.get('readme_content', '') or ''
+    max_input_tokens_for_readme = cfg_obj.MAX_TOKENS_ENV # Get from cfg_obj
     
     if DISABLE_SSL_ENV == "true":
         logger.warning(f"AI organization call for '{repo_name_for_ai}' skipped because DISABLE_SSL_VERIFICATION is true.", extra={'org_group': org_group_context_for_log})
@@ -281,14 +312,14 @@ README Content (excerpt):
 ---
 Determine the organization based on the rules above.
     """
-    try:
-        logger.info(f"Calling AI model '{ai_model_name}' to infer organization for repository '{repo_name_for_ai}'...", extra={'org_group': org_group_context_for_log})
-        model = genai.GenerativeModel(ai_model_name)
+    try: # sourcery skip: extract-method
+        logger.info(f"Calling AI model '{cfg_obj.AI_MODEL_NAME_ENV}' to infer organization for repository '{repo_name_for_ai}'...", extra={'org_group': org_group_context_for_log})
+        model = genai.GenerativeModel(cfg_obj.AI_MODEL_NAME_ENV)
         response = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
-                temperature=ai_temperature,
-                max_output_tokens=ai_max_output_tokens
+                temperature=cfg_obj.AI_TEMPERATURE_ENV,
+                max_output_tokens=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV
             ),
         )
         ai_result_text = response.text.strip()
@@ -304,37 +335,67 @@ Determine the organization based on the rules above.
         else:
             logger.warning(f"AI analysis for '{repo_name_for_ai}' could not find the organization name. Ignoring.", extra={'org_group': org_group_context_for_log})
             return None
-    except (InvalidArgument, PermissionDenied) as ai_auth_err:
+    except (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied) as ai_auth_err:
         err_str = str(ai_auth_err).lower()
         if "api key not valid" in err_str or "api_key_invalid" in err_str or "permission_denied" in err_str:
             logger.error(
                 f"{ANSI_RED}Error during AI organization call for repository '{repo_name_for_ai}': API key is invalid or lacks permissions. "
-                f"Disabling AI for the rest of this run. Error: {ai_auth_err.code} {ai_auth_err.message}{ANSI_RESET}"
+                f"Disabling AI for the rest of this run. Error: {ai_auth_err}{ANSI_RESET}"
             , extra={'org_group': org_group_context_for_log})
             _MODULE_AI_ENABLED_STATUS = False # Disable at module level if key is bad
         else:
             logger.error(f"Authorization/Argument error during AI organization call for '{repo_name_for_ai}': {ai_auth_err}", extra={'org_group': org_group_context_for_log})
         return None
+    except (requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError) as ssl_like_error:
+        error_message_lower = str(ssl_like_error).lower()
+        is_ssl_error = (
+            "ssl" in error_message_lower or
+            "certificate" in error_message_lower or
+            "tlsv1 alert" in error_message_lower or
+            "handshake failed" in error_message_lower or
+            (isinstance(ssl_like_error, google_api_exceptions.ServiceUnavailable) and "unavailable" in error_message_lower) # ServiceUnavailable can wrap SSL
+        )
+        if is_ssl_error:
+            logger.error(
+                f"{ANSI_RED}SSL/Network Error during AI organization call for '{repo_name_for_ai}': {ssl_like_error}. "
+                f"AI features will be auto-disabled for the rest of this run. "
+                f"Please check your corporate network's CA certificate setup in the Docker container (see README).{ANSI_RESET}",
+                extra={'org_group': org_group_context_for_log}
+            )
+            cfg_obj.AI_AUTO_DISABLED_SSL_ERROR = True
+        else: # Not an SSL error, but still a service/network issue
+            logger.error(f"A non-SSL network/service error occurred during AI organization call for '{repo_name_for_ai}': {ssl_like_error}", exc_info=True, extra={'org_group': org_group_context_for_log})
+        return None
     except Exception as ai_err:
         logger.error(f"Error during AI call for repository '{repo_name_for_ai}': {ai_err}", extra={'org_group': org_group_context_for_log})
         return None
     finally:
-        if _MODULE_AI_ENABLED_STATUS and AI_DELAY_ENABLED > 0:
-            logger.debug(f"Pausing for {AI_DELAY_ENABLED} seconds to respect AI rate limit...", extra={'org_group': org_group_context_for_log})
-            time.sleep(AI_DELAY_ENABLED)
+        if _MODULE_AI_ENABLED_STATUS and cfg_obj.AI_DELAY_ENABLED_ENV > 0: # Use delay from cfg_obj
+            logger.debug(f"Pausing for {cfg_obj.AI_DELAY_ENABLED_ENV} seconds to respect AI rate limit...", extra={'org_group': org_group_context_for_log})
+            time.sleep(cfg_obj.AI_DELAY_ENABLED_ENV)
 
 def _call_ai_for_exemption(
     repo_data: dict,
-    ai_model_name: str,
-    ai_temperature: float,
-    ai_max_output_tokens: int,
-    max_input_tokens_for_combined_text: int, # This is from cfg.MAX_TOKENS_ENV
-    org_group_context_for_log: str
+    cfg_obj: Config, # Changed to accept Config object
+    org_group_context_for_log: str,
 ) -> tuple[str | None, str | None]:
     global _MODULE_AI_ENABLED_STATUS
     repo_name_for_log = repo_data.get('name', 'UnknownRepo')
 
-    if not _MODULE_AI_ENABLED_STATUS or not genai:
+    # Check SSL connectivity before proceeding
+    if not hasattr(cfg_obj, '_ssl_test_done'):
+        cfg_obj._ssl_test_done = True
+        if not utils._test_ai_ssl_connectivity(cfg_obj, logger, org_group_context_for_log):
+            return None, None
+
+
+    if not cfg_obj.AI_ENABLED_ENV: # Check global AI enable flag from config
+        logger.debug("AI processing is globally disabled in .env. Skipping AI exemption call.", extra={'org_group': org_group_context_for_log})
+        return None, None
+    if cfg_obj.AI_AUTO_DISABLED_SSL_ERROR:
+        logger.warning(f"{ANSI_YELLOW}AI features were auto-disabled due to a previous SSL certificate error. Skipping AI exemption call for '{repo_name_for_log}'.{ANSI_RESET}", extra={'org_group': org_group_context_for_log})
+        return None, None
+    if not _MODULE_AI_ENABLED_STATUS or not genai: # Check module status
         logger.debug("AI processing is disabled. Skipping AI exemption call.", extra={'org_group': org_group_context_for_log})
         return None, None
 
@@ -345,6 +406,7 @@ def _call_ai_for_exemption(
     readme = repo_data.get('readme_content', '') or ''
     description = repo_data.get('description', '') or ''
     repo_name = repo_data.get('name', '')
+    max_input_tokens_for_combined_text = cfg_obj.MAX_TOKENS_ENV # Get from cfg_obj
 
     if not readme.strip() and not description.strip():
         logger.debug(f"No significant text content (README/description) found for AI exemption analysis of '{repo_name}'. Skipping AI call.", extra={'org_group': org_group_context_for_log})
@@ -390,15 +452,16 @@ Repository Information:
 
     Analysis Result:
     """
-    try:
-        logger.debug(f"Calling AI model '{ai_model_name}' for exemption analysis for repository '{repo_name}'...", extra={'org_group': org_group_context_for_log})
-        model = genai.GenerativeModel(ai_model_name)
+    try: # sourcery skip: extract-method
+        logger.debug(f"Calling AI model '{cfg_obj.AI_MODEL_NAME_ENV}' for exemption analysis for repository '{repo_name}'...", extra={'org_group': org_group_context_for_log})
+        model = genai.GenerativeModel(cfg_obj.AI_MODEL_NAME_ENV)
         response = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
-                temperature=ai_temperature,
-                max_output_tokens=ai_max_output_tokens
+                temperature=cfg_obj.AI_TEMPERATURE_ENV,
+                max_output_tokens=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV
             ),
+            request_options={"timeout": 30}  # 30 second timeout
         )
         ai_result_text = response.text.strip()
         logger.debug(f"AI raw response for exemption for '{repo_name}': {ai_result_text}", extra={'org_group': org_group_context_for_log})
@@ -419,24 +482,44 @@ Repository Information:
         else:
             logger.warning(f"AI exemption analysis for '{repo_name}' returned an unexpected format: '{ai_result_text}'. Ignoring.", extra={'org_group': org_group_context_for_log})
             return None, None
-    except (InvalidArgument, PermissionDenied) as ai_auth_err:
+    except (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied) as ai_auth_err:
         err_str = str(ai_auth_err).lower()
         if "api key not valid" in err_str or "api_key_invalid" in err_str or "permission_denied" in err_str:
             logger.error(
                 f"{ANSI_RED}Error during AI exemption call for repository '{repo_name}': API key is invalid or lacks permissions. "
-                f"Disabling AI for the rest of this run. Error: {ai_auth_err.code} {ai_auth_err.message}{ANSI_RESET}"
+                f"Disabling AI for the rest of this run. Error: {ai_auth_err}{ANSI_RESET}"
             , extra={'org_group': org_group_context_for_log})
             _MODULE_AI_ENABLED_STATUS = False # Disable at module level if key is bad
         else:
             logger.error(f"Authorization/Argument error during AI exemption call for '{repo_name}': {ai_auth_err}", extra={'org_group': org_group_context_for_log})
         return None, None
+    except (requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError) as ssl_like_error:
+        error_message_lower = str(ssl_like_error).lower()
+        is_ssl_error = (
+            "ssl" in error_message_lower or
+            "certificate" in error_message_lower or
+            "tlsv1 alert" in error_message_lower or
+            "handshake failed" in error_message_lower or
+            (isinstance(ssl_like_error, google_api_exceptions.ServiceUnavailable) and "unavailable" in error_message_lower) # ServiceUnavailable can wrap SSL
+        )
+        if is_ssl_error:
+            logger.error(
+                f"{ANSI_RED}SSL/Network Error during AI exemption call for '{repo_name}': {ssl_like_error}. "
+                f"AI features will be auto-disabled for the rest of this run. "
+                f"Please check your corporate network's CA certificate setup in the Docker container (see README).{ANSI_RESET}",
+                extra={'org_group': org_group_context_for_log}
+            )
+            cfg_obj.AI_AUTO_DISABLED_SSL_ERROR = True
+        else: # Not an SSL error, but still a service/network issue
+            logger.error(f"A non-SSL network/service error occurred during AI exemption call for '{repo_name}': {ssl_like_error}", exc_info=True, extra={'org_group': org_group_context_for_log})
+        return None, None
     except Exception as ai_err:
         logger.error(f"Error during AI exemption call for repository '{repo_name}': {ai_err}", extra={'org_group': org_group_context_for_log})
         return None, None
     finally:
-        if _MODULE_AI_ENABLED_STATUS and AI_DELAY_ENABLED > 0:
-            logger.debug(f"Pausing for {AI_DELAY_ENABLED} seconds to respect AI rate limit...", extra={'org_group': org_group_context_for_log})
-            time.sleep(AI_DELAY_ENABLED)
+        if _MODULE_AI_ENABLED_STATUS and cfg_obj.AI_DELAY_ENABLED_ENV > 0: # Use delay from cfg_obj
+            logger.debug(f"Pausing for {cfg_obj.AI_DELAY_ENABLED_ENV} seconds to respect AI rate limit...", extra={'org_group': org_group_context_for_log})
+            time.sleep(cfg_obj.AI_DELAY_ENABLED_ENV)
 
 def _extract_emails_from_content(content: Optional[str], source_name: str) -> List[str]:
     if not content: return []
@@ -541,13 +624,9 @@ def _parse_readme_for_organization(readme_content: str | None, repo_name: str, o
 def process_repository_exemptions(
     repo_data: Dict[str, Any], 
     scm_org_for_logging: str,
-    default_org_identifiers: Optional[List[str]] = None,
-    ai_is_enabled_from_config: bool = False,
-    ai_model_name_from_config: str = "gemini-1.0-pro-latest",
-    ai_temperature_from_config: float = 0.4,
-    ai_max_output_tokens_from_config: int = 2048,
-    ai_max_input_tokens_from_config: int = 4000
-) -> Dict[str, Any]:
+    cfg_obj: Config, 
+    default_org_identifiers: Optional[List[str]] = None
+) -> Dict[str, Any]: # Assuming 'Any' is a placeholder for 'Config' type
     """
     Processes a repository's data to determine exemptions and set usageType.    
     Returns a dictionary (which could be a modified copy or the original with modifications) 
@@ -608,7 +687,11 @@ def process_repository_exemptions(
     if is_full_processing_needed:
         logger.info(f"For repo '{repo_name}', no pre-existing usageType. Performing full exemption and data inference.", extra={'org_group': org_group_context})
 
-        should_attempt_ai = ai_is_enabled_from_config and _MODULE_AI_ENABLED_STATUS and (DISABLE_SSL_ENV != "true")
+        should_attempt_ai = (
+            cfg_obj.AI_ENABLED_ENV and 
+            _MODULE_AI_ENABLED_STATUS and 
+            (DISABLE_SSL_ENV != "true") and
+            not cfg_obj.AI_AUTO_DISABLED_SSL_ERROR)
 
         if is_private_or_internal:
                 exemption_applied = False
@@ -638,11 +721,8 @@ def process_repository_exemptions(
                     else:
                         logger.debug(f"Repo '{repo_name}': No standard exemption. Calling AI for exemption analysis.", extra={'org_group': org_group_context})
                         ai_usage_type, ai_exemption_text = _call_ai_for_exemption(
-                            processed_repo_data,
-                            ai_model_name=ai_model_name_from_config,
-                            ai_temperature=ai_temperature_from_config,
-                            ai_max_output_tokens=ai_max_output_tokens_from_config,
-                            max_input_tokens_for_combined_text=ai_max_input_tokens_from_config,
+                            repo_data=processed_repo_data,
+                            cfg_obj=cfg_obj, # Pass Config object
                             org_group_context_for_log=org_group_context
                         )
                         if ai_usage_type:
@@ -660,7 +740,7 @@ def process_repository_exemptions(
                         logger.info(f"Repo '{repo_name}': Exempted due to sensitive keywords ({EXEMPT_BY_LAW}): {found_keywords}.", extra={'org_group': org_group_context})
                 
                 if not exemption_applied: 
-                    if not should_attempt_ai and not is_empty_repo and (DISABLE_SSL_ENV != "true"): 
+                    if not should_attempt_ai and not is_empty_repo and (DISABLE_SSL_ENV != "true") and not (cfg_obj and cfg_obj.AI_AUTO_DISABLED_SSL_ERROR):
                         logger.debug(f"AI was disabled for exemption analysis for '{repo_name}' (config or module status). Applying default usageType.", extra={'org_group': org_group_context})
                     current_permissions['usageType'] = USAGE_GOVERNMENT_WIDE_REUSE
                     current_permissions['exemptionText'] = None 
@@ -697,11 +777,8 @@ def process_repository_exemptions(
                 logger.info(f"Repository '{repo_name}' is marked as empty. Skipping AI organization inference.", extra={'org_group': org_group_context})
             elif current_org_after_prog_readme in effective_default_org_ids:
                 ai_org = _call_ai_for_organization(
-                    processed_repo_data,
-                    ai_model_name=ai_model_name_from_config,
-                    ai_temperature=ai_temperature_from_config,
-                    ai_max_output_tokens=ai_max_output_tokens_from_config,
-                    max_input_tokens_for_readme=ai_max_input_tokens_from_config,
+                    repo_data=processed_repo_data,
+                    cfg_obj=cfg_obj, # Pass Config object
                     org_group_context_for_log=org_group_context
                 )
                 if ai_org and ai_org.lower() != "none":

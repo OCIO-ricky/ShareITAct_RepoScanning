@@ -180,11 +180,9 @@ def _process_single_github_repository(
                     if cfg_obj:
                         repo_data_to_process = exemption_processor.process_repository_exemptions(
                             repo_data_to_process,
-                            org_name,
-                            default_org_identifiers=[org_name],
-                            ai_is_enabled_from_config=cfg_obj.AI_ENABLED_ENV, ai_model_name_from_config=cfg_obj.AI_MODEL_NAME_ENV,
-                            ai_temperature_from_config=cfg_obj.AI_TEMPERATURE_ENV, ai_max_output_tokens_from_config=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV,
-                            ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV)
+                            scm_org_for_logging=org_name,
+                            cfg_obj=cfg_obj,
+                            default_org_identifiers=[org_name])
                     return repo_data_to_process
         logger.info(f"CACHE MISS or no prior SHA (post-GraphQL): Processing full data for {gql_data.get('nameWithOwner', repo_full_name_logging)}.", extra={'org_group': org_group_context})
 
@@ -223,11 +221,9 @@ def _process_single_github_repository(
             if cfg_obj:
                 repo_data = exemption_processor.process_repository_exemptions(
                     repo_data,
-                    org_name,
-                    default_org_identifiers=[org_name],
-                    ai_is_enabled_from_config=cfg_obj.AI_ENABLED_ENV, ai_model_name_from_config=cfg_obj.AI_MODEL_NAME_ENV,
-                    ai_temperature_from_config=cfg_obj.AI_TEMPERATURE_ENV, ai_max_output_tokens_from_config=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV,
-                    ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV)
+                    scm_org_for_logging=org_name, # the repository org or group name
+                    cfg_obj=cfg_obj,
+                    default_org_identifiers=[org_name])
             return repo_data
 
 
@@ -339,16 +335,15 @@ def _process_single_github_repository(
         if cfg_obj:
             repo_data = exemption_processor.process_repository_exemptions(
                 repo_data,
-                org_name,
-                default_org_identifiers=[org_name],
-                ai_is_enabled_from_config=cfg_obj.AI_ENABLED_ENV, ai_model_name_from_config=cfg_obj.AI_MODEL_NAME_ENV,
-                ai_temperature_from_config=cfg_obj.AI_TEMPERATURE_ENV, ai_max_output_tokens_from_config=cfg_obj.AI_MAX_OUTPUT_TOKENS_ENV,
-                ai_max_input_tokens_from_config=cfg_obj.MAX_TOKENS_ENV)
+                scm_org_for_logging=org_name,
+                cfg_obj=cfg_obj, 
+                default_org_identifiers=[org_name])
         else: # Should ideally not happen if generate_codejson passes it
             logger.warning(f"cfg_obj not provided to _process_single_github_repository for {repo_full_name_logging}.", extra={'org_group': org_group_context})
             repo_data = exemption_processor.process_repository_exemptions(
                 repo_data,
-                org_name,
+                scm_org_for_logging=org_name,
+                cfg_obj=cfg_obj, # No cfg_obj, so no AI processing
                 default_org_identifiers=[org_name]
             )
 

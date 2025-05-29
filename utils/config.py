@@ -49,7 +49,7 @@ class Config:
         self.AI_TEMPERATURE_ENV = float(os.getenv("AI_TEMPERATURE", "0.4"))
         self.AI_ORGANIZATION_ENABLED_ENV = os.getenv("AI_ORGANIZATION_ENABLED", "False").lower() == "true"
         self.AI_DELAY_ENABLED_ENV = float(os.getenv("AI_DELAY_ENABLED", "0.0"))
-
+        self.AI_AUTO_DISABLED_SSL_ERROR = False # Runtime flag, not from .env
 
         # --- Adaptive Delay Settings (Generic for all platforms) ---
         self.ADAPTIVE_DELAY_ENABLED_ENV = os.getenv("ADAPTIVE_DELAY_ENABLED", "false").lower() == "true"
