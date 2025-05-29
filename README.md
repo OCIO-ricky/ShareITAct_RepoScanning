@@ -83,6 +83,25 @@ If you want to run a scan for a single platform, or execute a specific command l
     ```
     Remember to replace placeholders like `YOUR_GITHUB_PAT` with actual values or ensure they are correctly set in your `.env` file (which `docker-compose` will typically load).
 
+### Dealing with SSL Certificate Verification Errors (Corporate Networks)
+
+> [!IMPORTANT]
+> If you are running Docker containers within a corporate network (e.g., CDC's network) that uses its own SSL certificates for security inspection or for internally hosted services, you might encounter `CERTIFICATE_VERIFY_FAILED` errors during the scanner run. This typically happens when the tool, running inside a Docker container, tries to connect to external services like GitHub, GitLab, or Azure DevOps. The corporate network's security appliances (often a proxy, like Zscaler) intercept this traffic, decrypt it, examine it, and then re-encrypt it before sending it on to your Docker container.  The re-encryption uses a corporate certificate that Docker may not know about. This causes the Docker container to fail with the `CERTIFICATE_VERIFY_FAILED` error. 
+
+To resolve this, simply ensure your corporate CA certificates (with .crt or .pem extensions) are placed in the ./zscaler directory of this project.
+
+1.  **Obtain Corporate CA Certificate(s):**
+    *   **Crucial Step:** Contact your IT department (e.g., CDC IT/Network Security) to obtain the necessary root CA certificate(s) and any intermediate CA certificates. These are essential for your applications to trust connections made from within the corporate network.
+    *   These certificates are usually in `.pem` or `.crt` format.
+
+2.  **Place Certificates in the `./zscaler` Directory:**
+    *   In the root directory of this project (where `Dockerfile` and `docker-compose.yml` are located), create a directory named `zscaler` if it doesn't already exist.
+    *   Place all the corporate CA certificate files provided by your IT department into this `./zscaler` directory. For example, if IT gives you `CDC.crt` and `CDC.pem`, put them in `./zscaler/`.
+3. **Start the scan services:**
+    ```bash
+    docker-compose up --build -d
+    ```
+
 ### Managing Docker Containers
 
 -   **View Logs:**

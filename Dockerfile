@@ -32,10 +32,13 @@ RUN apt-get update && \
         build-essential \
         libffi-dev \
     && rm -rf /var/lib/apt/lists/*
-# Handle certificates
-## COPY ./zscaler/CDC-CSPO-PA.crt /usr/local/share/ca-certificates/
-COPY ./zscaler/ZScalerRootCA.crt /usr/local/share/ca-certificates/
-COPY ./zscaler/CloudflareR2.crt /usr/local/share/ca-certificates/
+
+# Handle corporate certificates
+# Copy all .crt and .pem certificate files from the ./zscaler directory on the host.
+# Ensure your corporate certificates have .crt or .pem extensions.
+COPY ./zscaler/*.crt /usr/local/share/ca-certificates/
+COPY ./zscaler/*.pem /usr/local/share/ca-certificates/
+
 RUN chmod -R 755 /etc/ssl/certs
 # Update the container's certificate store to include the new certificate
 RUN update-ca-certificates
