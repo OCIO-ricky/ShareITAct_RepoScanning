@@ -35,7 +35,7 @@ try:
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
-    aiohttp = None # Ensure aiohttp is defined for type hints even if not available
+    aiohttp = None 
     logging.getLogger(__name__).warning(
         "Failed to import aiohttp. Azure DevOps labor estimation via async API calls will be skipped."
     )
