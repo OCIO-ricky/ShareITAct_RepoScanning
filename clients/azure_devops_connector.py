@@ -256,7 +256,7 @@ def _fetch_tags_azure_devops(
     current_logger = logger_instance if logger_instance else logger
     try:
         current_logger.debug(f"Fetching tags for repo ID: {repo_id} in project {project_name}")
-        refs = git_client.get_refs(repository_id=repository_id, project=project_name, filter="tags/")
+        refs = git_client.get_refs(repository_id=repo_id, project=project_name, filter="tags/")
         if dynamic_delay_to_apply > 0:
             current_logger.debug(f"Azure DevOps applying SYNC post-API call delay (get tags/refs): {dynamic_delay_to_apply:.2f}s")
             time.sleep(dynamic_delay_to_apply)
@@ -758,7 +758,7 @@ def fetch_repositories(
                         repo_stub,
                         organization_name,
                         project_name,
-                        pat_token, 
+                        token, 
                         spn_client_id, 
                         spn_client_secret,
                         spn_tenant_id,

@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import logging
 import asyncio # For ADO async logic
+import base64 # For Azure DevOps PAT encoding
 import re # For parsing Link header (though less used now)
 from typing import Optional, Dict, Any, List, Tuple, Union, Callable
 

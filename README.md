@@ -2,7 +2,7 @@
 
 <!-- Add your badges here -->
 <p align="center">
-  <a href="https://github.com/OCIO-ricky/ShareITAct_RepoScanning/actions"><img alt="Build Status" src="https://img.shields.io/github/actions/workflow/status/OCIO-ricky/ShareITAct_RepoScanning/main.yml?branch=main&style=for-the-badge&logo=githubactions"></a>
+  <a href="https://github.com/OCIO-ricky/ShareITAct_RepoScanning/actions/workflows/python-app.yml"><img alt="Build Status" src="https://img.shields.io/github/actions/workflow/status/OCIO-ricky/ShareITAct_RepoScanning/python-app.yml?branch=main&style=for-the-badge&logo=githubactions"></a>
   <a href="https://www.python.org/"><img alt="Python Version" src="https://img.shields.io/badge/python-3.9%2B-blue?style=for-the-badge&logo=python"></a>
   <a href="https://github.com/OCIO-ricky/ShareITAct_RepoScanning/blob/main/LICENSE.md"><img alt="License" src="https://img.shields.io/github/license/OCIO-ricky/ShareITAct_RepoScanning?style=for-the-badge"></a>
 </p>
