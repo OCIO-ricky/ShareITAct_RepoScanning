@@ -382,13 +382,7 @@ def _call_ai_for_exemption(
     global _MODULE_AI_ENABLED_STATUS
     repo_name_for_log = repo_data.get('name', 'UnknownRepo')
 
-    # Check SSL connectivity before proceeding
-    if not hasattr(cfg_obj, '_ssl_test_done'):
-        cfg_obj._ssl_test_done = True
-        if not utils._test_ai_ssl_connectivity(cfg_obj, logger, org_group_context_for_log):
-            return None, None
-
-
+ 
     if not cfg_obj.AI_ENABLED_ENV: # Check global AI enable flag from config
         logger.debug("AI processing is globally disabled in .env. Skipping AI exemption call.", extra={'org_group': org_group_context_for_log})
         return None, None
