@@ -400,7 +400,7 @@ def fetch_repositories(
         if effective_gitlab_url_for_threads == "https://gitlab.com": # Only log warning if it defaulted to public
             logger.warning(f"No GitLab instance URL provided or in cfg_obj.GITLAB_URL_ENV. Using default: {effective_gitlab_url_for_threads}")
     
-    logger.info(f"Attempting to fetch repositories CONCURRENTLY for GitLab group: {group_path} on {effective_gitlab_url_for_threads} (max_workers: {max_workers})")
+    logger.info(f"Attempting to fetch repositories for GitLab organization: {ANSI_YELLOW}{group_path} on {effective_gitlab_url_for_threads}{ANSI_RESET} (max_workers: {max_workers})")
 
     if is_placeholder_token(token):
         logging.getLogger(__name__).error("GitLab token is a placeholder or missing. Cannot fetch repositories.") # Use specific logger

@@ -23,8 +23,8 @@ echo ""
 echo "Starting GitHub scan..."
 docker run -d --rm \
   --name scanner-github-instance-bash \
-  -e GITHUB_TOKEN=<YOUR_GITHUB_PAT> \          #  <== replace <..> with the actual token key for hardcoded. 
-  -e GOOGLE_API_KEY="${YOUR_GOOGLE_API_KEY}" \   #  <== instead of hardcoded, take it from .env file
+  -e GITHUB_TOKEN="${YOUR_GITHUB_PAT}" \
+  -e GOOGLE_API_KEY="${YOUR_GOOGLE_API_KEY}" \
   -e GITHUB_ORGS="CDCent,CDCgov" \
   -e SCANNER_MAX_WORKERS="3" \
   -e AI_ENABLED="true" \
@@ -73,4 +73,3 @@ echo ""
 echo "Individual scan outputs will be in ./output
 echo "Shared logs will be in ./logs and also in ./output/logs"
 echo "The .env file from your host is mounted read-only at /app/.env in each container."
-

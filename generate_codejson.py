@@ -66,7 +66,7 @@ CODE_JSON_MEASUREMENT_TYPE = {"method": "projects"}
 # ANSI escape codes for coloring output (if not already defined globally)
 ANSI_RED = "\x1b[31;1m"  # Bold Red
 ANSI_RESET = "\x1b[0m"   # Reset to default color
-
+ANSI_YELLOW = "\x1b[33;1m"  # Bold Yellow
 
 # --- Core Scanning and Merging Functions ---
 def scan_and_process_single_target(
@@ -82,16 +82,21 @@ def scan_and_process_single_target(
     platform_url: Optional[str] = None,
     hours_per_commit: Optional[float] = None 
 ) -> bool:
-    """ 
-    This function orchestrates the scanning of a specific target (like a GitHub organization or GitLab group) on a given platform. 
-    It calls the appropriate platform connector to fetch repository data, potentially using a previous scan's intermediate file for 
-    caching. After fetching, it finalizes the repository data (handling private IDs, exemptions, URL updates, etc.) and then writes 
+    """
+    This function orchestrates the scanning of a specific target (like a GitHub organization or GitLab group) on a given platform.
+    It calls the appropriate platform connector to fetch repository data, potentially using a previous scan's intermediate file for
+    caching. After fetching, it finalizes the repository data (handling private IDs, exemptions, URL updates, etc.) and then writes
     the processed information to a new intermediate JSON file for that specific target. It also manages target-specific logging and 
     error handling for the scan of that single target.
     NOTE: For subsequent scans, the script uses the generated intermediate file from the previous run for a given target as a cache. 
           If a repository within that target hasn't changed (determined by its commit SHA), its data is loaded from this cached file, 
           significantly speeding up future runs by avoiding redundant API calls and data processing.
     """
+    main_stream_logger = logging.getLogger(__name__) # Logger for messages intended for the main stdout stream
+
+    # Log to main stream immediately that we are attempting to process this target
+    main_stream_logger.info(f"Attempting to process {platform} target: {target_identifier}")
+
     target_logger_name = f"{platform}.{target_identifier.replace('/', '_').replace('.', '_')}"
     target_log_filename = f"{platform}_{target_identifier.replace('/', '_').replace('.', '_')}.log"
     target_logger = setup_target_logger(target_logger_name, target_log_filename, cfg.OUTPUT_DIR)
@@ -100,14 +105,24 @@ def scan_and_process_single_target(
     # This will be used as the cache input for the current scan of this target.
     previous_intermediate_filename = f"intermediate_{platform}_{target_identifier.replace('/', '_').replace('.', '_')}.json"
     previous_intermediate_filepath = os.path.join(cfg.OUTPUT_DIR, previous_intermediate_filename)
-    
-    target_logger.info(f"--- Starting scan for {platform} target: {target_identifier} ---", extra={'org_group': target_identifier})
+
+    try:
+        target_logger_name = f"{platform}.{target_identifier.replace('/', '_').replace('.', '_')}"
+        target_log_filename = f"{platform}_{target_identifier.replace('/', '_').replace('.', '_')}.log"
+        target_logger = setup_target_logger(target_logger_name, target_log_filename, cfg.OUTPUT_DIR)
+    except Exception as e_setup_log:
+        main_stream_logger.error(f"Failed to setup target-specific logger for {platform} target {target_identifier}: {e_setup_log}. Processing cannot continue for this target.")
+        return False # Indicate failure for this target
+
+    # Now that target_logger is set up (or we've exited), log the more detailed start to it.
+    target_logger.info(f"--- Starting scan for {platform} target: {target_identifier} ---", extra={'org_group': target_identifier})    
     if hours_per_commit is None or hours_per_commit == 0: hours_per_commit = None
 
     fetched_repos = []
     connector_success = False 
 
     if limit_to_pass is not None and global_repo_counter[0] >= limit_to_pass:        
+        main_stream_logger.warning(f"Skipping {platform} target {target_identifier} due to global repository limit ({limit_to_pass}).")
         target_logger.warning(f"Global debug limit ({limit_to_pass}) reached. Skipping scan for {target_identifier}.", extra={'org_group': target_identifier})
         target_logger.info(f"--- Finished scan for {platform} target: {target_identifier} (Skipped due to limit) ---", extra={'org_group': target_identifier})
         return True 
@@ -144,6 +159,7 @@ def scan_and_process_single_target(
         elif platform == "azure":
             if '/' not in target_identifier:
                  target_logger.error(f"Invalid Azure DevOps target format: '{target_identifier}'. Expected Org/Project.")
+                 main_stream_logger.error(f"Invalid Azure DevOps target format for {target_identifier}. Expected Org/Project. Skipping this target.")
                  return False
             # The ADO connector's fetch_repositories now takes target_path ("org/project")
             # and internally handles splitting if needed.
@@ -165,17 +181,22 @@ def scan_and_process_single_target(
             connector_success = True
         else:
             target_logger.error(f"Unknown platform: {platform}")
+            main_stream_logger.error(f"Unknown platform: {platform} for target: {target_identifier}. Skipping this target.")
             return False
         
-        if fetched_repos:
-            target_logger.info(f"Connector returned {len(fetched_repos)} repositories for {target_identifier}.", extra={'org_group': target_identifier})
-        else:
-            target_logger.info(f"Connector returned no repositories for {target_identifier}.", extra={'org_group': target_identifier})
-
     except Exception as e:
         target_logger.critical(f"Critical error during {platform} connector execution for {target_identifier}: {e}", exc_info=True, extra={'org_group': target_identifier})
+        main_stream_logger.error(f"Critical error during connector execution for {platform} target {target_identifier}. See target-specific log for details. Skipping this target.")
         target_logger.info(f"--- Finished scan for {platform} target: {target_identifier} (Critical Connector Error) ---", extra={'org_group': target_identifier})
         return False 
+
+    if connector_success:
+        if fetched_repos:
+            target_logger.info(f"Connector returned {len(fetched_repos)} repositories for {target_identifier}.", extra={'org_group': target_identifier})
+            main_stream_logger.info(f"Found {len(fetched_repos)} repositories for {platform} target: {target_identifier}.")
+        else:
+            target_logger.info(f"Connector returned no repositories for {target_identifier}.", extra={'org_group': target_identifier})
+            main_stream_logger.info(f"No repositories found to process for {platform} target: {target_identifier}.")
 
     default_org_ids_for_exemption_processor = [target_identifier] 
     if platform == "azure" and '/' in target_identifier:
@@ -183,7 +204,8 @@ def scan_and_process_single_target(
 
 
     if not fetched_repos and connector_success :
-        target_logger.info(f"No repositories to process for {target_identifier} or limit reached within connector.", extra={'org_group': target_identifier})
+        target_logger.info(f"{ANSI_YELLOW}No repositories to process for {target_identifier} or limit reached within connector.{ANSI_RESET}", extra={'org_group': target_identifier})
+        # main_stream_logger already handled the "No repositories found" case above if connector_success was true.
         intermediate_data = [] 
     else:
         target_logger.info(f"Finalizing {len(fetched_repos)} repositories for {target_identifier}...", extra={'org_group': target_identifier})
@@ -541,12 +563,26 @@ def main_cli():
         
         main_logger.info(f"--- Starting GitHub Scan for {len(targets_to_scan)} {target_entity_name} ---")
         for target in targets_to_scan:
-            if not scan_and_process_single_target("github", target, cfg, repo_id_mapping_manager, exemption_manager, global_repo_scan_counter_lock,
-                                                  global_repo_scan_counter, limit_for_scans, 
-                                                  auth_params=auth_params_for_connector, platform_url=github_url_for_scan, hours_per_commit=hours_per_commit_for_scan):
-                overall_command_success = False 
+            try:
+                success_for_target = scan_and_process_single_target(
+                    "github", target, cfg, repo_id_mapping_manager, exemption_manager, 
+                    global_repo_scan_counter_lock, global_repo_scan_counter, limit_for_scans, 
+                    auth_params_for_connector, platform_url=github_url_for_scan, 
+                    hours_per_commit=hours_per_commit_for_scan
+                )
+                if not success_for_target:
+                    overall_command_success = False 
+                    # Specific error should have been logged by scan_and_process_single_target or its callees to main_stream_logger
+                    main_logger.warning(f"Processing marked as unsuccessful for GitHub target: {target}. Check logs for details.")
+            except Exception as e_target_processing:
+                main_logger.critical(
+                    f"Unhandled exception during processing of GitHub target: {target}. Error: {e_target_processing}. Skipping to next target.",
+                    exc_info=True
+                )
+                overall_command_success = False
+
             if limit_for_scans is not None and global_repo_scan_counter[0] >= limit_for_scans:
-                 main_logger.warning(f"Global debug limit ({limit_for_scans}) reached. Stopping further GitHub target scans.")
+                 main_logger.warning(f"Global repository limit ({limit_for_scans}) reached. Stopping further GitHub target scans.")
                  break 
         main_logger.info("--- GitHub Scan Command Finished ---")
     
@@ -570,12 +606,24 @@ def main_cli():
 
         main_logger.info(f"--- Starting GitLab Scan for {len(targets_to_scan)} Groups on {gitlab_url_for_scan} ---")
         for target in targets_to_scan:
-            if not scan_and_process_single_target("gitlab", target, cfg, repo_id_mapping_manager, exemption_manager, global_repo_scan_counter_lock,
-                                                  global_repo_scan_counter, limit_for_scans, 
-                                                  auth_params=auth_params_for_connector, platform_url=gitlab_url_for_scan, hours_per_commit=hours_per_commit_for_scan):
-                overall_command_success = False 
+            try:
+                success_for_target = scan_and_process_single_target(
+                    "gitlab", target, cfg, repo_id_mapping_manager, exemption_manager, 
+                    global_repo_scan_counter_lock, global_repo_scan_counter, limit_for_scans, 
+                    auth_params_for_connector, platform_url=gitlab_url_for_scan, 
+                    hours_per_commit=hours_per_commit_for_scan
+                )
+                if not success_for_target:
+                    overall_command_success = False
+                    main_logger.warning(f"Processing marked as unsuccessful for GitLab target: {target}. Check logs for details.")
+            except Exception as e_target_processing:
+                main_logger.critical(
+                    f"Unhandled exception during processing of GitLab target: {target}. Error: {e_target_processing}. Skipping to next target.",
+                    exc_info=True
+                )
+                overall_command_success = False
             if limit_for_scans is not None and global_repo_scan_counter[0] >= limit_for_scans:
-                 main_logger.warning(f"Global debug limit ({limit_for_scans}) reached. Stopping further GitLab target scans.")
+                 main_logger.warning(f"Global repository limit ({limit_for_scans}) reached. Stopping further GitLab target scans.")
                  break 
         main_logger.info("--- GitLab Scan Command Finished ---")
 
@@ -628,12 +676,24 @@ def main_cli():
         
         main_logger.info(f"--- Starting Azure DevOps Scan for {len(targets_to_scan)} Targets ---")
         for target in targets_to_scan: 
-            if not scan_and_process_single_target("azure", target, cfg, repo_id_mapping_manager, exemption_manager, global_repo_scan_counter_lock,
-                                                  global_repo_scan_counter, limit_for_scans, 
-                                                  auth_params=auth_params_for_connector, hours_per_commit=hours_per_commit_for_scan):
-                overall_command_success = False 
+            try:
+                success_for_target = scan_and_process_single_target(
+                    "azure", target, cfg, repo_id_mapping_manager, exemption_manager, 
+                    global_repo_scan_counter_lock, global_repo_scan_counter, limit_for_scans, 
+                    auth_params_for_connector, platform_url=None, # Azure connector handles its own URL via config or default
+                    hours_per_commit=hours_per_commit_for_scan
+                )
+                if not success_for_target:
+                    overall_command_success = False
+                    main_logger.warning(f"Processing marked as unsuccessful for Azure DevOps target: {target}. Check logs for details.")
+            except Exception as e_target_processing:
+                main_logger.critical(
+                    f"Unhandled exception during processing of Azure DevOps target: {target}. Error: {e_target_processing}. Skipping to next target.",
+                    exc_info=True
+                )
+                overall_command_success = False
             if limit_for_scans is not None and global_repo_scan_counter[0] >= limit_for_scans:
-                 main_logger.warning(f"Global debug limit ({limit_for_scans}) reached. Stopping further Azure DevOps target scans.")
+                 main_logger.warning(f"Global repository limit ({limit_for_scans}) reached. Stopping further Azure DevOps target scans.")
                  break 
         main_logger.info("--- Azure DevOps Scan Command Finished ---")
 

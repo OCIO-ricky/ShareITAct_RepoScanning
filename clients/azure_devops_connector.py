@@ -538,7 +538,9 @@ def fetch_repositories(
 
     # Create a LoggerAdapter with the target context
     target_specific_logger = logging.LoggerAdapter(logging.getLogger(__name__), {'org_group': f"{organization_name}/{project_name}"})
-    target_specific_logger.info(f"Attempting to fetch repositories CONCURRENTLY (max_workers: {max_workers})")
+    org_group = target_specific_logger.extra['org_group']
+    target_specific_logger.info(f"Attempting to fetch repositories for ADO organization: {ANSI_YELLOW}{org_group}{ANSI_RESET} (max_workers: {max_workers})")
+
 
     # Parse the REPOS_CREATED_AFTER_DATE from cfg_obj
     repos_created_after_filter_date: Optional[datetime] = None

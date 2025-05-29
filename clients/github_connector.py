@@ -394,7 +394,7 @@ def fetch_repositories(
     """
     instance_msg = f"GitHub instance: {github_instance_url}" if github_instance_url else "public GitHub.com"
     # Use org_name as the context for this initial log message
-    logger.info(f"Attempting to fetch repositories CONCURRENTLY for GitHub organization: {org_name} on {instance_msg} (max_workers: {max_workers})", extra={'org_group': org_name})
+    logger.info(f"Attempting to fetch repositories for GitHub organization: {ANSI_YELLOW}{org_name} on {instance_msg}{ANSI_RESET} (max_workers: {max_workers})", extra={'org_group': org_name})
 
     if is_placeholder_token(token):
         logger.error("GitHub token is a placeholder or missing. Cannot fetch repositories.", extra={'org_group': org_name})
