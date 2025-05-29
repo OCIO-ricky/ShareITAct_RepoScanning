@@ -42,12 +42,12 @@ def setup_global_logging(log_level_str="INFO", log_file="logs/generate_codejson_
 
     # File Handler (if you are using one)
     # Ensure you have permissions and the directory exists if using a file handler
-    # try:
-    #     file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
-    #     file_handler.setFormatter(formatter)
-    #     root_logger.addHandler(file_handler)
-    # except Exception as e:
-    #     logging.error(f"Failed to set up file handler for {log_file}: {e}", exc_info=True)
+    try:
+        file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+    except Exception as e:
+        logging.error(f"Failed to set up file handler for {log_file}: {e}", exc_info=True)
 
 
     # Use the root logger for this initial message
