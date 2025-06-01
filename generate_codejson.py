@@ -468,15 +468,17 @@ def scan_and_process_single_target(
 
 def _prepare_project_for_final_catalog(
     project_data: Dict[str, Any],
+    platform: str,
+    org: str,
     cfg: Config,
     main_logger: logging.Logger
 ) -> Optional[Dict[str, Any]]:
     """Prepares a single project's data for the final catalog, applying cleanup and checks."""
     now_iso = datetime.now(timezone.utc).isoformat()
-    project_org_group = f"{project_data.get('organization', 'UnknownOrg')}/{project_data.get('name', 'UnknownRepo')}"
+    repo_platform =f"{platform}/{org}"
 
     if "processing_error" in project_data and len(project_data.keys()) <= 3: # e.g. name, org, error
-        main_logger.warning(f"Keeping project entry with processing_error: {project_data.get('name', 'Unknown')}", extra={'org_group': project_org_group})
+        main_logger.warning(f"Keeping project entry with processing_error: {project_data.get('name', 'Unknown')}", extra={'org_group': repo_platform})
         return project_data # Keep error record
 
     updated_project_data = project_data.copy()
@@ -484,7 +486,7 @@ def _prepare_project_for_final_catalog(
     is_public_repo = updated_project_data.get("repositoryVisibility", "").lower() == "public"
     is_empty_repo_flag = updated_project_data.get("_is_empty_repo", False)
     if is_public_repo and is_empty_repo_flag:
-        main_logger.info(f"Skipping empty public repository during merge: {updated_project_data.get('name', 'UnknownRepo')}", extra={'org_group': project_org_group})
+        main_logger.info(f"Skipping empty public repository during merge: {updated_project_data.get('name', 'UnknownRepo')}", extra={'org_group': repo_platform})
         return None # Skip adding this project
 
     if "date" not in updated_project_data or not isinstance(updated_project_data.get("date"), dict):
@@ -494,9 +496,9 @@ def _prepare_project_for_final_catalog(
     repo_visibility_original = updated_project_data.get("repositoryVisibility", "").lower()
     if repo_visibility_original == "internal":
         updated_project_data["repositoryVisibility"] = "private"
-        main_logger.debug(f"Repo {updated_project_data.get('name')}: Standardized visibility from 'internal' to 'private' for final output.", extra={'org_group': project_org_group})
+        main_logger.debug(f"Repo {updated_project_data.get('name')}: Standardized visibility from 'internal' to 'private' for final output.", extra={'org_group': repo_platform})
 
-    main_logger.debug(f"Repo {updated_project_data.get('name')}: Using privateID '{updated_project_data.get('privateID')}' from intermediate file.", extra={'org_group': project_org_group})
+    main_logger.debug(f"Repo {updated_project_data.get('name')}: Using privateID '{updated_project_data.get('privateID')}' from intermediate file.", extra={'org_group': repo_platform})
 
     # Cleanup internal/temporary fields
     for key_to_pop in ['_private_contact_emails', '_is_empty_repo', 'lastCommitSHA', 'repo_id']:
@@ -512,6 +514,7 @@ def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> boo
         returns:
         bool: True if merge operation is successful, False otherwise.
     """
+    main_logger.setLevel(logging.DEBUG)
     main_logger.info("--- Starting Merge Operation ---")
     search_path = os.path.join(cfg.OUTPUT_DIR, INTERMEDIATE_FILE_PATTERN)
     intermediate_files = glob.glob(search_path)
@@ -523,12 +526,25 @@ def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> boo
     main_logger.info(f"Found {len(intermediate_files)} intermediate catalog files to merge.")
     all_projects_raw = []
     merge_errors = False
+    platform = ""
+    org = ""
 
+    # Get the data from each intermediate file first
     for filepath in intermediate_files:
         try:
+            # Extract platform and org from filename
+            filename = os.path.basename(filepath)
+            name_part = filename.replace('intermediate_', '').replace('.json', '')
+            platform, org = name_part.split('_', 1)
+            
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 if isinstance(data, list):
+                    # Add platform and org info to each project before extending the list
+                    for project in data:
+                        if isinstance(project, dict):
+                            project['_source_platform'] = platform
+                            project['_source_org'] = org
                     all_projects_raw.extend(data)
                 else:
                     main_logger.warning(f"Content of {filepath} is not a list. Skipping.")
@@ -551,12 +567,17 @@ def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> boo
         "projects": [] # Initialize projects as an empty list
     }
 
+    # this loop will process each repo in all intermediate files found and add it to the final_code_json_structure
     processed_projects_for_final_catalog = []
     for project_data_raw in all_projects_raw:
-        prepared_project = _prepare_project_for_final_catalog(project_data_raw, cfg, main_logger)
+        platform = project_data_raw.get('_source_platform', 'unknown')
+        org = project_data_raw.get('_source_org', 'unknown')
+        
+        prepared_project = _prepare_project_for_final_catalog(project_data_raw,platform, org, cfg, main_logger)
         if prepared_project:
             processed_projects_for_final_catalog.append(prepared_project)
 
+    # Backup existing catalog file (code.json)
     backup_existing_file(cfg.OUTPUT_DIR, cfg.CATALOG_JSON_FILE)
 
     final_code_json_structure["projects"] = sorted(processed_projects_for_final_catalog, key=lambda x: x.get("name", "").lower())
@@ -825,6 +846,9 @@ def main_cli():
             total_estimated_calls_cfg_attr="AZURE_TOTAL_ESTIMATED_API_CALLS"
         )
     elif args.command == "merge":
+        # Initialize privateid manager BEFORE backing up the file
+        repo_id_mapping_manager = RepoIdMappingManager(cfg.PRIVATE_ID_FILEPATH)
+        # THEN backup the file
         backup_existing_file(cfg.OUTPUT_DIR, cfg.PRIVATE_ID_FILENAME)
         if not merge_intermediate_catalogs(cfg, main_logger):
             overall_command_success = False

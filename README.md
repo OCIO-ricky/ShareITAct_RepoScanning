@@ -73,13 +73,13 @@ If you want to run a scan for a single platform, or execute a specific command l
     Use `docker-compose run --rm app` followed by the `python generate_codejson.py` command and its arguments.
     ```bash
     # Example: Scan only specific GitHub organizations
-    docker-compose run --rm app python generate_codejson.py github --gh-tk YOUR_GITHUB_PAT --orgs YourOrg1,YourOrg2
+   docker-compose run --rm --no-deps scan-github  python generate_codejson.py github --gh-tk YOUR_GITHUB_PAT --orgs YourOrg1,YourOrg2
 
     # Example: Scan only specific GitLab groups
-    docker-compose run --rm app python generate_codejson.py gitlab --gl-tk YOUR_GITLAB_PAT --groups your-group
+    docker-compose run --rm --no-deps scan-gitlab python generate_codejson.py gitlab --gl-tk YOUR_GITLAB_PAT --groups your-group
 
     # Example: Run only the merge command
-    docker-compose run --rm app python generate_codejson.py merge
+    docker-compose run --rm --no-deps merge-results python generate_codejson.py merge
     ```
     Remember to replace placeholders like `YOUR_GITHUB_PAT` with actual values or ensure they are correctly set in your `.env` file (which `docker-compose` will typically load).
 
