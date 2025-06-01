@@ -3,14 +3,15 @@
 # processs concurrently the multiple platforms.
 # ---------------------------------
 # Just run: docker-compose up -d --build
-# (to rebuilt image): docker-compose build --no-cache
+#
+# (to rebuilt the image, if you deleted it or changed the Dockerfile): docker-compose build --no-cache
 # or:  docker build -t cdc-repo-scanner . 
 # ---------------------------------
 services:
 
   scan-github:
     image: cdc-repo-scanner:latest
-    build: . # Add this line to tell Docker Compose to build this image locally
+    build: . 
     container_name: scanner-github-instance
     environment:
       # These environment variables will read values from the .env file, unless you override them here.
@@ -29,8 +30,7 @@ services:
  
   scan-gitlab:
     image: cdc-repo-scanner:latest
-#    depends_on: [scan-github] # Ensures scan-github attempts to build/start first
-    build: . # Add this line to tell Docker Compose to build this image locally
+    depends_on: [scan-github] 
     container_name: scanner-gitlab-instance
     environment:
       - GITLAB_TOKEN=${GITLAB_TOKEN}
@@ -77,8 +77,8 @@ services:
        condition: service_completed_successfully
      scan-gitlab:
        condition: service_completed_successfully
-#     scan-azure:
-#        condition: service_completed_successfully
+     scan-azure:
+        condition: service_completed_successfully
     environment:
       - AI_ENABLED=false
       - TZ=America/New_York
