@@ -607,7 +607,7 @@ def fetch_repositories(
     org_name: str,
     processed_counter: List[int],
     processed_counter_lock: threading.Lock,
-    logger_instance: logging.Logger, # Made non-optional  
+    logger_instance: logging.LoggerAdapter, # Made non-optional  
     debug_limit: int | None = None,
     github_instance_url: str | None = None,
     hours_per_commit: Optional[float] = None,

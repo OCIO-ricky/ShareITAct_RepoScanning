@@ -35,6 +35,20 @@ VALID_README_STATUSES = {'maintained', 'deprecated', 'experimental', 'active', '
 LOG_DIR_NAME = "logs"
 
 # --- Logging Setup ---
+class ContextualLogFormatter(logging.Formatter):
+    def format(self, record):
+        # Set a default for org_group if not present in the log record
+        if not hasattr(record, 'org_group'):
+            record.org_group = '------'  # Default 6-character value
+        else:
+            # Ensure org_group is at least 6 characters (pad if shorter, keep if longer)
+            org_group_str = str(record.org_group)
+            if len(org_group_str) < 6:
+                record.org_group = org_group_str.ljust(6)  # Pad with spaces to minimum 6 chars
+            # If 6 or more chars, leave as is
+        
+        return super().format(record)
+    
 def setup_global_logging(log_level=logging.INFO):
     """
     Set up global logging configuration.
@@ -76,11 +90,9 @@ def setup_target_logger(logger_name, log_file_name, output_dir, level=logging.IN
     logger.setLevel(level)
     
     if logger.hasHandlers():
-        for handler in list(logger.handlers):
-            # logger.removeHandler(handler) # This might be too aggressive if other parts of app add handlers
-            # Instead, check if it's one of ours or just clear and re-add. For simplicity, clear.
-            handler.close()
-    logger.propagate = False
+        logger.handlers.clear()
+            
+    logger.info(f"Logger {logger_name} set up with log file: {log_file_path}")
 
     fh = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
     fh.setLevel(level)

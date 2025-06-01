@@ -5,7 +5,14 @@ class ContextualLogFormatter(logging.Formatter):
     def format(self, record):
         # Set a default for org_group if not present in the log record
         if not hasattr(record, 'org_group'):
-            record.org_group = '---'  # Default value when no specific group/org context
+            record.org_group = '------'  # Default 6-character value
+        else:
+            # Ensure org_group is at least 6 characters (pad if shorter, keep if longer)
+            org_group_str = str(record.org_group)
+            if len(org_group_str) < 6:
+                record.org_group = org_group_str.ljust(6)  # Pad with spaces to minimum 6 chars
+            # If 6 or more chars, leave as is
+        
         return super().format(record)
 
 def setup_global_logging(log_level_str="INFO", log_file="logs/generate_codejson_main.log"):

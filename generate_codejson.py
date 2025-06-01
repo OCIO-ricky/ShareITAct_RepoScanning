@@ -331,12 +331,13 @@ def scan_and_process_single_target(
 
     # Create the LoggerAdapter to pass to the connector
     connector_logger_adapter = logging.LoggerAdapter(target_logger, {'org_group': target_identifier})
+    connector_logger_adapter.logger.propagate = False 
     
     # --- Determine the path for the previous scan's intermediate file for this specific target ---
     # This will be used as the cache input for the current scan of this target.
     previous_intermediate_filename = f"intermediate_{platform}_{target_identifier.replace('/', '_').replace('.', '_')}.json"
     previous_intermediate_filepath = os.path.join(cfg.OUTPUT_DIR, previous_intermediate_filename)
-    connector_logger_adapter.info(f"--- Starting scan for {platform} target: {target_identifier} ---", extra={'org_group': target_identifier})
+    connector_logger_adapter.info(f"--- Starting scan for {platform} target: {target_identifier} ---")
     if hours_per_commit is None or hours_per_commit == 0: hours_per_commit = None
 
     fetched_repos = []
@@ -344,8 +345,8 @@ def scan_and_process_single_target(
 
     if limit_to_pass is not None and global_repo_counter[0] >= limit_to_pass:
         main_stream_logger.warning(f"Skipping {platform} target {target_identifier} due to global repository limit ({limit_to_pass}).")
-        connector_logger_adapter.warning(f"Global debug limit ({limit_to_pass}) reached. Skipping scan for {target_identifier}.", extra={'org_group': target_identifier})
-        connector_logger_adapter.info(f"--- Finished scan for {platform} target: {target_identifier} (Skipped due to limit) ---", extra={'org_group': target_identifier})
+        connector_logger_adapter.warning(f"Global debug limit ({limit_to_pass}) reached. Skipping scan for {target_identifier}.")
+        connector_logger_adapter.info(f"--- Finished scan for {platform} target: {target_identifier} (Skipped due to limit) ---")
         return True
 
     try:
@@ -355,7 +356,7 @@ def scan_and_process_single_target(
                 org_name=target_identifier,
                 processed_counter=global_repo_counter,
                 processed_counter_lock=processed_counter_lock,
-                logger_instance=connector_logger_adapter.logger,
+                logger_instance=connector_logger_adapter,
                 debug_limit=limit_to_pass,
                 github_instance_url=platform_url,
                 hours_per_commit=hours_per_commit,
@@ -415,17 +416,17 @@ def scan_and_process_single_target(
             return False
 
     except Exception as e:
-        connector_logger_adapter.critical(f"Critical error during {platform} connector execution for {target_identifier}: {e}", exc_info=True, extra={'org_group': target_identifier})
+        connector_logger_adapter.critical(f"Critical error during {platform} connector execution for {target_identifier}: {e}", exc_info=True)
         main_stream_logger.error(f"Critical error during connector execution for {platform} target {target_identifier}. See target-specific log for details. Skipping this target.")
-        connector_logger_adapter.info(f"--- Finished scan for {platform} target: {target_identifier} (Critical Connector Error) ---", extra={'org_group': target_identifier})
+        connector_logger_adapter.info(f"--- Finished scan for {platform} target: {target_identifier} (Critical Connector Error) ---")
         return False
 
     if connector_success:
         if fetched_repos:
-            connector_logger_adapter.info(f"Connector returned {len(fetched_repos)} repositories for {target_identifier}.", extra={'org_group': target_identifier})
+            connector_logger_adapter.info(f"Connector returned {len(fetched_repos)} repositories for {target_identifier}.")
             main_stream_logger.info(f"Found {len(fetched_repos)} repositories for {platform} target: {target_identifier}.")
         else:
-            connector_logger_adapter.info(f"Connector returned no repositories for {target_identifier}.", extra={'org_group': target_identifier})
+            connector_logger_adapter.info(f"Connector returned no repositories for {target_identifier}.")
             main_stream_logger.info(f"No repositories found to process for {platform} target: {target_identifier}.")
 
     default_org_ids_for_exemption_processor = [target_identifier]
@@ -434,10 +435,10 @@ def scan_and_process_single_target(
 
 
     if not fetched_repos and connector_success :
-        connector_logger_adapter.info(f"{ANSI_YELLOW}No repositories to process for {target_identifier} or limit reached within connector.{ANSI_RESET}", extra={'org_group': target_identifier})
+        connector_logger_adapter.info(f"{ANSI_YELLOW}No repositories to process for {target_identifier} or limit reached within connector.{ANSI_RESET}")
         intermediate_data = []
     else:
-        connector_logger_adapter.info(f"Finalizing {len(fetched_repos)} repositories for {target_identifier}...", extra={'org_group': target_identifier})
+        connector_logger_adapter.info(f"Finalizing {len(fetched_repos)} repositories for {target_identifier}...")
         intermediate_data = process_and_finalize_repo_data_list(
             [repo for repo in fetched_repos if repo is not None and not repo.get("processing_error")],
             cfg, repo_id_mapping_mgr, exemption_mgr, target_logger, platform # Pass platform
@@ -457,12 +458,12 @@ def scan_and_process_single_target(
             break
 
     if write_json_file(intermediate_data, intermediate_filepath):
-        connector_logger_adapter.info(f"Successfully wrote intermediate data to {intermediate_filepath}", extra={'org_group': target_identifier})
-        connector_logger_adapter.info(f"--- Finished scan for {platform} target: {target_identifier} ---", extra={'org_group': target_identifier})
+        connector_logger_adapter.info(f"Successfully wrote intermediate data to {intermediate_filepath}")
+        connector_logger_adapter.info(f"--- Finished scan for {platform} target: {target_identifier} ---")
         return True
     else:
-        connector_logger_adapter.error(f"Failed to write intermediate data for {target_identifier}.", extra={'org_group': target_identifier})
-        connector_logger_adapter.info(f"--- Finished scan for {platform} target: {target_identifier} (Write Error) ---", extra={'org_group': target_identifier})
+        connector_logger_adapter.error(f"Failed to write intermediate data for {target_identifier}.")
+        connector_logger_adapter.info(f"--- Finished scan for {platform} target: {target_identifier} (Write Error) ---")
         return False
 
 def _prepare_project_for_final_catalog(
