@@ -19,7 +19,7 @@ For comprehensive business-side documentation and process details, please refer 
 
 This tool directly supports compliance with the SHARE IT Act by:
 
--   **Automated Inventory Creation:** Scans repositories across **GitHub, GitLab, and Azure DevOps (ADO)** to automatically gather metadata.  Other than ADO, graphQL is used to more efficiently (faster) query these repositories and to reduce the number of API calls and associated rate limit restrictions. Unfortunately, ADO does not support graphQL and so the API is used instead.
+-   **Automated Inventory Creation:** Scans repositories across **GitHub, GitLab, and Azure DevOps (ADO)** to automatically gather metadata.  Other than ADO, graphQL is used to more efficiently (faster) query these repositories and to reduce the number of API calls and associated rate limit restrictions. Unfortunately, ADO does not support graphQL and so its REST API is still used instead.
 -   **Compliant Metadata Generation:** Produces `code.json` files that are validated against the **code.gov schema v2.0**, meeting federal requirements.
 -   **Exemption Assistance:** Utilizes AI-driven insights to infer potential code sharing exemptions based on repository content and metadata.
 -   **Comprehensive Data Collection:** Extracts detailed information including project descriptions, languages, licenses, and estimates labor hours from commit history.

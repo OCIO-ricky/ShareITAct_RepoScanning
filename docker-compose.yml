@@ -4,6 +4,7 @@
 # ---------------------------------
 # Just run: docker-compose up -d --build
 # (to rebuilt image): docker-compose build --no-cache
+# or:  docker build -t cdc-repo-scanner . 
 # ---------------------------------
 services:
 
@@ -22,13 +23,14 @@ services:
     volumes:
       - ./output:/app/output 
       - ./logs:/app/logs 
-      - .env:/app/.env
+      - ./.env:/app/.env
     command: >
       python generate_codejson.py github
  
   scan-gitlab:
     image: cdc-repo-scanner:latest
 #    depends_on: [scan-github] # Ensures scan-github attempts to build/start first
+    build: . # Add this line to tell Docker Compose to build this image locally
     container_name: scanner-gitlab-instance
     environment:
       - GITLAB_TOKEN=${GITLAB_TOKEN}
@@ -40,13 +42,13 @@ services:
     volumes:
       - ./output:/app/output
       - ./logs:/app/logs 
-      - .env:/app/.env
+      - ./.env:/app/.env
     command: >
       python generate_codejson.py gitlab 
 
   scan-azure:
     image: cdc-repo-scanner:latest
-    depends_on: [scan-github] # Ensures scan-github attempts to build/start first
+    depends_on: [scan-github] 
     container_name: scanner-azure-instance
     environment:
       - AZURE_DEVOPS_TOKEN=${AZURE_DEVOPS_TOKEN}
@@ -58,15 +60,15 @@ services:
     volumes:
       - ./output:/app/output
       - ./logs:/app/logs
-      - .env:/app/.env
+      - ./.env:/app/.env
     command: >
       python generate_codejson.py azure 
 
 
-# -------------------------
+#-------------------------
 # MERGE THESE THE RESULTS
 # -------------------
-  # This service will run after and if scan-github, scan-gitlab, and scan-azure complete successfully.
+#   This service will run after and if scan-github, scan-gitlab, and scan-azure complete successfully.
   merge-results:
     image: cdc-repo-scanner:latest
     container_name: scanner-merge-instance
@@ -75,15 +77,15 @@ services:
        condition: service_completed_successfully
      scan-gitlab:
        condition: service_completed_successfully
-     scan-azure:
-        condition: service_completed_successfully
+#     scan-azure:
+#        condition: service_completed_successfully
     environment:
       - AI_ENABLED=false
       - TZ=America/New_York
     volumes:
       - ./output:/app/output
       - ./logs:/app/logs 
-      - .env:/app/.env
+      - ./.env:/app/.env
     command: >
       python generate_codejson.py merge
 
@@ -107,7 +109,7 @@ services:
   #   volumes:
   #     - ./output:/app/output   # Mounts host's ./output to /app/output in container
   #     - ./logs:/app/logs       # Mounts host's ./logs to /app/logs in container
-  #     - .env:/app/.env
+  #     - ./.env:/app/.env
 
   #   # Load environment variables from the .env file in the current directory
   #   env_file:

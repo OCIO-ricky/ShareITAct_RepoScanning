@@ -46,34 +46,21 @@ class Config:
         self.AI_MODEL_NAME_ENV = os.getenv("AI_MODEL_NAME", "gemini-1.0-pro-latest")
         self.AI_MAX_OUTPUT_TOKENS_ENV = int(os.getenv("AI_MAX_OUTPUT_TOKENS", "2048"))
         self.MAX_TOKENS_ENV = int(os.getenv("MAX_TOKENS", "15000")) # For AI input truncation
-        self.AI_TEMPERATURE_ENV = float(os.getenv("AI_TEMPERATURE", "0.4"))
+        self.AI_TEMPERATURE_ENV = float(os.getenv("AI_TEMPERATURE", "0.2")) # Adjusted to match .env
+        self.AI_AUTO_DISABLED_SSL_ERROR = False # Initialize the new attribute
         self.AI_ORGANIZATION_ENABLED_ENV = os.getenv("AI_ORGANIZATION_ENABLED", "False").lower() == "true"
         self.AI_DELAY_ENABLED_ENV = float(os.getenv("AI_DELAY_ENABLED", "0.0"))
-        self.AI_AUTO_DISABLED_SSL_ERROR = False # Runtime flag, not from .env
 
-        # --- Adaptive Delay Settings (Generic for all platforms) ---
-        self.ADAPTIVE_DELAY_ENABLED_ENV = os.getenv("ADAPTIVE_DELAY_ENABLED", "false").lower() == "true"
-        self.ADAPTIVE_DELAY_BASE_SECONDS_ENV = float(os.getenv("ADAPTIVE_DELAY_BASE_SECONDS", "0.1"))
-        self.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV = int(os.getenv("ADAPTIVE_DELAY_THRESHOLD_REPOS", "50"))
-        self.ADAPTIVE_DELAY_MAX_SECONDS_ENV = float(os.getenv("ADAPTIVE_DELAY_MAX_SECONDS", "2.0")) # Max for REST calls
-        self.ADAPTIVE_DELAY_CACHE_MODIFIED_FACTOR_ENV = float(os.getenv("ADAPTIVE_DELAY_CACHE_MODIFIED_FACTOR", "0.10"))
+        # --- Simplified Rate Limiting Configuration ---
+        self.API_SAFETY_FACTOR_ENV = float(os.getenv("API_SAFETY_FACTOR", "0.8")) # Use 80% of available quota
+        self.MIN_INTER_REPO_DELAY_SECONDS_ENV = float(os.getenv("MIN_INTER_REPO_DELAY_SECONDS", "0.1"))
+        self.MAX_INTER_REPO_DELAY_SECONDS_ENV = float(os.getenv("MAX_INTER_REPO_DELAY_SECONDS", "30.0")) # Max delay between submitting repos
+        self.ESTIMATED_LABOR_CALLS_PER_REPO_ENV = int(os.getenv("ESTIMATED_LABOR_CALLS_PER_REPO", "3")) # Rough estimate for labor hour calls
+        # New settings for peek-ahead optimization
+        self.PEEK_AHEAD_THRESHOLD_DELAY_SECONDS_ENV = float(os.getenv("PEEK_AHEAD_THRESHOLD_DELAY_SECONDS", "0.5")) # Only peek if standard delay is > this
+        self.CACHE_HIT_SUBMISSION_DELAY_SECONDS_ENV = float(os.getenv("CACHE_HIT_SUBMISSION_DELAY_SECONDS", "0.05")) # Delay for likely cache hits
 
-        # --- Platform-Specific API Call Throttling ---
-        # GitHub REST API specific delays
-        self.GITHUB_POST_API_CALL_DELAY_SECONDS_ENV = float(os.getenv("GITHUB_POST_API_CALL_DELAY_SECONDS", "0.1"))
-        # GitHub GraphQL specific delays
-        self.GITHUB_GRAPHQL_CALL_DELAY_SECONDS_ENV = float(os.getenv("GITHUB_GRAPHQL_CALL_DELAY_SECONDS", "0.25"))
-        self.GITHUB_GRAPHQL_MAX_DELAY_SECONDS_ENV = float(os.getenv("GITHUB_GRAPHQL_MAX_DELAY_SECONDS", "0.75")) # Max for GQL calls
-
-        # GitLab (currently uses this for pre-GraphQL delay, could be split like GitHub)
-        self.GITLAB_POST_API_CALL_DELAY_SECONDS_ENV = float(os.getenv("GITLAB_POST_API_CALL_DELAY_SECONDS", "0.1"))
-        # Example if you wanted separate GitLab GraphQL delays:
-        self.GITLAB_GRAPHQL_CALL_DELAY_SECONDS_ENV = float(os.getenv("GITLAB_GRAPHQL_CALL_DELAY_SECONDS", "0.2"))
-        self.GITLAB_GRAPHQL_MAX_DELAY_SECONDS_ENV = float(os.getenv("GITLAB_GRAPHQL_MAX_DELAY_SECONDS", "0.5"))
-
-
-        # Azure DevOps
-        self.AZURE_DEVOPS_POST_API_CALL_DELAY_SECONDS_ENV = float(os.getenv("AZURE_DEVOPS_POST_API_CALL_DELAY_SECONDS", "0.1"))
+        self.FIXED_PRIVATE_REPO_FILTER_DATE_ENV = os.getenv("FIXED_PRIVATE_REPO_FILTER_DATE", "2021-04-21") # Default fixed date
 
         # --- Platform-specific target lists from .env (used if not overridden by CLI) ---
         self.GITHUB_ORGS_ENV = [org.strip() for org in os.getenv("GITHUB_ORGS", "").split(',') if org.strip()]
@@ -108,6 +95,11 @@ class Config:
         except ValueError:
             logger.warning(f"Invalid SCANNER_MAX_WORKERS value in .env. Defaulting to 5.")
             self.SCANNER_MAX_WORKERS_ENV = 5
+
+        # --- Platform-wide API call estimates (populated by orchestrator) ---
+        self.GITHUB_TOTAL_ESTIMATED_API_CALLS: Optional[int] = None
+        self.GITLAB_TOTAL_ESTIMATED_API_CALLS: Optional[int] = None
+        self.AZURE_TOTAL_ESTIMATED_API_CALLS: Optional[int] = None
 
         # --- Dynamically load any other environment variables as attributes ---
         # This allows flexibility for less critical or temporary settings without

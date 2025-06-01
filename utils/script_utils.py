@@ -238,6 +238,96 @@ def infer_status(repo_data: Dict[str, Any], logger_instance: logging.Logger) -> 
     logger_instance.debug(f"Status for {repo_name_for_log}: 'development' (default)")
     return "development"
 
+def _finalize_identifiers_and_urls(
+    repo_data_item: Dict[str, Any],
+    cfg: Config,
+    repo_id_mapping_mgr: RepoIdMappingManager,
+    exemption_mgr: ExemptionLogger,
+    platform: str,
+    target_logger: logging.Logger
+) -> None:
+    """Handles PrivateID generation, URL updates based on exemption, and logs exemptions."""
+    repo_name = repo_data_item.get('name', 'UnknownRepo')
+    org_name = repo_data_item.get('organization', 'UnknownOrg')
+    repo_org_group_context = f"{org_name}/{repo_name}"
+
+    is_private_or_internal = repo_data_item.get('repositoryVisibility', '').lower() in ['private', 'internal']
+    platform_repo_id = str(repo_data_item.get('repo_id', '')) # Ensure it's a string for prefixing
+    prefixed_repo_id_for_code_json = None
+
+    if is_private_or_internal and platform_repo_id:
+        private_emails_data = repo_data_item.get('_private_contact_emails', [])
+        contact_emails_for_csv = ';'.join(filter(None, private_emails_data)) if isinstance(private_emails_data, list) else ''
+        
+        prefixed_repo_id_for_code_json = repo_id_mapping_mgr.get_or_create_mapping_entry(
+            platform_repo_id=platform_repo_id,
+            organization=org_name,
+            repo_name=repo_name,
+            repository_url=repo_data_item.get('repositoryURL', ''),
+            contact_emails_str_arg=contact_emails_for_csv,
+            platform_prefix=platform.lower()
+        )
+        repo_data_item['privateID'] = prefixed_repo_id_for_code_json
+    else:
+        repo_data_item.pop('privateID', None)
+
+    usage_type = repo_data_item.get('permissions', {}).get('usageType')
+    is_exempt = usage_type and usage_type.lower().startswith('exempt')
+
+    if is_private_or_internal:
+        if is_exempt and cfg.EXEMPTED_NOTICE_URL:
+            repo_data_item['repositoryURL'] = cfg.EXEMPTED_NOTICE_URL
+        elif cfg.INSTRUCTIONS_URL:
+            repo_data_item['repositoryURL'] = cfg.INSTRUCTIONS_URL
+    
+    if is_exempt:
+        log_id_for_exemption = prefixed_repo_id_for_code_json or \
+                                 (f"NoPlatformRepoID-{platform.lower()}-{org_name}-{repo_name}" if is_private_or_internal else f"Public-{org_name}-{repo_name}")
+        exemption_mgr.log_exemption(
+            log_id_for_exemption,
+            repo_name,
+            usage_type,
+            repo_data_item.get('permissions', {}).get('exemptionText', '')
+        )
+
+def _finalize_status_version_dates(repo_data_item: Dict[str, Any], target_logger: logging.Logger) -> None:
+    """Infers status, version, and formats dates."""
+    repo_data_item['status'] = infer_status(repo_data_item, target_logger)
+    if repo_data_item.get('version', 'N/A') == 'N/A':
+        repo_data_item['version'] = infer_version(repo_data_item, target_logger)
+
+    if 'date' in repo_data_item and isinstance(repo_data_item['date'], dict):
+        for key, value in list(repo_data_item['date'].items()):
+            if isinstance(value, datetime):
+                repo_data_item['date'][key] = value.isoformat()
+            elif value is None:
+                repo_data_item['date'].pop(key, None)
+        if not repo_data_item['date']:
+            repo_data_item.pop('date', None)
+
+def _cleanup_final_repo_data(repo_data_item: Dict[str, Any]) -> Dict[str, Any]:
+    """Removes temporary/internal fields and cleans None values for final output."""
+    repo_data_item.pop('_api_tags', None)
+    repo_data_item.pop('archived', None)
+    repo_data_item.pop('_status_from_readme', None)
+    repo_data_item.pop('_is_generic_organization', None)
+
+    final_cleaned_item = {}
+    for k, v_item in repo_data_item.items():
+        if v_item is None:
+            continue
+        if isinstance(v_item, dict):
+            cleaned_v_item = {nk: nv for nk, nv in v_item.items() if nv is not None}
+            if cleaned_v_item:
+                final_cleaned_item[k] = cleaned_v_item
+        elif isinstance(v_item, list):
+            cleaned_list_item = [item for item in v_item if item is not None]
+            if cleaned_list_item:
+                final_cleaned_item[k] = cleaned_list_item
+        else:
+            final_cleaned_item[k] = v_item
+    return final_cleaned_item
+
 def process_and_finalize_repo_data_list(
     repos_list: List[Dict[str, Any]], 
     cfg: Config, 
@@ -277,98 +367,15 @@ def process_and_finalize_repo_data_list(
             continue
         
         try:
-            # --- Exemption Processing ---
-            # Exemption processor is now called before this function by the main script.
-            # We assume repo_data_item already has exemption-related fields populated.
-            # This function will now focus on privateID, URL updates, status/version, and cleanup.
-
-            # --- PrivateID and URL Handling ---
-            is_private_or_internal = repo_data_item.get('repositoryVisibility', '').lower() in ['private', 'internal']
-            platform_repo_id = str(repo_data_item.get('repo_id', '')) # Ensure it's a string for prefixing
-            prefixed_repo_id_for_code_json = None
-
-            if is_private_or_internal and platform_repo_id:
-                # _private_contact_emails should be a list of strings from exemption_processor
-                private_emails_data = repo_data_item.get('_private_contact_emails', []) 
-                contact_emails_for_csv = ';'.join(filter(None, private_emails_data)) if isinstance(private_emails_data, list) else ''
-                
-                prefixed_repo_id_for_code_json = repo_id_mapping_mgr.get_or_create_mapping_entry(
-                    platform_repo_id=platform_repo_id,
-                    organization=org_name,
-                    repo_name=repo_name,
-                    repository_url=repo_data_item.get('repositoryURL', ''),
-                    contact_emails_str_arg=contact_emails_for_csv,
-                    platform_prefix=platform.lower() # Pass the platform prefix
-                )
-                repo_data_item['privateID'] = prefixed_repo_id_for_code_json
-            else:
-                repo_data_item.pop('privateID', None) # Remove if not private/internal or no ID
-
-            # Update repositoryURL based on exemption status and privacy
-            usage_type = repo_data_item.get('permissions', {}).get('usageType')
-            is_exempt = usage_type and usage_type.lower().startswith('exempt')
-
-            if is_private_or_internal:
-                if is_exempt and cfg.EXEMPTED_NOTICE_URL:
-                    repo_data_item['repositoryURL'] = cfg.EXEMPTED_NOTICE_URL
-                elif cfg.INSTRUCTIONS_URL: # Fallback for non-exempt private/internal
-                    repo_data_item['repositoryURL'] = cfg.INSTRUCTIONS_URL
-            
-            # Log exemption if applicable
-            if is_exempt:
-                log_id_for_exemption = prefixed_repo_id_for_code_json or \
-                                     (f"NoPlatformRepoID-{platform.lower()}-{org_name}-{repo_name}" if is_private_or_internal else f"Public-{org_name}-{repo_name}")
-                exemption_mgr.log_exemption(
-                    log_id_for_exemption,
-                    repo_name,
-                    usage_type,
-                    repo_data_item.get('permissions', {}).get('exemptionText', '')
-                )
+            _finalize_identifiers_and_urls(repo_data_item, cfg, repo_id_mapping_mgr, exemption_mgr, platform, target_logger)
 
             # --- Organization Finalization ---
             # _is_generic_organization flag is set by exemption_processor
             if repo_data_item.get('_is_generic_organization', False):
                 repo_data_item['organization'] = cfg.AGENCY_NAME
 
-            # --- Status and Version Inference ---
-            repo_data_item['status'] = infer_status(repo_data_item, target_logger)
-            if repo_data_item.get('version', 'N/A') == 'N/A': # Only infer if not already set
-                repo_data_item['version'] = infer_version(repo_data_item, target_logger)
-
-            # --- Date Formatting ---
-            if 'date' in repo_data_item and isinstance(repo_data_item['date'], dict):
-                for key, value in list(repo_data_item['date'].items()): # Iterate over a copy for safe removal
-                    if isinstance(value, datetime):
-                        repo_data_item['date'][key] = value.isoformat()
-                    elif value is None: # Remove None date fields
-                        repo_data_item['date'].pop(key, None)
-                if not repo_data_item['date']: # If date dict becomes empty, remove it
-                    repo_data_item.pop('date', None)
-            
-            # --- Final Cleanup of Temporary/Internal Fields ---
-            repo_data_item.pop('_api_tags', None)
-            repo_data_item.pop('archived', None) # 'archived' status is captured in 'status' field
-            repo_data_item.pop('_status_from_readme', None)
-            repo_data_item.pop('_is_generic_organization', None)
-            # _is_empty_repo and lastCommitSHA are removed in merge_intermediate_catalogs
-            # _private_contact_emails is also removed in merge_intermediate_catalogs
-
-            # Remove top-level None values and empty nested structures
-            final_cleaned_item = {}
-            for k, v_item in repo_data_item.items():
-                if v_item is None:
-                    continue
-                if isinstance(v_item, dict):
-                    cleaned_v_item = {nk: nv for nk, nv in v_item.items() if nv is not None}
-                    if cleaned_v_item: # Only add if dict is not empty after cleaning
-                        final_cleaned_item[k] = cleaned_v_item
-                elif isinstance(v_item, list):
-                    cleaned_list_item = [item for item in v_item if item is not None]
-                    if cleaned_list_item: # Only add if list is not empty after cleaning
-                        final_cleaned_item[k] = cleaned_list_item
-                else:
-                    final_cleaned_item[k] = v_item
-            
+            _finalize_status_version_dates(repo_data_item, target_logger)
+            final_cleaned_item = _cleanup_final_repo_data(repo_data_item)
             finalized_list.append(final_cleaned_item)
 
         except Exception as e:

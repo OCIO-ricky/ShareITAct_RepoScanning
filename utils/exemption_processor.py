@@ -61,6 +61,8 @@ except ImportError:
     InvalidArgument, PermissionDenied = None, None # Define for type hinting and checks
     genai = None # Ensure genai is defined even if import fails
 
+# Use a module-level logger for setup-time messages or as a fallback if no instance is passed.
+# However, the goal is for `process_repository_exemptions` to always use a passed-in logger.
 logger = logging.getLogger(__name__)
 
 # For catching requests.exceptions.SSLError if underlying auth uses it, or for other SSL errors
@@ -229,10 +231,11 @@ TAGS_REGEX = re.compile(r"^(?:Keywords|Tags|Topics):\s*(.+)", re.MULTILINE | re.
 EMAIL_PATTERN = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
 
 
-def _programmatic_org_from_repo_name(repo_name: str, current_org: str, default_org_identifiers: list[str], org_group_context_for_log: str) -> str | None:
+def _programmatic_org_from_repo_name(repo_name: str, current_org: str, default_org_identifiers: list[str], org_group_context_for_log: str, logger_instance: logging.Logger) -> str | None:
     if not repo_name or not default_org_identifiers:
         return None
     can_override = any(current_org.lower() == default_id.lower() for default_id in default_org_identifiers)
+    # If current_org is specific (not a default/unknown) and not in the list allowing override, don't change it here.
     if not can_override and current_org and current_org.lower() != "unknownorg":
         return None
 
@@ -243,7 +246,7 @@ def _programmatic_org_from_repo_name(repo_name: str, current_org: str, default_o
         acronym_lower = acronym.lower()
         pattern = rf"(?:^|[^a-z0-9]){re.escape(acronym_lower)}(?:[^a-z0-9]|$)"
         if re.search(pattern, repo_name_lower):
-            logger.info(f"Identified organization '{full_name}' from repo name '{repo_name}'. Initial '{current_org}'.", extra={'org_group': org_group_context_for_log})
+            logger_instance.info(f"Identified organization '{full_name}' from repo name '{repo_name}'. Initial '{current_org}'.")
             return full_name
     return None
 
@@ -251,19 +254,20 @@ def _call_ai_for_organization(
     repo_data: dict,
     cfg_obj: Config, # Changed to accept Config object
     org_group_context_for_log: str,
+    logger_instance: logging.Logger
 ) -> str | None:
     global _MODULE_AI_ENABLED_STATUS 
 
     if not cfg_obj.AI_ENABLED_ENV: # Check global AI enable flag from config
-        logger.debug("AI processing is globally disabled in .env. Skipping AI organization call.", extra={'org_group': org_group_context_for_log})
+        logger_instance.debug("AI processing is globally disabled in .env. Skipping AI organization call.")
         return None
     if cfg_obj.AI_AUTO_DISABLED_SSL_ERROR:
-        logger.warning(f"{ANSI_YELLOW}AI features were auto-disabled due to a previous SSL certificate error. Skipping AI organization call for '{repo_data.get('name', 'UnknownRepo')}'.{ANSI_RESET}", extra={'org_group': org_group_context_for_log})
+        logger_instance.warning(f"{ANSI_YELLOW}AI features were auto-disabled due to a previous SSL certificate error. Skipping AI organization call for '{repo_data.get('name', 'UnknownRepo')}'.{ANSI_RESET}")
         return None
     if not _MODULE_AI_ENABLED_STATUS or not genai or not cfg_obj.AI_ORGANIZATION_ENABLED_ENV: # Check module status and specific org inference enable
-        logger.debug("AI processing, AI organization inference is disabled. Skipping AI organization call.", extra={'org_group': org_group_context_for_log})
+        logger_instance.debug("AI processing, AI organization inference is disabled. Skipping AI organization call.")
         return None
-
+        
     repo_name_for_ai = repo_data.get('name', '')
     description_for_ai = repo_data.get('description', '')
     tags_list = repo_data.get('tags', [])
@@ -272,21 +276,21 @@ def _call_ai_for_organization(
     max_input_tokens_for_readme = cfg_obj.MAX_TOKENS_ENV # Get from cfg_obj
     
     if DISABLE_SSL_ENV == "true":
-        logger.warning(f"AI organization call for '{repo_name_for_ai}' skipped because DISABLE_SSL_VERIFICATION is true.", extra={'org_group': org_group_context_for_log})
+        logger_instance.warning(f"AI organization call for '{repo_name_for_ai}' skipped because DISABLE_SSL_VERIFICATION is true.")
         return None
 
     # Reserve some tokens for the prompt structure and expected AI response
     effective_max_readme_len = max_input_tokens_for_readme - 1500 
     if len(readme_content_for_ai) > effective_max_readme_len:
         readme_content_for_ai = readme_content_for_ai[:effective_max_readme_len] + "\n... [README Content Truncated]"
-        logger.warning(f"README content for AI organization analysis of '{repo_name_for_ai}' was truncated to fit token limit.", extra={'org_group': org_group_context_for_log})
+        logger_instance.warning(f"README content for AI organization analysis of '{repo_name_for_ai}' was truncated to fit token limit.")
 
     if not readme_content_for_ai.strip() and not description_for_ai.strip() and not repo_name_for_ai.strip():
-        logger.debug(f"No significant text content (README/description/name) found for AI analysis of '{repo_name_for_ai}'. Skipping AI organization call.", extra={'org_group': org_group_context_for_log})
+        logger_instance.debug(f"No significant text content (README/description/name) found for AI analysis of '{repo_name_for_ai}'. Skipping AI organization call.")
         return None
 
     org_list_for_prompt = "\n".join([f"{acronym} = {name}" for acronym, name in KNOWN_CDC_ORGANIZATIONS.items()])
-    prompt = f""" 
+    prompt = f"""
 Your task is to identify the official CDC organizational unit mentioned in the repository text.
 You will be given repository information (name, description, tags, README) and a list of known CDC organizations with their acronyms.
 Your primary goal is to match this information to one of the known CDC organizations.
@@ -313,7 +317,7 @@ README Content (excerpt):
 Determine the organization based on the rules above.
     """
     try: # sourcery skip: extract-method
-        logger.info(f"Calling AI model '{cfg_obj.AI_MODEL_NAME_ENV}' to infer organization for repository '{repo_name_for_ai}'...", extra={'org_group': org_group_context_for_log})
+        logger_instance.info(f"Calling AI model '{cfg_obj.AI_MODEL_NAME_ENV}' to infer organization for repository '{repo_name_for_ai}'...")
         model = genai.GenerativeModel(cfg_obj.AI_MODEL_NAME_ENV)
         response = model.generate_content(
             prompt,
@@ -323,40 +327,40 @@ Determine the organization based on the rules above.
             ),
         )
         ai_result_text = response.text.strip()
-        logger.debug(f"AI raw response for '{repo_name_for_ai}': {ai_result_text}", extra={'org_group': org_group_context_for_log})
+        logger_instance.debug(f"AI raw response for '{repo_name_for_ai}': {ai_result_text}")
 
         if ai_result_text.lower() == "none":
-            logger.info(f"AI analysis for '{repo_name_for_ai}' determined no specific organization name was inferred.", extra={'org_group': org_group_context_for_log})
+            logger_instance.info(f"AI analysis for '{repo_name_for_ai}' determined no specific organization name was inferred.")
             return None
         organization = ai_result_text.strip()
         if organization:
-            logger.info(f"AI analysis for '{repo_name_for_ai}' suggests an organization: {organization}", extra={'org_group': org_group_context_for_log})
+            logger_instance.info(f"AI analysis for '{repo_name_for_ai}' suggests an organization: {organization}")
             return organization
         else:
-            logger.warning(f"AI analysis for '{repo_name_for_ai}' could not find the organization name. Ignoring.", extra={'org_group': org_group_context_for_log})
+            logger_instance.warning(f"AI analysis for '{repo_name_for_ai}' could not find the organization name. Ignoring.")
             return None
     except (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied) as ai_auth_err:
         err_str = str(ai_auth_err).lower()
         if "api key not valid" in err_str or "api_key_invalid" in err_str or "permission_denied" in err_str:
-            logger.error(
+            logger_instance.error(
                 f"{ANSI_RED}Error during AI organization call for repository '{repo_name_for_ai}': API key is invalid or lacks permissions. "
                 f"Disabling AI for the rest of this run. Error: {ai_auth_err}{ANSI_RESET}"
-            , extra={'org_group': org_group_context_for_log})
+            )
             _MODULE_AI_ENABLED_STATUS = False # Disable at module level if key is bad
         else:
-            logger.error(f"Authorization/Argument error during AI organization call for '{repo_name_for_ai}': {ai_auth_err}", extra={'org_group': org_group_context_for_log})
+            logger_instance.error(f"Authorization/Argument error during AI organization call for '{repo_name_for_ai}': {ai_auth_err}")
         return None
     except (requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError) as ssl_like_error:
         error_message_lower = str(ssl_like_error).lower()
         is_ssl_error = (
-            "ssl" in error_message_lower or
-            "certificate" in error_message_lower or
-            "tlsv1 alert" in error_message_lower or
-            "handshake failed" in error_message_lower or
+            "ssl" in error_message_lower or \
+            "certificate" in error_message_lower or \
+            "tlsv1 alert" in error_message_lower or \
+            "handshake failed" in error_message_lower or \
             (isinstance(ssl_like_error, google_api_exceptions.ServiceUnavailable) and "unavailable" in error_message_lower) # ServiceUnavailable can wrap SSL
         )
         if is_ssl_error:
-            logger.error(
+            logger_instance.error(
                 f"{ANSI_RED}SSL/Network Error during AI organization call for '{repo_name_for_ai}': {ssl_like_error}. "
                 f"AI features will be auto-disabled for the rest of this run. "
                 f"Please check your corporate network's CA certificate setup in the Docker container (see README).{ANSI_RESET}",
@@ -364,53 +368,54 @@ Determine the organization based on the rules above.
             )
             cfg_obj.AI_AUTO_DISABLED_SSL_ERROR = True
         else: # Not an SSL error, but still a service/network issue
-            logger.error(f"A non-SSL network/service error occurred during AI organization call for '{repo_name_for_ai}': {ssl_like_error}", exc_info=True, extra={'org_group': org_group_context_for_log})
+            logger_instance.error(f"A non-SSL network/service error occurred during AI organization call for '{repo_name_for_ai}': {ssl_like_error}", exc_info=True)
         return None
     except Exception as ai_err:
-        logger.error(f"Error during AI call for repository '{repo_name_for_ai}': {ai_err}", extra={'org_group': org_group_context_for_log})
+        logger_instance.error(f"Error during AI call for repository '{repo_name_for_ai}': {ai_err}")
         return None
     finally:
         if _MODULE_AI_ENABLED_STATUS and cfg_obj.AI_DELAY_ENABLED_ENV > 0: # Use delay from cfg_obj
-            logger.debug(f"Pausing for {cfg_obj.AI_DELAY_ENABLED_ENV} seconds to respect AI rate limit...", extra={'org_group': org_group_context_for_log})
+            logger_instance.debug(f"Pausing for {cfg_obj.AI_DELAY_ENABLED_ENV} seconds to respect AI rate limit...")
             time.sleep(cfg_obj.AI_DELAY_ENABLED_ENV)
 
 def _call_ai_for_exemption(
     repo_data: dict,
     cfg_obj: Config, # Changed to accept Config object
     org_group_context_for_log: str,
+    logger_instance: logging.Logger
 ) -> tuple[str | None, str | None]:
     global _MODULE_AI_ENABLED_STATUS
     repo_name_for_log = repo_data.get('name', 'UnknownRepo')
 
  
     if not cfg_obj.AI_ENABLED_ENV: # Check global AI enable flag from config
-        logger.debug("AI processing is globally disabled in .env. Skipping AI exemption call.", extra={'org_group': org_group_context_for_log})
+        logger_instance.debug("AI processing is globally disabled in .env. Skipping AI exemption call.")
         return None, None
     if cfg_obj.AI_AUTO_DISABLED_SSL_ERROR:
-        logger.warning(f"{ANSI_YELLOW}AI features were auto-disabled due to a previous SSL certificate error. Skipping AI exemption call for '{repo_name_for_log}'.{ANSI_RESET}", extra={'org_group': org_group_context_for_log})
+        logger_instance.warning(f"{ANSI_YELLOW}AI features were auto-disabled due to a previous SSL certificate error. Skipping AI exemption call for '{repo_name_for_log}'.{ANSI_RESET}")
         return None, None
     if not _MODULE_AI_ENABLED_STATUS or not genai: # Check module status
-        logger.debug("AI processing is disabled. Skipping AI exemption call.", extra={'org_group': org_group_context_for_log})
+        logger_instance.debug("AI processing is disabled. Skipping AI exemption call.")
         return None, None
 
     if DISABLE_SSL_ENV == "true":
-        logger.warning(f"AI exemption call for '{repo_name_for_log}' skipped because DISABLE_SSL_VERIFICATION is true.", extra={'org_group': org_group_context_for_log})
+        logger_instance.warning(f"AI exemption call for '{repo_name_for_log}' skipped because DISABLE_SSL_VERIFICATION is true.")
         return None, None
-
+        
     readme = repo_data.get('readme_content', '') or ''
     description = repo_data.get('description', '') or ''
     repo_name = repo_data.get('name', '')
     max_input_tokens_for_combined_text = cfg_obj.MAX_TOKENS_ENV # Get from cfg_obj
 
     if not readme.strip() and not description.strip():
-        logger.debug(f"No significant text content (README/description) found for AI exemption analysis of '{repo_name}'. Skipping AI call.", extra={'org_group': org_group_context_for_log})
+        logger_instance.debug(f"No significant text content (README/description) found for AI exemption analysis of '{repo_name}'. Skipping AI call.")
         return None, None
 
     effective_max_input_len =  max_input_tokens_for_combined_text - 500 
     input_text = f"Repository Name: {repo_name}\nDescription: {description}\n\nREADME:\n{readme}"
     if len(input_text) > effective_max_input_len:
         input_text = input_text[:effective_max_input_len] + "\n... [Content Truncated]"
-        logger.warning(f"Input text for AI exemption analysis of '{repo_name}' was truncated to fit token limit.", extra={'org_group': org_group_context_for_log})
+        logger_instance.warning(f"Input text for AI exemption analysis of '{repo_name}' was truncated to fit token limit.")
 
     prompt = f"""
 You are evaluating whether a source code repository should be exempted from code sharing requirements under the SHARE IT Act.
@@ -447,7 +452,7 @@ Repository Information:
     Analysis Result:
     """
     try: # sourcery skip: extract-method
-        logger.debug(f"Calling AI model '{cfg_obj.AI_MODEL_NAME_ENV}' for exemption analysis for repository '{repo_name}'...", extra={'org_group': org_group_context_for_log})
+        logger_instance.debug(f"Calling AI model '{cfg_obj.AI_MODEL_NAME_ENV}' for exemption analysis for repository '{repo_name}'...")
         model = genai.GenerativeModel(cfg_obj.AI_MODEL_NAME_ENV)
         response = model.generate_content(
             prompt,
@@ -458,46 +463,46 @@ Repository Information:
             request_options={"timeout": 30}  # 30 second timeout
         )
         ai_result_text = response.text.strip()
-        logger.debug(f"AI raw response for exemption for '{repo_name}': {ai_result_text}", extra={'org_group': org_group_context_for_log})
+        logger_instance.debug(f"AI raw response for exemption for '{repo_name}': {ai_result_text}")
 
         if ai_result_text.lower() == "none":
-            logger.info(f"AI exemption analysis for '{repo_name}' determined no specific exemption applies.", extra={'org_group': org_group_context_for_log})
+            logger_instance.info(f"AI exemption analysis for '{repo_name}' determined no specific exemption applies.")
             return None, None
         if '|' in ai_result_text:
             parts = ai_result_text.split('|', 1)
             potential_code = parts[0].strip()
             justification = parts[1].strip()
             if potential_code in VALID_AI_EXEMPTION_CODES:
-                logger.info(f"AI exemption analysis for '{repo_name}' suggests exemption: {potential_code}. Justification: {justification}", extra={'org_group': org_group_context_for_log})
+                logger_instance.info(f"AI exemption analysis for '{repo_name}' suggests exemption: {potential_code}. Justification: {justification}")
                 return potential_code, f"AI Suggestion: {justification}"
             else:
-                logger.warning(f"AI exemption analysis for '{repo_name}' returned an invalid exemption code: '{potential_code}'. Ignoring.", extra={'org_group': org_group_context_for_log})
+                logger_instance.warning(f"AI exemption analysis for '{repo_name}' returned an invalid exemption code: '{potential_code}'. Ignoring.")
                 return None, None
         else:
-            logger.warning(f"AI exemption analysis for '{repo_name}' returned an unexpected format: '{ai_result_text}'. Ignoring.", extra={'org_group': org_group_context_for_log})
+            logger_instance.warning(f"AI exemption analysis for '{repo_name}' returned an unexpected format: '{ai_result_text}'. Ignoring.")
             return None, None
     except (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied) as ai_auth_err:
         err_str = str(ai_auth_err).lower()
         if "api key not valid" in err_str or "api_key_invalid" in err_str or "permission_denied" in err_str:
-            logger.error(
+            logger_instance.error(
                 f"{ANSI_RED}Error during AI exemption call for repository '{repo_name}': API key is invalid or lacks permissions. "
                 f"Disabling AI for the rest of this run. Error: {ai_auth_err}{ANSI_RESET}"
-            , extra={'org_group': org_group_context_for_log})
+            )
             _MODULE_AI_ENABLED_STATUS = False # Disable at module level if key is bad
         else:
-            logger.error(f"Authorization/Argument error during AI exemption call for '{repo_name}': {ai_auth_err}", extra={'org_group': org_group_context_for_log})
+            logger_instance.error(f"Authorization/Argument error during AI exemption call for '{repo_name}': {ai_auth_err}")
         return None, None
     except (requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError) as ssl_like_error:
         error_message_lower = str(ssl_like_error).lower()
         is_ssl_error = (
-            "ssl" in error_message_lower or
-            "certificate" in error_message_lower or
-            "tlsv1 alert" in error_message_lower or
-            "handshake failed" in error_message_lower or
+            "ssl" in error_message_lower or \
+            "certificate" in error_message_lower or \
+            "tlsv1 alert" in error_message_lower or \
+            "handshake failed" in error_message_lower or \
             (isinstance(ssl_like_error, google_api_exceptions.ServiceUnavailable) and "unavailable" in error_message_lower) # ServiceUnavailable can wrap SSL
         )
         if is_ssl_error:
-            logger.error(
+            logger_instance.error(
                 f"{ANSI_RED}SSL/Network Error during AI exemption call for '{repo_name}': {ssl_like_error}. "
                 f"AI features will be auto-disabled for the rest of this run. "
                 f"Please check your corporate network's CA certificate setup in the Docker container (see README).{ANSI_RESET}",
@@ -505,17 +510,17 @@ Repository Information:
             )
             cfg_obj.AI_AUTO_DISABLED_SSL_ERROR = True
         else: # Not an SSL error, but still a service/network issue
-            logger.error(f"A non-SSL network/service error occurred during AI exemption call for '{repo_name}': {ssl_like_error}", exc_info=True, extra={'org_group': org_group_context_for_log})
+            logger_instance.error(f"A non-SSL network/service error occurred during AI exemption call for '{repo_name}': {ssl_like_error}", exc_info=True)
         return None, None
     except Exception as ai_err:
-        logger.error(f"Error during AI exemption call for repository '{repo_name}': {ai_err}", extra={'org_group': org_group_context_for_log})
+        logger_instance.error(f"Error during AI exemption call for repository '{repo_name}': {ai_err}")
         return None, None
     finally:
         if _MODULE_AI_ENABLED_STATUS and cfg_obj.AI_DELAY_ENABLED_ENV > 0: # Use delay from cfg_obj
-            logger.debug(f"Pausing for {cfg_obj.AI_DELAY_ENABLED_ENV} seconds to respect AI rate limit...", extra={'org_group': org_group_context_for_log})
+            logger_instance.debug(f"Pausing for {cfg_obj.AI_DELAY_ENABLED_ENV} seconds to respect AI rate limit...")
             time.sleep(cfg_obj.AI_DELAY_ENABLED_ENV)
 
-def _extract_emails_from_content(content: Optional[str], source_name: str) -> List[str]:
+def _extract_emails_from_content(content: Optional[str], source_name: str, logger_instance: logging.Logger) -> List[str]:
     if not content: return []
     emails = re.findall(EMAIL_PATTERN, content)
     cdc_emails = [
@@ -523,7 +528,7 @@ def _extract_emails_from_content(content: Optional[str], source_name: str) -> Li
     ]
     return cdc_emails
 
-def _get_combined_contact_emails(repo_data: Dict[str, Any], org_group_context_for_log: str) -> List[str]:
+def _get_combined_contact_emails(repo_data: Dict[str, Any], logger_instance: logging.Logger) -> List[str]:
     all_emails = []
     readme_content = repo_data.get('readme_content')
     codeowners_content = repo_data.get('_codeowners_content')
@@ -532,77 +537,77 @@ def _get_combined_contact_emails(repo_data: Dict[str, Any], org_group_context_fo
 
     if readme_content:
         contact_line_matches = CONTACT_LINE_REGEX.finditer(readme_content)
-        contact_line_emails = [email for match in contact_line_matches for email in _extract_emails_from_content(match.group(1), f"README 'Contact:' line for {repo_name_for_log}")]
+        contact_line_emails = [email for match in contact_line_matches for email in _extract_emails_from_content(match.group(1), f"README 'Contact:' line for {repo_name_for_log}", logger_instance)]
         if contact_line_emails:
-            logger.info(f"Prioritizing emails found on 'Contact:' line(s) in README for {repo_name_for_log}.", extra={'org_group': org_group_context_for_log})
+            logger_instance.info(f"Prioritizing emails found on 'Contact:' line(s) in README for {repo_name_for_log}.")
             all_emails = contact_line_emails
             found_contact_line = True
 
     if not found_contact_line:
-        codeowners_emails = _extract_emails_from_content(codeowners_content, f"CODEOWNERS for {repo_name_for_log}")
+        codeowners_emails = _extract_emails_from_content(codeowners_content, f"CODEOWNERS for {repo_name_for_log}", logger_instance)
         if codeowners_emails:
-            logger.info(f"Prioritizing emails found in CODEOWNERS for {repo_name_for_log} (no 'Contact:' line in README).", extra={'org_group': org_group_context_for_log})
+            logger_instance.info(f"Prioritizing emails found in CODEOWNERS for {repo_name_for_log} (no 'Contact:' line in README).")
             all_emails = codeowners_emails
         elif readme_content: 
-            logger.debug(f"No specific 'Contact:' line in README and no emails in CODEOWNERS for {repo_name_for_log}. Scanning full README.", extra={'org_group': org_group_context_for_log})
-            readme_emails = _extract_emails_from_content(readme_content, f"full README for {repo_name_for_log}")
+            logger_instance.debug(f"No specific 'Contact:' line in README and no emails in CODEOWNERS for {repo_name_for_log}. Scanning full README.")
+            readme_emails = _extract_emails_from_content(readme_content, f"full README for {repo_name_for_log}", logger_instance)
             if readme_emails:
-                 logger.info(f"Using emails found in full README scan for {repo_name_for_log} (no 'Contact:' line, no CODEOWNERS emails).", extra={'org_group': org_group_context_for_log})
+                 logger_instance.info(f"Using emails found in full README scan for {repo_name_for_log} (no 'Contact:' line, no CODEOWNERS emails).")
                  all_emails = readme_emails
 
     unique_sorted_emails = sorted(list(set(email.lower() for email in all_emails)))
     return unique_sorted_emails
 
-def _strip_html_tags(text: str) -> str:
+def _strip_html_tags(text: str, logger_instance: logging.Logger) -> str: # Added logger_instance, though not used directly here
     return HTML_TAG_REGEX.sub('', text).strip() if text else ""
 
-def _parse_readme_for_version(readme_content: str | None, org_group_context_for_log: str) -> str | None:
+def _parse_readme_for_version(readme_content: str | None, org_group_context_for_log: str, logger_instance: logging.Logger) -> str | None:
     if not readme_content: return None
     match = VERSION_MARKER.search(readme_content)
     if match:
        raw_version_str = match.group(1).strip()
        decoded_version_str = html.unescape(raw_version_str)
-       stripped_version_str = _strip_html_tags(decoded_version_str)
+       stripped_version_str = _strip_html_tags(decoded_version_str, logger_instance)
        version_str = stripped_version_str.strip('*_`')
        if version_str.lower().startswith('v'):
            version_str = version_str[1:].strip()
        if version_str:
-            logger.debug(f"_parse_readme_for_version: Returning cleaned version: '{version_str}'", extra={'org_group': org_group_context_for_log})
+            logger_instance.debug(f"_parse_readme_for_version: Returning cleaned version: '{version_str}'")
             return version_str
     return None
 
-def _parse_readme_for_tags(readme_content: str | None, org_group_context_for_log: str) -> list[str]:
+def _parse_readme_for_tags(readme_content: str | None, org_group_context_for_log: str, logger_instance: logging.Logger) -> list[str]:
     if not readme_content: return []
     match = TAGS_REGEX.search(readme_content)
     if match:
       tags_line = match.group(1).strip()
       decoded_tags_line = html.unescape(tags_line)
-      tags_line_stripped = _strip_html_tags(decoded_tags_line)
+      tags_line_stripped = _strip_html_tags(decoded_tags_line, logger_instance)
       tags = [tag.strip().strip('*_`') for tag in tags_line_stripped.split(',') if tag.strip()]
-      logger.debug(f"Found potential tags in README via regex: {tags}", extra={'org_group': org_group_context_for_log})
+      logger_instance.debug(f"Found potential tags in README via regex: {tags}")
       return tags
     return []
 
-def _parse_readme_for_status(readme_content: str | None, org_group_context_for_log: str) -> str | None:
+def _parse_readme_for_status(readme_content: str | None, org_group_context_for_log: str, logger_instance: logging.Logger) -> str | None:
     if not readme_content: return None
     match = STATUS_REGEX.search(readme_content)
     if match:
         status_str = match.group(1).strip().lower()
-        logger.debug(f"Found potential status in README via regex: '{status_str}'", extra={'org_group': org_group_context_for_log})
+        logger_instance.debug(f"Found potential status in README via regex: '{status_str}'")
         return 'maintained' if status_str == 'active' else status_str
     return None
 
-def _parse_readme_for_labor_hours(readme_content: str | None, org_group_context_for_log: str) -> int | None:
+def _parse_readme_for_labor_hours(readme_content: str | None, org_group_context_for_log: str, logger_instance: logging.Logger) -> int | None:
     if not readme_content: return None
     match = LABOR_HOURS_REGEX.search(readme_content)
     if match:
         try:
             return int(match.group(1).strip())
         except (ValueError, IndexError):
-            logger.warning(f"Found labor hours pattern in README but failed to parse number: '{match.group(1)}'", extra={'org_group': org_group_context_for_log})
+            logger_instance.warning(f"Found labor hours pattern in README but failed to parse number: '{match.group(1)}'")
     return None
 
-def _parse_readme_for_organization(readme_content: str | None, repo_name: str, org_group_context_for_log: str) -> str | None:
+def _parse_readme_for_organization(readme_content: str | None, repo_name: str, org_group_context_for_log: str, logger_instance: logging.Logger) -> str | None:
     if not readme_content: return None
     match = ORGANIZATION_MARKER.search(readme_content)
     if match:
@@ -611,7 +616,7 @@ def _parse_readme_for_organization(readme_content: str | None, repo_name: str, o
             org_value = re.sub(r"^(Organization|Org):\s*", "", org_value, flags=re.IGNORECASE).strip()
             org_value = html.unescape(org_value)
             org_value = re.sub(r'<br\s*/?>', ' ', org_value, flags=re.IGNORECASE).strip()
-            logger.debug(f"Found and cleaned 'Organization:' marker in README for {repo_name} with value: '{org_value}'", extra={'org_group': org_group_context_for_log})
+            logger_instance.debug(f"Found and cleaned 'Organization:' marker in README for {repo_name} with value: '{org_value}'")
             return org_value
     return None
 
@@ -619,15 +624,20 @@ def process_repository_exemptions(
     repo_data: Dict[str, Any], 
     scm_org_for_logging: str,
     cfg_obj: Config, 
-    default_org_identifiers: Optional[List[str]] = None
+    default_org_identifiers: Optional[List[str]] = None,
+    logger_instance: Optional[logging.Logger] = None # Make it optional for now, fallback to module logger
 ) -> Dict[str, Any]: # Assuming 'Any' is a placeholder for 'Config' type
     """
     Processes a repository's data to determine exemptions and set usageType.    
     Returns a dictionary (which could be a modified copy or the original with modifications) 
     containing the processed repository data.
     """
+    # Use the passed-in logger_instance if available, otherwise fall back to the module-level logger.
+    # This ensures that if a specific logger (e.g., target_logger) is provided, it's used.
+    current_logger = logger_instance if logger_instance else logger
+
     if not isinstance(repo_data, dict):
-        logger.error(f"Invalid repo_data type: {type(repo_data)}. Expected dict.", extra={'org_group': 'ExemptionProcessorInputValidation'})
+        current_logger.error(f"Invalid repo_data type: {type(repo_data)}. Expected dict.", extra={'org_group': 'ExemptionProcessorInputValidation'})
         return {"name": "ErrorRepo", "processing_error": "Invalid input data type"}
    
     processed_repo_data = repo_data.copy()
@@ -644,7 +654,7 @@ def process_repository_exemptions(
     # Use the passed-in scm_org_for_logging for the logging context
     org_group_context = scm_org_for_logging
 
-    logger.debug(f"Processing exemptions/fallbacks for SCM org '{scm_org_for_logging}', repo '{repo_name}'. Initial repo_data.organization: '{initial_org_from_repo_data}'.", extra={'org_group': org_group_context})
+    current_logger.debug(f"Processing exemptions/fallbacks for SCM org '{scm_org_for_logging}', repo '{repo_name}'. Initial repo_data.organization: '{initial_org_from_repo_data}'.")
 
     if not isinstance(processed_repo_data['permissions'].get('licenses'), list):
         processed_repo_data['permissions']['licenses'] = []
@@ -657,11 +667,12 @@ def process_repository_exemptions(
     is_full_processing_needed = current_permissions.get('usageType') is None
 
     if not is_full_processing_needed:
-        logger.info(
+        current_logger.info(
             f"For repo '{repo_name}', using pre-existing/cached usageType: "
             f"'{current_permissions['usageType']}'. Skipping re-evaluation of exemptions, "
             f"organization, and other README-derived fallbacks.",
             extra={'org_group': org_group_context})
+        organization = initial_org_from_repo_data
         processed_repo_data.setdefault('_is_generic_organization', False)
 
     pre_existing_emails = processed_repo_data.get('_private_contact_emails')
@@ -670,16 +681,16 @@ def process_repository_exemptions(
     if '_private_contact_emails' in processed_repo_data and \
         isinstance(pre_existing_emails, list) and \
         pre_existing_emails: 
-        logger.info(f"For {repo_name}, using pre-existing _private_contact_emails: {processed_repo_data['_private_contact_emails']}", extra={'org_group': org_group_context})
+        current_logger.info(f"For {repo_name}, using pre-existing _private_contact_emails: {processed_repo_data['_private_contact_emails']}")
         actual_contact_emails_for_final_step = pre_existing_emails
     else:
-        derived_contact_emails = _get_combined_contact_emails(processed_repo_data, org_group_context)
+        derived_contact_emails = _get_combined_contact_emails(processed_repo_data, current_logger)
         processed_repo_data['_private_contact_emails'] = derived_contact_emails
         actual_contact_emails_for_final_step = derived_contact_emails
-        logger.info(f"For {repo_name}, contact emails now SET to: {processed_repo_data.get('_private_contact_emails')}", extra={'org_group': org_group_context})
+        current_logger.info(f"For {repo_name}, contact emails now SET to: {processed_repo_data.get('_private_contact_emails')}")
 
     if is_full_processing_needed:
-        logger.info(f"For repo '{repo_name}', no pre-existing usageType. Performing full exemption and data inference.", extra={'org_group': org_group_context})
+        current_logger.info(f"For repo '{repo_name}', no pre-existing usageType. Performing full exemption and data inference.")
 
         should_attempt_ai = (
             cfg_obj.AI_ENABLED_ENV and 
@@ -698,7 +709,7 @@ def process_repository_exemptions(
                             current_permissions['usageType'] = captured_code
                             current_permissions['exemptionText'] = justification_match.group(1).strip()
                             exemption_applied = True
-                            logger.info(f"Repo '{repo_name}': Exempted manually via README ({captured_code}).", extra={'org_group': org_group_context})
+                            current_logger.info(f"Repo '{repo_name}': Exempted manually via README ({captured_code}).")
 
                 if not exemption_applied:
                     is_purely_non_code = not any(lang and lang.strip().lower() not in [l.lower() for l in NON_CODE_LANGUAGES if l] for lang in all_languages) if all_languages else True
@@ -707,23 +718,24 @@ def process_repository_exemptions(
                         languages_str = ', '.join(filter(None, all_languages)) or 'None detected'
                         current_permissions['exemptionText'] = f"Non-code repository (languages: [{languages_str}])"
                         exemption_applied = True
-                        logger.info(f"Repo '{repo_name}': Exempted as non-code (Languages: [{languages_str}]).", extra={'org_group': org_group_context})
+                        current_logger.info(f"Repo '{repo_name}': Exempted as non-code (Languages: [{languages_str}]).")
 
                 if not exemption_applied and should_attempt_ai: 
                     if is_empty_repo:
-                        logger.info(f"Repository '{repo_name}' is marked as empty. Skipping AI exemption analysis.", extra={'org_group': org_group_context})
+                        current_logger.info(f"Repository '{repo_name}' is marked as empty. Skipping AI exemption analysis.")
                     else:
-                        logger.debug(f"Repo '{repo_name}': No standard exemption. Calling AI for exemption analysis.", extra={'org_group': org_group_context})
+                        current_logger.debug(f"Repo '{repo_name}': No standard exemption. Calling AI for exemption analysis.")
                         ai_usage_type, ai_exemption_text = _call_ai_for_exemption(
                             repo_data=processed_repo_data,
                             cfg_obj=cfg_obj, # Pass Config object
-                            org_group_context_for_log=org_group_context
+                            org_group_context_for_log=org_group_context,
+                            logger_instance=current_logger
                         )
                         if ai_usage_type:
                             current_permissions['usageType'] = ai_usage_type
                             current_permissions['exemptionText'] = ai_exemption_text
                             exemption_applied = True
-                            logger.info(f"Repo '{repo_name}': Exempted via AI analysis ({ai_usage_type}).", extra={'org_group': org_group_context})
+                            current_logger.info(f"Repo '{repo_name}': Exempted via AI analysis ({ai_usage_type}).")
 
                 if not exemption_applied and readme_content:
                     found_keywords = [kw for kw in SENSITIVE_KEYWORDS if re.search(r'\b' + re.escape(kw) + r'\b', readme_content, re.IGNORECASE)]
@@ -731,20 +743,19 @@ def process_repository_exemptions(
                         current_permissions['usageType'] = EXEMPT_BY_LAW
                         current_permissions['exemptionText'] = f"Flagged: Found keywords in README: [{', '.join(found_keywords)}]"
                         exemption_applied = True
-                        logger.info(f"Repo '{repo_name}': Exempted due to sensitive keywords ({EXEMPT_BY_LAW}): {found_keywords}.", extra={'org_group': org_group_context})
+                        current_logger.info(f"Repo '{repo_name}': Exempted due to sensitive keywords ({EXEMPT_BY_LAW}): {found_keywords}.")
                 
                 if not exemption_applied: 
                     if not should_attempt_ai and not is_empty_repo and (DISABLE_SSL_ENV != "true") and not (cfg_obj and cfg_obj.AI_AUTO_DISABLED_SSL_ERROR):
-                        logger.debug(f"AI was disabled for exemption analysis for '{repo_name}' (config or module status). Applying default usageType.", extra={'org_group': org_group_context})
+                        current_logger.debug(f"AI was disabled for exemption analysis for '{repo_name}' (config or module status). Applying default usageType.")
                     current_permissions['usageType'] = USAGE_GOVERNMENT_WIDE_REUSE
                     current_permissions['exemptionText'] = None 
         else:  # Public repo
             licenses_list = current_permissions.get('licenses', [])
             has_license = bool(licenses_list)
             current_permissions['usageType'] = USAGE_OPEN_SOURCE if has_license else USAGE_GOVERNMENT_WIDE_REUSE
-            current_permissions['exemptionText'] = None
-                            
-        logger.info(f"For {repo_name}, exemption status in repo_data NOW SET to: usageType='{current_permissions['usageType']}', exemptionText='{current_permissions.get('exemptionText', '(none)')}'", extra={'org_group': org_group_context})
+            current_permissions['exemptionText'] = None # Public repos don't get exemption text unless manually set (which is not this path)
+        current_logger.info(f"For {repo_name}, exemption status in repo_data NOW SET to: usageType='{current_permissions['usageType']}', exemptionText='{current_permissions.get('exemptionText', '(none)')}'")
 
         effective_default_org_ids = list(set(doi.lower() for doi in (default_org_identifiers or []) if doi))
         if initial_org_from_repo_data.lower() not in effective_default_org_ids and \
@@ -753,39 +764,40 @@ def process_repository_exemptions(
         if "unknownorg" not in effective_default_org_ids:
             effective_default_org_ids.append("unknownorg")
 
-        prog_org = _programmatic_org_from_repo_name(repo_name, initial_org_from_repo_data, effective_default_org_ids, org_group_context)
+        prog_org = _programmatic_org_from_repo_name(repo_name, initial_org_from_repo_data, effective_default_org_ids, org_group_context, current_logger)
         if prog_org:
             processed_repo_data['organization'] = prog_org
 
         if readme_content:
-            extracted_org_from_readme = _parse_readme_for_organization(readme_content, repo_name, org_group_context)
+            extracted_org_from_readme = _parse_readme_for_organization(readme_content, repo_name, org_group_context, current_logger)
             if extracted_org_from_readme:
                 current_org_before_readme = processed_repo_data.get('organization', initial_org_from_repo_data)
                 if extracted_org_from_readme.lower() != current_org_before_readme.lower():
-                    logger.info(f"Updating organization for '{repo_name}' from README. Previous: '{current_org_before_readme}', README: '{extracted_org_from_readme}'", extra={'org_group': org_group_context})
+                    current_logger.info(f"Updating organization for '{repo_name}' from README. Previous: '{current_org_before_readme}', README: '{extracted_org_from_readme}'")
                     processed_repo_data['organization'] = extracted_org_from_readme
 
         current_org_after_prog_readme = processed_repo_data.get('organization', 'UnknownOrg').lower()
         if should_attempt_ai:
             if is_empty_repo:
-                logger.info(f"Repository '{repo_name}' is marked as empty. Skipping AI organization inference.", extra={'org_group': org_group_context})
+                current_logger.info(f"Repository '{repo_name}' is marked as empty. Skipping AI organization inference.")
             elif current_org_after_prog_readme in effective_default_org_ids:
                 ai_org = _call_ai_for_organization(
                     repo_data=processed_repo_data,
                     cfg_obj=cfg_obj, # Pass Config object
-                    org_group_context_for_log=org_group_context
+                    org_group_context_for_log=org_group_context,
+                    logger_instance=current_logger
                 )
                 if ai_org and ai_org.lower() != "none":
                     validated_ai_org = next((full_name for acronym, full_name in KNOWN_CDC_ORGANIZATIONS.items() if ai_org.lower() == full_name.lower() or ai_org.lower() == acronym.lower()), None)
                     if validated_ai_org and validated_ai_org.lower() != current_org_after_prog_readme:
-                        logger.info(f"Updating organization for '{repo_name}' from AI. Previous: '{processed_repo_data.get('organization', '')}', AI: '{validated_ai_org}'", extra={'org_group': org_group_context})
+                        current_logger.info(f"Updating organization for '{repo_name}' from AI. Previous: '{processed_repo_data.get('organization', '')}', AI: '{validated_ai_org}'")
                         processed_repo_data['organization'] = validated_ai_org
                     elif not validated_ai_org:
-                         logger.warning(f"AI suggested org '{ai_org}' for '{repo_name}', but not in known list. Discarding.", extra={'org_group': org_group_context})
+                         current_logger.warning(f"AI suggested org '{ai_org}' for '{repo_name}', but not in known list. Discarding.")
             else:
-                logger.info(f"Organization for '{repo_name}' is '{processed_repo_data.get('organization', '')}', not calling AI for organization.", extra={'org_group': org_group_context})
+                current_logger.info(f"Organization for '{repo_name}' is '{processed_repo_data.get('organization', '')}', not calling AI for organization.")
         else:
-            logger.debug(f"AI is disabled for organization inference for '{repo_name}' (config or module status).", extra={'org_group': org_group_context})
+            current_logger.debug(f"AI is disabled for organization inference for '{repo_name}' (config or module status).")
 
         final_determined_org = processed_repo_data.get('organization', initial_org_from_repo_data)
         is_still_generic_org = False
@@ -802,15 +814,15 @@ def process_repository_exemptions(
 
         if readme_content:
             if processed_repo_data.get("version", "N/A") == "N/A":
-                parsed_version = _parse_readme_for_version(readme_content, org_group_context)
+                parsed_version = _parse_readme_for_version(readme_content, org_group_context, current_logger)
                 if parsed_version: processed_repo_data["version"] = parsed_version
             if not processed_repo_data.get("tags"): 
-                parsed_tags = _parse_readme_for_tags(readme_content, org_group_context)
+                parsed_tags = _parse_readme_for_tags(readme_content, org_group_context, current_logger)
                 if parsed_tags: processed_repo_data["tags"] = parsed_tags
             if processed_repo_data.get("laborHours", 0) == 0:
-                parsed_hours = _parse_readme_for_labor_hours(readme_content, org_group_context)
+                parsed_hours = _parse_readme_for_labor_hours(readme_content, org_group_context, current_logger)
                 if parsed_hours is not None and parsed_hours > 0: processed_repo_data["laborHours"] = parsed_hours
-            parsed_status = _parse_readme_for_status(readme_content, org_group_context)
+            parsed_status = _parse_readme_for_status(readme_content, org_group_context, current_logger)
             if parsed_status: processed_repo_data["_status_from_readme"] = parsed_status
 
             licenses = current_permissions.get('licenses', [])
@@ -827,7 +839,7 @@ def process_repository_exemptions(
                             potential_license_url = '/'.join(parts)
                     if potential_license_url and potential_license_url != readme_url:
                         licenses[0]['URL'] = potential_license_url
-                        logger.info(f"Repo '{repo_name}': Guessed license URL: {potential_license_url}", extra={'org_group': org_group_context})
+                        current_logger.info(f"Repo '{repo_name}': Guessed license URL: {potential_license_url}")
 
     final_json_email = PUBLIC_CONTACT_EMAIL_DEFAULT 
     if is_private_or_internal:

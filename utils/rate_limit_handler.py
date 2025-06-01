@@ -12,6 +12,9 @@ ANSI_YELLOW = "\x1b[33;1m"
 ANSI_GREEN = "\x1b[32;1m"
 ANSI_RESET = "\x1b[0m"
 
+# Constant for safety buffer increment per additional worker
+SAFETY_BUFFER_INCREMENT_PER_WORKER = 2
+
 class GitHubRateLimitHandler:
     """
     Manages GitHub API rate limit status and enforces delays.
@@ -36,8 +39,7 @@ class GitHubRateLimitHandler:
         
         # Effective safety buffer can be slightly higher with more workers.
         # Heuristic: base buffer + 2 for each additional worker beyond the first.
-        # This makes the handler more cautious as concurrency increases.
-        self.effective_safety_buffer = self.base_safety_buffer_remaining + (self.num_workers - 1) * 2
+        self.effective_safety_buffer = self.base_safety_buffer_remaining + (self.num_workers - 1) * SAFETY_BUFFER_INCREMENT_PER_WORKER
         # Optionally, cap the effective buffer:
         # self.effective_safety_buffer = min(self.effective_safety_buffer, self.base_safety_buffer_remaining * 3)
         self._lock = asyncio.Lock() # Ensures atomic updates and checks in async context

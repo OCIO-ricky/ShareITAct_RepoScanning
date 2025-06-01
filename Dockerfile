@@ -51,7 +51,7 @@ COPY requirements.txt ./
 # Upgrade pip, setuptools, and wheel to ensure they are up-to-date
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 # The '|| true' ensures the command doesn't fail if a package isn't already installed.
-RUN pip uninstall -y msrest azure-core azure-devops azure-identity || true && \
+RUN pip uninstall -y msrest azure-core azure-devops azure-identity python-gitlab || true && \
     pip install --no-cache-dir --trusted-host pypi.python.org --trusted-host pypi.org -r requirements.txt
 
 # 5. Copy Application Code

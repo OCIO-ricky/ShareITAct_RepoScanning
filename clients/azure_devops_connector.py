@@ -6,7 +6,6 @@ This module is responsible for fetching repository data from Azure DevOps,
 including metadata, README content, and other relevant details.
 It interacts with the Azure DevOps REST API via the azure-devops Python SDK.
 """
-
 import os
 import logging
 import time
@@ -14,16 +13,16 @@ import threading # For locks
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import base64
 from typing import List, Dict, Optional, Any, Tuple
-from datetime import timezone, datetime
-from utils.delay_calculator import calculate_dynamic_delay # Import the calculator
-from utils.dateparse import parse_repos_created_after_date # Import the new utility
+from datetime import timezone, datetime, timedelta
 from utils.caching import load_previous_scan_data, PLATFORM_CACHE_CONFIG
-from utils.labor_hrs_estimator import _create_summary_dataframe # Import the labor hrs estimator
+from utils.labor_hrs_estimator import analyze_azure_devops_repo_sync # Import the labor hrs estimator
 from utils.fetch_utils import (
     fetch_optional_content_with_retry,
     FETCH_ERROR_FORBIDDEN, FETCH_ERROR_NOT_FOUND, FETCH_ERROR_EMPTY_REPO_API,
     FETCH_ERROR_API_ERROR, FETCH_ERROR_UNEXPECTED
 )
+from utils.dateparse import get_fixed_private_filter_date # Import the consolidated utility
+from utils.rate_limit_utils import get_azure_devops_rate_limit_status, calculate_inter_submission_delay # New
 
 ANSI_YELLOW = "\x1b[33;1m"
 ANSI_RESET = "\x1b[0m"
@@ -82,8 +81,6 @@ PLACEHOLDER_AZURE_CLIENT_ID = "YOUR_AZURE_CLIENT_ID"
 PLACEHOLDER_AZURE_CLIENT_SECRET = "YOUR_AZURE_CLIENT_SECRET"
 PLACEHOLDER_AZURE_TENANT_ID = "YOUR_AZURE_TENANT_ID"
 
-AZURE_DEVOPS_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798" # Static Azure DevOps resource ID
-
 # --- Constants for the fetch_utils utility ---
 AZURE_DEVOPS_EXCEPTION_MAP = {
     'forbidden_exception': lambda e: isinstance(e, AzureDevOpsServiceError) and hasattr(e, 'status_code') and e.status_code == 403,
@@ -116,19 +113,15 @@ def _get_readme_content_azure_devops(
     project_name: str,
     repo_default_branch: Optional[str],
     repo_web_url: str,
-    cfg_obj: Optional[Any],
-    dynamic_delay_to_apply: float, # Delay to apply before each API call within this function
-    logger_instance: Optional[logging.LoggerAdapter] = None, # Accept a logger instance
-    num_workers: int = 1
+    dynamic_post_api_call_delay_seconds: float,
+    logger_instance: logging.LoggerAdapter, 
 ) -> tuple[Optional[str], Optional[str], bool]: # Added bool for is_empty_repo_error
     """Fetches README content and URL for an Azure DevOps repository."""
     # Wrapper for the dynamic delay
     def _azure_dynamic_delay_wrapper():
-        if dynamic_delay_to_apply > 0:
-            logger.debug(f"Azure DevOps applying SYNC pre-API call delay (get README file): {dynamic_delay_to_apply:.2f}s")
-            time.sleep(dynamic_delay_to_apply) # This logger is module level, will be updated
-    
-    current_logger = logger_instance if logger_instance else logger
+        if dynamic_post_api_call_delay_seconds > 0:
+            logger_instance.debug(f"Applying SYNC post-API call delay (README fetch): {dynamic_post_api_call_delay_seconds:.2f}s")
+            time.sleep(dynamic_post_api_call_delay_seconds)
 
     common_readme_names = ["README.md", "README.txt", "README"]
     if not repo_default_branch:
@@ -157,7 +150,7 @@ def _get_readme_content_azure_devops(
             platform_exception_map=AZURE_DEVOPS_EXCEPTION_MAP,
             max_quick_retries=MAX_QUICK_CONTENT_RETRIES_AZURE,
             quick_retry_delay_seconds=QUICK_CONTENT_RETRY_DELAY_SECONDS_AZURE,
-            logger_instance=current_logger, # Use passed/derived logger
+            logger_instance=logger_instance, 
             dynamic_delay_func=_azure_dynamic_delay_wrapper
         )
 
@@ -166,17 +159,17 @@ def _get_readme_content_azure_devops(
         if error_type == FETCH_ERROR_NOT_FOUND:
             continue # Try next readme name
         if error_type in [FETCH_ERROR_FORBIDDEN, FETCH_ERROR_API_ERROR, FETCH_ERROR_UNEXPECTED]:
-            current_logger.error(f"Stopping README fetch for ADO repo ID {repo_id} due to error: {error_type}")
+            logger_instance.error(f"Stopping README fetch for ADO repo ID {repo_id} due to error: {error_type}")
             return None, None, False
 
         if readme_content_str is not None: # Success and content is not None (empty string is valid content)
             url_readme_name = readme_name.lstrip('/')
             branch_name_for_url = repo_default_branch.replace('refs/heads/', '')
             readme_url = f"{repo_web_url}?path=/{url_readme_name}&version=GB{branch_name_for_url}&_a=contents"
-            current_logger.debug(f"Successfully fetched README '{readme_name}' for repo ID {repo_id}")
+            logger_instance.debug(f"Successfully fetched README '{readme_name}' for repo ID {repo_id}")
             return readme_content_str, readme_url, False
 
-    current_logger.debug(f"No common README file found for repo ID {repo_id}")
+    logger_instance.debug(f"No common README file found for repo ID {repo_id}")
     return None, None, False
 
 def _get_codeowners_content_azure_devops(
@@ -184,19 +177,14 @@ def _get_codeowners_content_azure_devops(
     repo_id: str,
     project_name: str,
     repo_default_branch: Optional[str],
-    cfg_obj: Optional[Any],
-    dynamic_delay_to_apply: float, # Delay to apply before each API call within this function
-    logger_instance: Optional[logging.LoggerAdapter] = None, # Accept a logger instance
-    num_workers: int = 1
+    dynamic_post_api_call_delay_seconds: float,
+    logger_instance: logging.LoggerAdapter 
 ) -> tuple[Optional[str], bool]: # Added bool for is_empty_repo_error
     """Fetches CODEOWNERS content for an Azure DevOps repository."""
-    # Wrapper for the dynamic delay
     def _azure_dynamic_delay_wrapper():
-        if dynamic_delay_to_apply > 0:
-            logger.debug(f"Azure DevOps applying SYNC pre-API call delay (get CODEOWNERS file): {dynamic_delay_to_apply:.2f}s")
-            time.sleep(dynamic_delay_to_apply) # This logger is module level, will be updated
-
-    current_logger = logger_instance if logger_instance else logger
+        if dynamic_post_api_call_delay_seconds > 0:
+            logger_instance.debug(f"Applying SYNC post-API call delay (CODEOWNERS fetch): {dynamic_post_api_call_delay_seconds:.2f}s")
+            time.sleep(dynamic_post_api_call_delay_seconds)
 
     codeowners_locations = ["CODEOWNERS", ".azuredevops/CODEOWNERS", "docs/CODEOWNERS", ".vsts/CODEOWNERS"]
     if not repo_default_branch:
@@ -223,7 +211,7 @@ def _get_codeowners_content_azure_devops(
             platform_exception_map=AZURE_DEVOPS_EXCEPTION_MAP,
             max_quick_retries=MAX_QUICK_CONTENT_RETRIES_AZURE,
             quick_retry_delay_seconds=QUICK_CONTENT_RETRY_DELAY_SECONDS_AZURE,
-            logger_instance=current_logger, # Use passed/derived logger
+            logger_instance=logger_instance, 
             dynamic_delay_func=_azure_dynamic_delay_wrapper
         )
 
@@ -232,42 +220,40 @@ def _get_codeowners_content_azure_devops(
         if error_type == FETCH_ERROR_NOT_FOUND:
             continue
         if error_type in [FETCH_ERROR_FORBIDDEN, FETCH_ERROR_API_ERROR, FETCH_ERROR_UNEXPECTED]:
-            current_logger.error(f"Stopping CODEOWNERS fetch for ADO repo ID {repo_id} due to error: {error_type}")
+            logger_instance.error(f"Stopping CODEOWNERS fetch for ADO repo ID {repo_id} due to error: {error_type}")
             return None, False
 
         if codeowners_content_str is not None: # Success
-            current_logger.debug(f"Successfully fetched CODEOWNERS from '{location}' for repo ID {repo_id}")
+            logger_instance.debug(f"Successfully fetched CODEOWNERS from '{location}' for repo ID {repo_id}")
             return codeowners_content_str, False
 
-    current_logger.debug(f"No CODEOWNERS file found in standard locations for repo ID {repo_id}")
+    logger_instance.debug(f"No CODEOWNERS file found in standard locations for repo ID {repo_id}")
     return None, False
 
 def _fetch_tags_azure_devops(
     git_client: GitClient,
     repo_id: str,
     project_name: str,
-    cfg_obj: Optional[Any],
-    dynamic_delay_to_apply: float, # Delay to apply before this API call
-    logger_instance: Optional[logging.LoggerAdapter] = None, # Accept a logger instance
-    num_workers: int = 1
+    dynamic_post_api_call_delay_seconds: float,
+    logger_instance: logging.LoggerAdapter 
 ) -> List[str]:
     if not AZURE_SDK_AVAILABLE: return []
     tag_names = []
-    current_logger = logger_instance if logger_instance else logger
     try:
-        current_logger.debug(f"Fetching tags for repo ID: {repo_id} in project {project_name}")
+        logger_instance.debug(f"Fetching tags for repo ID: {repo_id} in project {project_name}")
+        # Apply delay before the API call
+        if dynamic_post_api_call_delay_seconds > 0:
+            logger_instance.debug(f"Applying SYNC post-API call delay (tags fetch): {dynamic_post_api_call_delay_seconds:.2f}s")
+            time.sleep(dynamic_post_api_call_delay_seconds)
         refs = git_client.get_refs(repo_id=repo_id, project=project_name, filter="tags/")
-        if dynamic_delay_to_apply > 0:
-            current_logger.debug(f"Azure DevOps applying SYNC post-API call delay (get tags/refs): {dynamic_delay_to_apply:.2f}s")
-            time.sleep(dynamic_delay_to_apply)
         for ref in refs:
             if ref.name and ref.name.startswith("refs/tags/"):
                 tag_names.append(ref.name.replace("refs/tags/", ""))
         logger.debug(f"Found {len(tag_names)} tags for repo ID {repo_id}")
     except AzureDevOpsServiceError as e:
-        current_logger.error(f"Azure DevOps API error fetching tags for repo ID {repo_id}: {e}", exc_info=False)
+        logger_instance.error(f"Azure DevOps API error fetching tags for repo ID {repo_id}: {e}", exc_info=False)
     except Exception as e:
-        current_logger.error(f"Unexpected error fetching tags for repo ID {repo_id}: {e}", exc_info=True)
+        logger_instance.error(f"Unexpected error fetching tags for repo ID {repo_id}: {e}", exc_info=True)
     return tag_names
 
 def _process_single_azure_devops_repository(
@@ -282,13 +268,14 @@ def _process_single_azure_devops_repository(
     spn_tenant_id_for_estimator: Optional[str],
     hours_per_commit: Optional[float],
     cfg_obj: Any, # Pass the Config object
-    inter_repo_adaptive_delay_seconds: float, # Inter-repository adaptive delay
-    dynamic_post_api_call_delay_seconds: float, # Per-API call dynamic delay
     # --- Parameters for Caching ---
     previous_scan_cache: Dict[str, Dict],
     current_commit_sha: Optional[str],
-    num_workers: int = 1,
-    logger_instance: Optional[logging.LoggerAdapter] = None # Accept a logger instance
+    current_commit_date: Optional[datetime], # Date of the current_commit_sha
+    dynamic_post_api_call_delay_seconds: float, # Delay for sync API calls within this function
+    num_items_in_target: int, # Number of repos in the current ADO project target
+    logger_instance: logging.LoggerAdapter,
+    num_workers: int = 1
 ) -> Dict[str, Any]:
     """
     Processes a single Azure DevOps repository to extract its metadata.
@@ -298,8 +285,7 @@ def _process_single_azure_devops_repository(
     repo_id_str = str(repo.id) # Key for caching
     repo_data: Dict[str, Any] = {"name": repo.name, "organization": organization_name, "_azure_project_name": project_name}
     azure_cache_config = PLATFORM_CACHE_CONFIG["azure"]
-    
-    current_logger = logger_instance if logger_instance else logger
+    current_logger = logger_instance # Use the passed-in logger
 
     # --- Caching Logic ---
     if current_commit_sha: # Only attempt cache hit if we have a current SHA to compare
@@ -323,7 +309,8 @@ def _process_single_azure_devops_repository(
                         repo_data_to_process,
                         scm_org_for_logging=organization_name,
                         cfg_obj=cfg_obj, 
-                        default_org_identifiers=default_ids_for_exemption_cache)
+                        default_org_identifiers=default_ids_for_exemption_cache,
+                        logger_instance=current_logger)
                 return repo_data_to_process # Return cached and re-processed data
 
     current_logger.info(f"No SHA: Processing Azure DevOps repo: {repo_full_name} (ID: {repo_id_str}) with full data fetch.")
@@ -345,11 +332,22 @@ def _process_single_azure_devops_repository(
             repo_data['_is_empty_repo'] = True
 
         created_at_iso: Optional[str] = None 
+        # Repository creation date is not easily available from ADO SDK's GitRepository model.
+        # If it were, it would be set here. For now, it remains None.
+
         pushed_at_iso: Optional[str] = None
-        if repo.project and repo.project.last_update_time: 
-            last_modified_dt = repo.project.last_update_time.replace(tzinfo=timezone.utc)
-            pushed_at_iso = last_modified_dt.isoformat()
-        
+        if current_commit_date:
+            # Ensure the datetime is UTC
+            pushed_at_dt = current_commit_date.astimezone(timezone.utc) if current_commit_date.tzinfo else current_commit_date.replace(tzinfo=timezone.utc)
+            pushed_at_iso = pushed_at_dt.isoformat()
+        elif repo.project and repo.project.last_update_time: # Fallback, less accurate
+            current_logger.warning(
+                f"Using project's last_update_time as fallback for repository '{repo.name}' lastModified date, "
+                "as specific commit date was not available."
+            )
+            fallback_dt = repo.project.last_update_time.astimezone(timezone.utc) if repo.project.last_update_time.tzinfo else repo.project.last_update_time.replace(tzinfo=timezone.utc)
+            pushed_at_iso = fallback_dt.isoformat()
+
         repo_visibility = "private" 
         try:
             project_details = core_client.get_project(project_id=project_name) 
@@ -368,23 +366,25 @@ def _process_single_azure_devops_repository(
             project_name=project_name,
             repo_default_branch=repo.default_branch,
             repo_web_url=repo.web_url,
-            cfg_obj=cfg_obj,
-            dynamic_delay_to_apply=dynamic_post_api_call_delay_seconds,
-            logger_instance=current_logger, # Pass logger
-            num_workers=num_workers
+            dynamic_post_api_call_delay_seconds=dynamic_post_api_call_delay_seconds, # No num_workers needed here
+            logger_instance=current_logger # Pass logger
         )
         codeowners_content, codeowners_empty_err = _get_codeowners_content_azure_devops(
-            git_client=git_client, repo_id=repo.id, project_name=project_name, repo_default_branch=repo.default_branch,
-            cfg_obj=cfg_obj, dynamic_delay_to_apply=dynamic_post_api_call_delay_seconds, 
-            logger_instance=current_logger, num_workers=num_workers # Pass logger
+            git_client=git_client,
+            repo_id=repo.id,
+            project_name=project_name,
+            repo_default_branch=repo.default_branch,
+            dynamic_post_api_call_delay_seconds=dynamic_post_api_call_delay_seconds, # Pass the delay
+            logger_instance=current_logger # Pass logger
         )
+        # The dynamic_post_api_call_delay_seconds was passed to _get_codeowners_content_azure_devops
+        # and applied by its internal _azure_dynamic_delay_wrapper.
         if not repo_data.get('_is_empty_repo', False): # If not already marked empty
             repo_data['_is_empty_repo'] = readme_empty_err or codeowners_empty_err
 
-        repo_git_tags = _fetch_tags_azure_devops(
+        repo_git_tags = _fetch_tags_azure_devops( # No num_workers needed here
             git_client=git_client, repo_id=repo.id, project_name=project_name,
-            cfg_obj=cfg_obj, dynamic_delay_to_apply=dynamic_post_api_call_delay_seconds, 
-            logger_instance=current_logger, num_workers=num_workers # Pass logger
+            dynamic_post_api_call_delay_seconds=dynamic_post_api_call_delay_seconds, logger_instance=current_logger
         )
 
         repo_data.update({
@@ -412,13 +412,18 @@ def _process_single_azure_devops_repository(
 
         if hours_per_commit is not None:
             current_logger.debug(f"Estimating labor hours for Azure DevOps repo: {repo.name} in {project_name}")
-            from utils.labor_hrs_estimator import analyze_azure_devops_repo_sync 
             labor_df = analyze_azure_devops_repo_sync(
                 organization=organization_name, project=project_name, repo_id=repo.id,
                 pat_token=pat_token_for_estimator, 
+                # Pass SPN details, assuming analyze_azure_devops_repo_sync can use them
+                spn_client_id=spn_client_id_for_estimator,
+                spn_client_secret=spn_client_secret_for_estimator,
+                spn_tenant_id=spn_tenant_id_for_estimator,
                 hours_per_commit=hours_per_commit,
                 cfg_obj=cfg_obj, # Pass cfg_obj for its own post-API call delays
+                num_repos_in_target=num_items_in_target, # Pass the count of repos in this target
                 is_empty_repo=repo_data.get('_is_empty_repo', False),
+                number_of_workers=num_workers, # Pass the worker count
                 logger_instance=current_logger # Pass logger
             )
             repo_data["laborHours"] = round(float(labor_df["EstimatedHours"].sum()), 2) if not labor_df.empty else 0.0
@@ -429,7 +434,8 @@ def _process_single_azure_devops_repository(
                 repo_data,
                 scm_org_for_logging=organization_name,
                 cfg_obj=cfg_obj, 
-                default_org_identifiers=default_ids_for_exemption)
+                default_org_identifiers=default_ids_for_exemption,
+                logger_instance=current_logger)
         else:
             current_logger.warning(
                 f"cfg_obj not provided to _process_single_azure_devops_repository for {repo_full_name}. "
@@ -439,11 +445,9 @@ def _process_single_azure_devops_repository(
                 repo_data, 
                 scm_org_for_logging=organization_name,
                 cfg_obj=cfg_obj, 
-                default_org_identifiers=default_ids_for_exemption
+                default_org_identifiers=default_ids_for_exemption,
+                logger_instance=current_logger
             )
-        if inter_repo_adaptive_delay_seconds > 0: # This is the inter-repository adaptive delay
-            current_logger.debug(f"Azure DevOps repo {repo_full_name}: Applying INTER-REPO adaptive delay of {inter_repo_adaptive_delay_seconds:.2f}s")
-            time.sleep(inter_repo_adaptive_delay_seconds)
 
         return repo_data
 
@@ -489,11 +493,128 @@ def _setup_azure_devops_credentials(
         logger_instance.error("Azure DevOps authentication failed: Neither valid SPN details nor a PAT were provided, or they are placeholders.")
         return None, ""
 
+def _get_repo_stubs_and_estimate_api_calls(
+    git_client: GitClient,
+    organization_name: str, # For logging
+    project_name: str, # For API calls and logging
+    fixed_private_filter_date: datetime,
+    hours_per_commit: Optional[float],
+    cfg_obj: Any,
+    logger_instance: logging.Logger,
+    previous_scan_cache: Dict[str, Dict] # NEW: Pass the cache
+) -> tuple[List[GitRepository], int]:
+    """
+    Internal helper to list repository stubs, filter them, and estimate API calls.
+    Returns a list of repository stubs to process and the estimated API calls for them.
+    """
+    logger_instance.info(f"Analyzing all repository stubs for project '{project_name}' in org '{organization_name}'... Be patient!")
+    azure_cache_config = PLATFORM_CACHE_CONFIG["azure"]
+
+    all_repo_stubs_in_project = []
+    try:
+        all_repo_stubs_in_project = list(git_client.get_repositories(project=project_name))
+        logger_instance.info(f"Found {len(all_repo_stubs_in_project)} total repository stubs for '{project_name}'.")
+    except AzureDevOpsServiceError as rle_list:
+        logger_instance.error(f"Azure DevOps API error while listing repositories for '{project_name}': {rle_list}. Cannot proceed.")
+        raise
+    except Exception as e_list:
+        logger_instance.error(f"Error listing repositories for '{project_name}': {e_list}. Cannot proceed.", exc_info=True)
+        raise
+
+    repos_to_process_stubs = []
+    estimated_api_calls_for_target = 0
+    # Estimate listing calls: 1 call per page (typically many repos per page for ADO, but let's be simple)
+    # This is a rough estimate; ADO's get_repositories is efficient.
+    estimated_api_calls_for_target += 1 # At least one call to list.
+    skipped_empty_repo_count = 0 # New counter
+    skipped_by_date_filter_count = 0
+
+    for repo_stub in all_repo_stubs_in_project:
+        include_repo = False
+        # Visibility in ADO is often at the project level. Repo stubs might not have individual visibility.
+        # We assume the project's visibility (fetched later or passed) applies.
+        # For estimation, we might need to assume public or make a call to get project visibility if not available.
+        # Here, we'll rely on the project's visibility determined in the main fetch_repositories.
+        # For now, let's assume if it's not explicitly private by date, it's included for estimation.
+        # This part might need refinement if project visibility is crucial for estimation and not readily available.
+        
+        # Simplified filter for estimation: if it's a private repo (based on project visibility, which we don't have here directly)
+        # then apply date filter. For now, assume all are potentially processable for estimation count.
+        # A more accurate estimation would require fetching project visibility first.
+        # For this estimation function, we'll assume the filter in fetch_repositories is the source of truth.
+        # This function will just count based on what `fetch_repositories` would filter.
+        
+        # Replicating the filter logic from fetch_repositories for consistency in estimation:
+        project_visibility = repo_stub.project.visibility.lower() if repo_stub.project and repo_stub.project.visibility else "private"
+        if project_visibility == "public":
+            include_repo = True
+        else: # Private or internal project repo, apply date filter
+            modified_at_dt = repo_stub.project.last_update_time # This is project's last update time
+            if modified_at_dt and modified_at_dt.tzinfo is None: modified_at_dt = modified_at_dt.replace(tzinfo=timezone.utc)
+            if modified_at_dt and modified_at_dt >= fixed_private_filter_date:
+                include_repo = True
+            else:
+                skipped_by_date_filter_count += 1
+        
+        # NEW: Add check for empty repository using repo_stub.size
+        if include_repo: # If it's still a candidate after privacy/date filters
+            # Check if the repository is empty using the 'size' attribute from the REST API stub.
+            if hasattr(repo_stub, 'size') and repo_stub.size == 0:
+                logger_instance.info(f"Pre-scan: ADO repo '{repo_stub.name}' in project '{project_name}' identified as empty (size: 0 from REST stub). Skipping further processing for this repo in estimation phase.")
+                include_repo = False
+                skipped_empty_repo_count += 1
+        
+        if include_repo:
+            repos_to_process_stubs.append(repo_stub)
+            made_sha_call_in_estimation = False # Flag to track if SHA call was made during this estimation step
+
+            # --- Cache Check for Estimation ---
+            is_likely_cached = False
+            repo_id_str = str(repo_stub.id)
+            
+            if repo_id_str in previous_scan_cache:
+                cached_entry = previous_scan_cache[repo_id_str]
+                # Heuristic for estimation: if repo_id is in cache, assume fewer calls.
+                # Avoid live SHA fetch here to keep estimation light.
+                # The main fetch_repositories loop will do the accurate SHA check.
+                cached_last_modified_str = cached_entry.get('date', {}).get('lastModified')
+                # Project's last_update_time is a rough proxy for repo's pushed_at for ADO stubs
+                stub_last_activity_dt = repo_stub.project.last_update_time if repo_stub.project else None
+                if stub_last_activity_dt and cached_last_modified_str:
+                    try:
+                        if stub_last_activity_dt.tzinfo is None: stub_last_activity_dt = stub_last_activity_dt.replace(tzinfo=timezone.utc)
+                        cached_dt = datetime.fromisoformat(cached_last_modified_str.replace('Z', '+00:00')).replace(tzinfo=timezone.utc)
+                        if stub_last_activity_dt <= cached_dt: # If project hasn't updated since cache
+                            is_likely_cached = True
+                            logger_instance.debug(f"Pre-scan: ADO repo {repo_stub.name} (ID: {repo_id_str}) likely cached based on project last_update_time. Skipping detailed call estimates.")
+                    except ValueError:
+                        logger_instance.warning(f"Pre-scan: Could not parse date for ADO repo {repo_stub.name} for cache check during estimation.")
+
+            if not is_likely_cached:
+                # If not cached, and SHA call wasn't made during cache check (e.g. repo not in previous_scan_cache)
+                # account for the SHA call that fetch_repositories will make.
+                if not made_sha_call_in_estimation:
+                    estimated_api_calls_for_target += 1 # For the SHA call in fetch_repositories
+                estimated_api_calls_for_target += 5 # Adjusted metadata: project details, README, CODEOWNERS, tags, buffer
+                if hours_per_commit is not None and hours_per_commit > 0:
+                    estimated_api_calls_for_target += getattr(cfg_obj, 'ESTIMATED_LABOR_CALLS_PER_REPO_AZURE_ENV',
+                                                              getattr(cfg_obj, 'ESTIMATED_LABOR_CALLS_PER_REPO_ENV', 3))
+            # --- End Cache Check ---
+
+
+    logger_instance.info(f"Identified {len(repos_to_process_stubs)} repositories to estimate for in detail for '{project_name}'.")
+    if skipped_by_date_filter_count > 0:
+        logger_instance.info(f"Skipped {skipped_by_date_filter_count} private project repositories from '{project_name}' due to fixed date filter ({fixed_private_filter_date.strftime('%Y-%m-%d')}) for estimation.")
+    if skipped_empty_repo_count > 0:
+        logger_instance.info(f"Skipped {skipped_empty_repo_count} empty repositories from '{project_name}' during pre-scan estimation.")
+    return repos_to_process_stubs, estimated_api_calls_for_target
+
 def fetch_repositories(
     token: Optional[str],
     target_path: str,
     processed_counter: List[int],
     processed_counter_lock: threading.Lock,
+    logger_instance: logging.LoggerAdapter, # Made non-optional
     debug_limit: int | None = None,
     azure_devops_url: str | None = None,
     hours_per_commit: Optional[float] = None,
@@ -502,8 +623,8 @@ def fetch_repositories(
     previous_scan_output_file: Optional[str] = None,
     spn_client_id: Optional[str] = None, # Renamed for clarity to match internal usage
     spn_client_secret: Optional[str] = None, # Renamed
-    spn_tenant_id: Optional[str] = None # Renamed
-) -> list[dict]:
+    spn_tenant_id: Optional[str] = None
+ ) -> list[dict]:
     """
     Fetches repository details from a specific Azure DevOps organization/project.
     
@@ -537,26 +658,20 @@ def fetch_repositories(
     organization_name, project_name = target_path.split('/', 1)
 
     # Create a LoggerAdapter with the target context
-    target_specific_logger = logging.LoggerAdapter(logging.getLogger(__name__), {'org_group': f"{organization_name}/{project_name}"})
-    org_group = target_specific_logger.extra['org_group']
-    target_specific_logger.info(f"Attempting to fetch repositories for ADO organization: {ANSI_YELLOW}{org_group}{ANSI_RESET} (max_workers: {max_workers})")
-
-
-    # Parse the REPOS_CREATED_AFTER_DATE from cfg_obj
-    repos_created_after_filter_date: Optional[datetime] = None
-    if cfg_obj and hasattr(cfg_obj, 'REPOS_CREATED_AFTER_DATE'):
-        repos_created_after_filter_date = parse_repos_created_after_date(cfg_obj.REPOS_CREATED_AFTER_DATE, target_specific_logger)
+    current_logger = logger_instance # Directly use the passed-in adapter
+    current_logger.info(f"Attempting to fetch repositories for ADO organization: {ANSI_YELLOW}{current_logger.extra['org_group']}{ANSI_RESET} (max_workers: {max_workers})")
+    fixed_private_filter_date = get_fixed_private_filter_date(cfg_obj, current_logger)
 
     # --- Load Previous Scan Data for Caching ---
     previous_scan_cache: Dict[str, Dict] = {}
     if previous_scan_output_file:
-        logger.info(f"Attempting to load previous Azure DevOps scan data for '{organization_name}/{project_name}' from: {previous_scan_output_file}")
+        current_logger.info(f"Attempting to load previous Azure DevOps scan data for '{organization_name}/{project_name}' from: {previous_scan_output_file}")
         previous_scan_cache = load_previous_scan_data(previous_scan_output_file, "azure")
     else:
-        target_specific_logger.info(f"No previous scan output file provided. Full scan for all repos in this target.")
+        current_logger.info(f"No previous scan output file provided. Full scan for all repos in this target.")
 
-    azure_devops_api_url = os.getenv("AZURE_DEVOPS_API_URL", "https://dev.azure.com").strip('/')
-    organization_url = f"{azure_devops_api_url}/{organization_name}"
+    effective_ado_url = azure_devops_url if azure_devops_url else os.getenv("AZURE_DEVOPS_API_URL", "https://dev.azure.com")
+    organization_url = f"{effective_ado_url.strip('/')}/{organization_name}" # This is correct
 
     processed_repo_list: List[Dict[str, Any]] = []
 
@@ -566,7 +681,7 @@ def fetch_repositories(
             spn_client_id=spn_client_id,
             spn_client_secret=spn_client_secret,
             spn_tenant_id=spn_tenant_id,
-            logger_instance=target_specific_logger # Pass adapter
+            logger_instance=current_logger 
         )
         if not credentials:
             return []
@@ -576,182 +691,137 @@ def fetch_repositories(
         disable_ssl_env = os.getenv("DISABLE_SSL_VERIFICATION", "false").lower()
         if disable_ssl_env == "true":
             connection.session.verify = False # Disable SSL verification for the requests session
-            target_specific_logger.warning(f"{ANSI_RED}SECURITY WARNING: SSL certificate verification is DISABLED for Azure DevOps connections due to DISABLE_SSL_VERIFICATION=true.{ANSI_RESET}")
-            target_specific_logger.warning(f"{ANSI_YELLOW}This should ONLY be used for trusted internal environments. Do NOT use in production with public-facing services.{ANSI_RESET}")
+            current_logger.warning(f"{ANSI_RED}SECURITY WARNING: SSL certificate verification is DISABLED for Azure DevOps connections due to DISABLE_SSL_VERIFICATION=true.{ANSI_RESET}")
+            current_logger.warning(f"{ANSI_YELLOW}This should ONLY be used for trusted internal environments. Do NOT use in production with public-facing services.{ANSI_RESET}")
         # --- End SSL Verification Control ---
 
         git_client: GitClient = connection.clients.get_git_client()
         core_client: CoreClient = connection.clients.get_core_client()
 
-        target_specific_logger.info(f"Successfully established connection to Azure DevOps organization: {organization_name} using {auth_method}.")
+        current_logger.info(f"Successfully established connection to Azure DevOps organization: {organization_name} using {auth_method}.")
+        try:
+            repos_to_process_stubs, estimated_api_calls_for_current_target = _get_repo_stubs_and_estimate_api_calls(
+                git_client, organization_name, project_name, fixed_private_filter_date,
+                hours_per_commit, cfg_obj, current_logger, previous_scan_cache # Pass current_logger and cache
+            )
+        except Exception: # Errors from listing/estimation
+            return []
 
-        # --- Determine num_repos_in_target for adaptive delay and dynamic intra-repo delays ---
-        num_repos_in_target_for_delay_calc = 0
-        inter_repo_adaptive_delay_per_repo = 0.0 # For the delay *between* processing repos
-        live_repo_list_materialized = None # To store the live list if fetched for count
+        if not repos_to_process_stubs:
+            current_logger.info(f"No repositories to process for '{project_name}' after filtering. Skipping.")
+            return []
 
-        cached_repo_count_for_target = 0
-        if previous_scan_cache: # Check if cache was loaded and is not empty
-            azure_id_field = PLATFORM_CACHE_CONFIG.get("azure", {}).get("id_field", "repo_id")
-            valid_cached_repos = [
-                r_data for r_id, r_data in previous_scan_cache.items()
-                if isinstance(r_data, dict) and r_data.get(azure_id_field) is not None
-            ]
-            cached_repo_count_for_target = len(valid_cached_repos)
-            if cached_repo_count_for_target > 0:
-                target_specific_logger.info(f"CACHE: Found {cached_repo_count_for_target} valid repos in cache.")
-                num_repos_in_target_for_delay_calc = cached_repo_count_for_target
-                target_specific_logger.info(f"ADAPTIVE DELAY/PROCESSING: Using cached count ({num_repos_in_target_for_delay_calc}) as total items estimate.")
+        current_rate_limit_status = get_azure_devops_rate_limit_status(connection, organization_name, current_logger)
+        if not current_rate_limit_status:
+            current_logger.error(f"Could not determine current rate limit for '{project_name}' after listing. Aborting target.")
+            return []
 
-        if num_repos_in_target_for_delay_calc == 0: # If cache was empty or not used for count
-            try:
-                target_specific_logger.info(f"ADAPTIVE DELAY/PROCESSING: Cache empty or not used for count. Fetching live repository list to get count.")
-                # This is an API call
-                all_live_repos_for_project = list(git_client.get_repositories(project=project_name))
-                initial_live_count = len(all_live_repos_for_project)
-                target_specific_logger.info(f"ADAPTIVE DELAY/PROCESSING: Fetched {initial_live_count} live repositories before date filtering.")
+        platform_total_estimated_api_calls = getattr(cfg_obj, 'AZURE_TOTAL_ESTIMATED_API_CALLS', None)
+        effective_estimated_calls_for_delay_calc = platform_total_estimated_api_calls \
+            if platform_total_estimated_api_calls is not None and platform_total_estimated_api_calls > 0 \
+            else estimated_api_calls_for_current_target
+        # (Logging for which estimate is used can be added here if desired)
 
-                # --- Apply REPOS_CREATED_AFTER_DATE filter to live_repo_list_materialized ---
-                if repos_created_after_filter_date and all_live_repos_for_project:
-                    filtered_live_repos = []
-                    skipped_legacy_count = 0
-                    for repo_stub_item in all_live_repos_for_project:
-                        project_visibility = repo_stub_item.project.visibility.lower() if repo_stub_item.project and repo_stub_item.project.visibility else "private"
-                        is_private_project_repo = project_visibility == "private"
-
-                        if not is_private_project_repo: # Public project repos always pass
-                            filtered_live_repos.append(repo_stub_item)
-                            continue
-                        
-                        # Private project repo, check project's last update time
-                        modified_at_dt = repo_stub_item.project.last_update_time
-                        if modified_at_dt and modified_at_dt.tzinfo is None: # Ensure tz-aware
-                            modified_at_dt = modified_at_dt.replace(tzinfo=timezone.utc)
-                        
-                        if modified_at_dt and modified_at_dt >= repos_created_after_filter_date:
-                            filtered_live_repos.append(repo_stub_item)
-                        else:
-                            skipped_legacy_count += 1
-                    live_repo_list_materialized = filtered_live_repos # Update with filtered list
-                    if skipped_legacy_count > 0:
-                        target_specific_logger.info(f"Skipped {skipped_legacy_count} private project legacy repositories due to REPOS_CREATED_AFTER_DATE filter ('{repos_created_after_filter_date.strftime('%Y-%m-%d')}') before full processing.")
-                else:
-                    live_repo_list_materialized = all_live_repos_for_project # Use all if no filter or no initial repos
-
-                num_repos_in_target_for_delay_calc = len(live_repo_list_materialized) # Count after filtering
-                target_specific_logger.info(f"ADAPTIVE DELAY/PROCESSING: Using API count of {num_repos_in_target_for_delay_calc} (after date filter) as total items estimate.")
-            except Exception as e_live_count:
-                target_specific_logger.warning(f"Error fetching live repository list to get count: {e_live_count}. num_repos_in_target_for_delay_calc will be 0.", exc_info=True)
-                num_repos_in_target_for_delay_calc = 0 # Fallback
-
-        # --- Calculate inter-repo adaptive delay if enabled ---
-        if cfg_obj and cfg_obj.ADAPTIVE_DELAY_ENABLED_ENV and num_repos_in_target_for_delay_calc > 0:
-            if num_repos_in_target_for_delay_calc > cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV:
-                excess_repos = num_repos_in_target_for_delay_calc - cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV
-                scale_factor = 1 + (excess_repos / cfg_obj.ADAPTIVE_DELAY_THRESHOLD_REPOS_ENV)
-                calculated_delay = cfg_obj.ADAPTIVE_DELAY_BASE_SECONDS_ENV * scale_factor
-                inter_repo_adaptive_delay_per_repo = min(calculated_delay, cfg_obj.ADAPTIVE_DELAY_MAX_SECONDS_ENV)
-                if inter_repo_adaptive_delay_per_repo > 0:
-                    target_specific_logger.info(f"{ANSI_YELLOW}INTER-REPO adaptive delay calculated: {inter_repo_adaptive_delay_per_repo:.2f}s per repository (based on {num_repos_in_target_for_delay_calc} repositories, {max_workers} workers).{ANSI_RESET}")
-        elif cfg_obj and cfg_obj.ADAPTIVE_DELAY_ENABLED_ENV and num_repos_in_target_for_delay_calc == 0:
-            target_specific_logger.info(f"Adaptive delay enabled but num_repos_in_target_for_delay_calc is 0. No inter-repo adaptive delay will be applied.")
-        elif cfg_obj: # Adaptive delay is configured but disabled
-            target_specific_logger.info(f"Adaptive delay is disabled by configuration.")
-
-        # Calculate dynamic POST-API-CALL delay for metadata calls within this target
+        # --- Calculate dynamic POST-API-CALL delay for metadata calls within this target ---
+        # This delay is applied for synchronous API calls made by each worker thread.
         dynamic_post_api_call_delay_seconds = 0.0
         if cfg_obj:
             base_delay = float(getattr(cfg_obj, 'AZURE_DEVOPS_POST_API_CALL_DELAY_SECONDS_ENV', os.getenv("AZURE_DEVOPS_POST_API_CALL_DELAY_SECONDS", "0.0")))
             threshold = int(getattr(cfg_obj, 'DYNAMIC_DELAY_THRESHOLD_REPOS_ENV', os.getenv("DYNAMIC_DELAY_THRESHOLD_REPOS", "100")))
+            # Scale factor for dynamic delay calculation
             scale = float(getattr(cfg_obj, 'DYNAMIC_DELAY_SCALE_FACTOR_ENV', os.getenv("DYNAMIC_DELAY_SCALE_FACTOR", "1.5")))
             max_d = float(getattr(cfg_obj, 'DYNAMIC_DELAY_MAX_SECONDS_ENV', os.getenv("DYNAMIC_DELAY_MAX_SECONDS", "1.0")))
             
+            from utils.delay_calculator import calculate_dynamic_delay # Local import if not at top
             dynamic_post_api_call_delay_seconds = calculate_dynamic_delay(
                 base_delay_seconds=base_delay,
-                num_items=num_repos_in_target_for_delay_calc if num_repos_in_target_for_delay_calc > 0 else None,
+                num_items=len(repos_to_process_stubs), # Use count of repos to process
                 threshold_items=threshold, 
                 scale_factor=scale, 
                 max_delay_seconds=max_d,
-                num_workers=max_workers  # Pass the number of workers
+                num_workers=max_workers
             )
             if dynamic_post_api_call_delay_seconds > 0:
-                 target_specific_logger.info(f"{ANSI_YELLOW}DYNAMIC POST-API-CALL delay for metadata set to: {dynamic_post_api_call_delay_seconds:.2f}s (based on {num_repos_in_target_for_delay_calc} repositories, {max_workers} workers).{ANSI_RESET}")
+                 current_logger.info(f"{ANSI_YELLOW}DYNAMIC POST-API-CALL delay for ADO metadata set to: {dynamic_post_api_call_delay_seconds:.2f}s (based on {len(repos_to_process_stubs)} repositories, {max_workers} workers, scale: {scale}).{ANSI_RESET}")
+
+        # --- Calculate inter-submission delay ---
+        inter_submission_delay = calculate_inter_submission_delay(
+            rate_limit_status=current_rate_limit_status,
+            estimated_api_calls_for_target=effective_estimated_calls_for_delay_calc,
+            num_workers=max_workers,
+            safety_factor=getattr(cfg_obj, 'API_SAFETY_FACTOR_ENV', 0.8),
+            min_delay_seconds=getattr(cfg_obj, 'MIN_INTER_REPO_DELAY_SECONDS_ENV', 0.1),
+            max_delay_seconds=getattr(cfg_obj, 'MAX_INTER_REPO_DELAY_SECONDS_ENV', 30.0)
+        )
+
+        azure_cache_config = PLATFORM_CACHE_CONFIG["azure"] # For peek logic
+        num_repos_for_target_delay_calc = len(repos_to_process_stubs)
 
         repo_count_for_project_submitted = 0
-        skipped_by_date_filter_count = 0 # Initialize counter for skipped repos
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_repo_name = {}
             try:
-                # Use the materialized list if available (from live count), otherwise get fresh iterator
-                repositories_iterator: List[GitRepository] = live_repo_list_materialized if live_repo_list_materialized is not None \
-                                                            else git_client.get_repositories(project=project_name)
-                if dynamic_post_api_call_delay_seconds > 0 and repositories_iterator and live_repo_list_materialized is None: # Apply delay only if we just fetched the list live
-                    target_specific_logger.debug(f"Applying SYNC post-API call delay (get_repositories list): {dynamic_post_api_call_delay_seconds:.2f}s")
-                    time.sleep(dynamic_post_api_call_delay_seconds)
-
-                for repo_stub in repositories_iterator:
+                for repo_stub in repos_to_process_stubs: # Iterate the filtered list
                     with processed_counter_lock:
                         if debug_limit is not None and processed_counter[0] >= debug_limit:
-                            logger.info(f"Global debug limit ({debug_limit}) reached. Stopping further repository submissions for {organization_name}/{project_name}.")
+                            current_logger.info(f"Global debug limit ({debug_limit}) reached. Stopping further repository submissions for {organization_name}/{project_name}.")
                             break
-                        processed_counter[0] += 1 # This logger is module level
+                        processed_counter[0] += 1
                     
                     repo_stub_full_name_for_log = f"{organization_name}/{project_name}/{repo_stub.name}"
 
-                    # --- Apply REPOS_CREATED_AFTER_DATE filter ---
-                    if repos_created_after_filter_date:
-                        # Azure DevOps repo visibility is often tied to project visibility.
-                        # repo_stub.project is TeamProjectReference
-                        project_visibility = repo_stub.project.visibility.lower() if repo_stub.project and repo_stub.project.visibility else "private"
-                        is_private_project_repo = project_visibility == "private"
-
-                        if is_private_project_repo:
-                            # Use project's last_update_time as a proxy for repo modification date
-                            # Ensure it's timezone-aware (it should be from the SDK)
-                            modified_at_dt = repo_stub.project.last_update_time
-                            if modified_at_dt and modified_at_dt.tzinfo is None: # Make tz-aware if not already
-                                modified_at_dt = modified_at_dt.replace(tzinfo=timezone.utc)
-                            
-                            modified_match = modified_at_dt and modified_at_dt >= repos_created_after_filter_date
-
-                            if modified_match:
-                                modified_at_log_str = modified_at_dt.strftime('%Y-%m-%d %H:%M:%S %Z') if modified_at_dt else 'N/A'
-                                log_message_parts = [
-                                    f"ADO: Private repo '{repo_stub_full_name_for_log}' included. "
-                                ]
-                                log_message_parts.append(f"Last modified on ({modified_at_log_str }).")
-                                target_specific_logger.info(" ".join(log_message_parts))
-                            else:
-                                # Skip this private repo
-                                with processed_counter_lock:
-                                    processed_counter[0] -= 1
-                                skipped_by_date_filter_count += 1
-                                continue # Skip to the next repository
-                    # --- End REPOS_CREATED_AFTER_DATE filter ---
-
                     # --- Get current commit SHA for caching comparison ---
                     current_commit_sha_for_cache = None
+                    current_commit_date_for_cache = None
                     try:
-                        if repo_stub.size == 0: # Proactive check if size is available and 0
-                             target_specific_logger.info(f"Repo {repo_stub_full_name_for_log} has size 0. Cannot get current commit SHA for caching.")
+                        if repo_stub.size == 0:
+                             current_logger.info(f"Repo {repo_stub_full_name_for_log} has size 0. Cannot get current commit SHA for caching.")
                         elif repo_stub.default_branch:
-                            # This is an API call
-                            if dynamic_post_api_call_delay_seconds > 0: # Delay before this critical API call
-                                target_specific_logger.debug(f"Applying SYNC post-API call delay (get_commits for SHA): {dynamic_post_api_call_delay_seconds:.2f}s")
+                            # Apply delay before this API call
+                            if dynamic_post_api_call_delay_seconds > 0:
+                                current_logger.debug(f"Applying SYNC post-API call delay (get_commits for SHA): {dynamic_post_api_call_delay_seconds:.2f}s")
                                 time.sleep(dynamic_post_api_call_delay_seconds)
-                            
+
                             search_criteria = {'itemVersion.version': repo_stub.default_branch, '$top': 1}
                             commits = git_client.get_commits(repository_id=repo_stub.id, project=project_name, search_criteria=search_criteria, top=1)
                             if commits:
                                 current_commit_sha_for_cache = commits[0].commit_id
-                                logger.debug(f"Successfully fetched current commit SHA '{current_commit_sha_for_cache}' for default branch '{repo_stub.default_branch}' of {repo_stub_full_name_for_log}.")
-                    except AzureDevOpsServiceError as e_sha_fetch: # This logger is module level
-                        target_specific_logger.warning(f"API error fetching current commit SHA for {repo_stub_full_name_for_log}: {e_sha_fetch}. Proceeding without SHA for caching.")
+                                current_commit_date_for_cache = commits[0].committer.date # datetime object
+                                current_logger.debug(f"Successfully fetched current commit SHA '{current_commit_sha_for_cache}' and date '{current_commit_date_for_cache}' for default branch '{repo_stub.default_branch}' of {repo_stub_full_name_for_log}.")
+                    except AzureDevOpsServiceError as e_sha_fetch:
+                        current_logger.warning(f"API error fetching current commit SHA for {repo_stub_full_name_for_log}: {e_sha_fetch}. Proceeding without SHA for caching.")
                     except Exception as e_sha_unexpected:
-                        target_specific_logger.error(f"Unexpected error fetching current commit SHA for {repo_stub_full_name_for_log}: {e_sha_unexpected}. Proceeding without SHA for caching.", exc_info=True)
+                        current_logger.error(f"Unexpected error fetching current commit SHA for {repo_stub_full_name_for_log}: {e_sha_unexpected}. Proceeding without SHA for caching.", exc_info=True)
 
-                    repo_count_for_project_submitted += 1 # Increment for repos submitted to executor
+                    # --- Peek-Ahead Delay Logic for Azure DevOps ---
+                    actual_delay_this_submission = inter_submission_delay
+                    log_message_suffix = f"Using standard submission delay: {actual_delay_this_submission:.3f}s"
+                    repo_id_for_peek_key = str(repo_stub_obj.id) # ADO repo ID is a string (GUID)
+
+                    if cfg_obj and inter_submission_delay > cfg_obj.PEEK_AHEAD_THRESHOLD_DELAY_SECONDS_ENV:
+                        if repo_stub_obj.size == 0:
+                            log_message_suffix = f"Peek: Repo is empty. {log_message_suffix}" # Standard delay will apply
+                            current_logger.info(f"Peek-ahead for {repo_stub_full_name_for_log} indicates it's empty. {log_message_suffix}", extra={'org_group': f"{organization_name}/{project_name}"})
+                        elif current_commit_sha_for_cache and repo_id_for_peek_key in previous_scan_cache:
+                            cached_repo_entry = previous_scan_cache[repo_id_for_peek_key]
+                            cached_commit_sha = cached_repo_entry.get(azure_cache_config["commit_sha_field"])
+                            if cached_commit_sha == current_commit_sha_for_cache:
+                                actual_delay_this_submission = cfg_obj.CACHE_HIT_SUBMISSION_DELAY_SECONDS_ENV # This line was likely the source of the error if mis-indented
+                                log_message_suffix = f"Peek: Cache HIT. Using shorter submission delay: {actual_delay_this_submission:.3f}s"
+                            else:
+                                log_message_suffix = (f"Peek: Cache MISS (SHA changed: cached='{str(cached_commit_sha)[:7]}...', "
+                                                      f"current='{str(current_commit_sha_for_cache)[:7]}...'). Using standard delay: {inter_submission_delay:.3f}s")
+                        elif current_commit_sha_for_cache: # Has SHA but not in cache
+                            log_message_suffix = f"Peek: Not in cache (or no previous SHA). Using standard delay: {inter_submission_delay:.3f}s"
+                        # If current_commit_sha_for_cache is None (fetch failed), standard delay applies.
+                    # The following lines should be at the same indentation level as the `if cfg_obj...` line above,
+                    # or correctly indented if they are meant to be part of an outer block.
+                    # Assuming they are part of the main loop for each enriched_repo:
+                    current_logger.info(f"Delay for {repo_stub_full_name_for_log}: {log_message_suffix}", extra={'org_group': f"{organization_name}/{project_name}"})
+                    if actual_delay_this_submission > 0:
+                        time.sleep(actual_delay_this_submission)
+                    repo_count_for_project_submitted += 1
                     future = executor.submit(
                         _process_single_azure_devops_repository,
                         git_client,
@@ -765,19 +835,20 @@ def fetch_repositories(
                         spn_tenant_id,
                         hours_per_commit,
                         cfg_obj,
-                        inter_repo_adaptive_delay_per_repo, # Pass inter-repo adaptive delay
-                        dynamic_post_api_call_delay_seconds, # Pass dynamic per-API call delay
-                        previous_scan_cache=previous_scan_cache, # Pass cache
-                        current_commit_sha=current_commit_sha_for_cache, # Pass current SHA
+                        previous_scan_cache=previous_scan_cache,
+                        current_commit_sha=current_commit_sha_for_cache,
+                        current_commit_date=current_commit_date_for_cache,
+                        num_items_in_target=num_repos_for_target_delay_calc, # Pass the count
+                        dynamic_post_api_call_delay_seconds=dynamic_post_api_call_delay_seconds,
                         num_workers=max_workers,
-                        logger_instance=target_specific_logger # Pass adapter
+                        logger_instance=current_logger # Pass the logger
                     )
                     future_to_repo_name[future] = f"{organization_name}/{project_name}/{repo_stub.name}"
             
-            except AzureDevOpsServiceError as ado_list_err:
-                target_specific_logger.error(f"API error during initial repository listing. Processing submitted tasks. Details: {ado_list_err}")
+            except AzureDevOpsServiceError as ado_list_err: # Should be caught earlier now
+                current_logger.error(f"API error during repository iteration. Processing submitted tasks. Details: {ado_list_err}")
             except Exception as ex_iter:
-                target_specific_logger.error(f"Unexpected error during initial repository listing: {ex_iter}. Processing submitted tasks.")
+                current_logger.error(f"Unexpected error during repository iteration: {ex_iter}. Processing submitted tasks.")
 
             for future in as_completed(future_to_repo_name):
                 repo_name_for_log = future_to_repo_name[future]
@@ -789,7 +860,7 @@ def fetch_repositories(
                         else:
                             processed_repo_list.append(repo_data_result)
                 except Exception as exc:
-                    target_specific_logger.error(f"Repository {repo_name_for_log} generated an exception in its thread: {exc}", exc_info=True)
+                    current_logger.error(f"Repository {repo_name_for_log} generated an exception in its thread: {exc}", exc_info=True)
                     name_parts = repo_name_for_log.split('/')
                     repo_n = name_parts[-1] if len(name_parts) > 0 else "UnknownRepo"
                     org_n = name_parts[0] if len(name_parts) > 1 else organization_name
@@ -800,90 +871,51 @@ def fetch_repositories(
                                                 "_azure_project_name": proj_n,
                                                 "processing_error": f"Thread execution failed: {exc}"})
 
-        target_specific_logger.info(f"Finished processing for {repo_count_for_project_submitted} repositories. Collected {len(processed_repo_list)} results.")
-        if repos_created_after_filter_date and skipped_by_date_filter_count > 0:
-            target_specific_logger.info(f"Skipped {skipped_by_date_filter_count} private project repositories due to the REPOS_CREATED_AFTER_DATE filter ('{repos_created_after_filter_date.strftime('%Y-%m-%d')}').")
+        current_logger.info(f"Finished processing for {repo_count_for_project_submitted} repositories. Collected {len(processed_repo_list)} results.")
 
     except AzureDevOpsServiceError as e:
-        # Use target_specific_logger if available, else module logger
-        (target_specific_logger if 'target_specific_logger' in locals() else logging.getLogger(__name__)).critical(
+        (current_logger if 'current_logger' in locals() else logging.getLogger(__name__)).critical(
             f"Azure DevOps API error (using {auth_method}): {e}", exc_info=False)
         return [] 
     except Exception as e:
-        (target_specific_logger if 'target_specific_logger' in locals() else logging.getLogger(__name__)).critical(
+        (current_logger if 'current_logger' in locals() else logging.getLogger(__name__)).critical(
             f"An unexpected error occurred during Azure DevOps connection or processing: {e}", exc_info=True)
         return []
 
     return processed_repo_list
 
+def estimate_api_calls_for_target(
+    pat_token: Optional[str], # PAT token
+    target_path: str, # "org/project"
+    azure_devops_url: Optional[str],
+    cfg_obj: Any,
+    logger_instance: logging.LoggerAdapter, # Made non-optional
+    spn_client_id: Optional[str] = None,
+    spn_client_secret: Optional[str] = None,
+    spn_tenant_id: Optional[str] = None
+) -> int:
+    """Estimates API calls for a given Azure DevOps org/project target."""
+    if not AZURE_SDK_AVAILABLE or '/' not in target_path: return 0
+    organization_name, project_name = target_path.split('/', 1)
+    current_logger = logger_instance # Directly use the passed-in adapter
+    current_logger.info(f"Estimating API calls for Azure DevOps target: {target_path}")
 
-if __name__ == '__main__':
-    from dotenv import load_dotenv as load_dotenv_for_test 
-    from utils.logging_config import ContextualLogFormatter # Import for test logging
-    load_dotenv_for_test()
+    credentials, _ = _setup_azure_devops_credentials(pat_token, spn_client_id, spn_client_secret, spn_tenant_id, current_logger)
+    if not credentials: return 0
 
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    effective_ado_url = azure_devops_url if azure_devops_url else os.getenv("AZURE_DEVOPS_API_URL", "https://dev.azure.com")
+    organization_url = f"{effective_ado_url.strip('/')}/{organization_name}"
+    connection = Connection(base_url=organization_url, creds=credentials)
+    git_client: GitClient = connection.clients.get_git_client()
+    fixed_date = get_fixed_private_filter_date(cfg_obj, current_logger)
+
+    # Load cache for estimation - estimate_api_calls_for_target needs it
+    previous_intermediate_filepath = os.path.join(getattr(cfg_obj, 'OUTPUT_DIR', '.'), f"intermediate_azure_{organization_name.replace('/', '_')}_{project_name.replace('/', '_')}.json")
+    previous_scan_cache_for_estimation = load_previous_scan_data(previous_intermediate_filepath, "azure")
     
-    test_pat_token = os.getenv("AZURE_DEVOPS_TOKEN_TEST") 
-    test_spn_client_id = os.getenv("AZURE_CLIENT_ID_TEST")
-    test_spn_client_secret = os.getenv("AZURE_CLIENT_SECRET_TEST")
-    test_spn_tenant_id = os.getenv("AZURE_TENANT_ID_TEST")
+    hpc_val = None
+    if hasattr(cfg_obj, 'HOURS_PER_COMMIT_ENV') and cfg_obj.HOURS_PER_COMMIT_ENV is not None:
+        hpc_val = float(cfg_obj.HOURS_PER_COMMIT_ENV)
 
-    raw_targets_list_env = [t.strip() for t in os.getenv("AZURE_DEVOPS_TARGETS_TEST", "").split(',') if t.strip()]
-    default_org_env = os.getenv("AZURE_DEVOPS_ORG_TEST")
-
-    test_target_full_path = None
-    if raw_targets_list_env:
-        first_raw_target = raw_targets_list_env[0]
-        if '/' in first_raw_target:
-            test_target_full_path = first_raw_target
-        elif default_org_env and default_org_env != "YourAzureDevOpsOrgName":
-            test_target_full_path = f"{default_org_env}/{first_raw_target}"
-
-    auth_available = (not are_spn_details_placeholders(test_spn_client_id, test_spn_client_secret, test_spn_tenant_id) or \
-                      not is_placeholder_token(test_pat_token))
-
-    if not auth_available:
-        logging.getLogger(__name__).error("Neither valid SPN details (AZURE_CLIENT_ID_TEST, etc.) nor a PAT (AZURE_DEVOPS_TOKEN_TEST) found in .env for testing.")
-    elif not test_target_full_path:
-        logging.getLogger(__name__).error("No valid Azure DevOps target found in AZURE_DEVOPS_TARGETS_TEST (with optional AZURE_DEVOPS_ORG_TEST) in .env for testing.")
-    else:
-        test_org_name, test_proj_name = test_target_full_path.split('/', 1)
-        
-        # Setup basicConfig with the custom formatter for the test run
-        test_formatter = ContextualLogFormatter('%(asctime)s - [%(org_group)s] - %(name)s - %(levelname)s - %(message)s')
-        root_logger_for_test = logging.getLogger()
-        root_logger_for_test.handlers.clear() # Clear any default handlers
-        test_handler = logging.StreamHandler()
-        test_handler.setFormatter(test_formatter)
-        root_logger_for_test.addHandler(test_handler)
-        root_logger_for_test.setLevel(logging.INFO)
-        
-        logging.getLogger(__name__).info(f"--- Testing Azure DevOps Connector for project: {test_org_name}/{test_proj_name} ---")
-        counter = [0]
-        counter_lock = threading.Lock()
-        repositories = fetch_repositories(
-            pat_token=test_pat_token,
-            target_path=test_target_full_path, # Pass the combined path
-            spn_client_id=test_spn_client_id, # Pass SPN details
-            spn_client_secret=test_spn_client_secret,
-            spn_tenant_id=test_spn_tenant_id,
-            processed_counter=counter, 
-            processed_counter_lock=counter_lock, 
-            debug_limit=None,
-            cfg_obj=None, # For this direct test, cfg_obj is None.
-            previous_scan_output_file=None # No cache for direct test
-        )
-        
-        if repositories:
-            logging.getLogger(__name__).info(f"Successfully fetched {len(repositories)} repositories.")
-            for i, repo_info in enumerate(repositories[:3]):
-                logging.getLogger(__name__).info(f"--- Repository {i+1} ({repo_info.get('name')}) ---")
-                logging.getLogger(__name__).info(f"  Repo ID: {repo_info.get('repo_id')}")
-                if "processing_error" in repo_info:
-                    logging.getLogger(__name__).error(f"  Processing Error: {repo_info['processing_error']}")
-            if len(repositories) > 3:
-                logging.getLogger(__name__).info(f"... and {len(repositories)-3} more repositories.")
-        else:
-            logging.getLogger(__name__).warning("No repositories fetched or an error occurred.")
-        logging.getLogger(__name__).info(f"Total repositories processed according to counter: {counter[0]}")
+    _, estimated_calls = _get_repo_stubs_and_estimate_api_calls(git_client, organization_name, project_name, fixed_date, hpc_val, cfg_obj, current_logger, previous_scan_cache_for_estimation)
+    return estimated_calls
