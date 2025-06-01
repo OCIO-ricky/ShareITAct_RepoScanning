@@ -514,7 +514,7 @@ def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> boo
         returns:
         bool: True if merge operation is successful, False otherwise.
     """
-    main_logger.setLevel(logging.info)
+    main_logger.setLevel(logging.INFO)
     main_logger.info("--- Starting Merge Operation ---")
     search_path = os.path.join(cfg.OUTPUT_DIR, INTERMEDIATE_FILE_PATTERN)
     intermediate_files = glob.glob(search_path)
