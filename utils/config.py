@@ -6,6 +6,7 @@ Loads settings from environment variables.
 import os
 import logging
 from dotenv import load_dotenv
+from typing import Optional # Import Optional
 
 logger = logging.getLogger(__name__)
 

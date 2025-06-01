@@ -74,6 +74,7 @@ ANSI_RESET = "\033[0m"
 logger = logging.getLogger(__name__)
 
 # Placeholders for SPN details, matching those in azure_devops_connector.py
+PLACEHOLDER_AZURE_TOKEN = "YOUR_AZURE_DEVOPS_PAT" # Define the missing constant
 PLACEHOLDER_AZURE_CLIENT_ID = "YOUR_AZURE_CLIENT_ID"
 PLACEHOLDER_AZURE_CLIENT_SECRET = "YOUR_AZURE_CLIENT_SECRET"
 PLACEHOLDER_AZURE_TENANT_ID = "YOUR_AZURE_TENANT_ID"

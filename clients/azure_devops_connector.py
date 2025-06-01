@@ -125,7 +125,7 @@ def _get_readme_content_azure_devops(
 
     common_readme_names = ["README.md", "README.txt", "README"]
     if not repo_default_branch:
-        current_logger.warning(f"Cannot fetch README for repo ID {repo_id} in {project_name}: No default branch identified.")
+        logger_instance.warning(f"Cannot fetch README for repo ID {repo_id} in {project_name}: No default branch identified.")
         return None, None, False
 
     for readme_name in common_readme_names:
@@ -188,7 +188,7 @@ def _get_codeowners_content_azure_devops(
 
     codeowners_locations = ["CODEOWNERS", ".azuredevops/CODEOWNERS", "docs/CODEOWNERS", ".vsts/CODEOWNERS"]
     if not repo_default_branch:
-        current_logger.warning(f"Cannot fetch CODEOWNERS for repo ID {repo_id} in {project_name}: No default branch identified.")
+        logger_instance.warning(f"Cannot fetch CODEOWNERS for repo ID {repo_id} in {project_name}: No default branch identified.")
         return None, False
 
     for location in codeowners_locations:
@@ -797,10 +797,10 @@ def fetch_repositories(
                     # --- Peek-Ahead Delay Logic for Azure DevOps ---
                     actual_delay_this_submission = inter_submission_delay
                     log_message_suffix = f"Using standard submission delay: {actual_delay_this_submission:.3f}s"
-                    repo_id_for_peek_key = str(repo_stub_obj.id) # ADO repo ID is a string (GUID)
+                    repo_id_for_peek_key = str(repo_stub.id) # ADO repo ID is a string (GUID)
 
                     if cfg_obj and inter_submission_delay > cfg_obj.PEEK_AHEAD_THRESHOLD_DELAY_SECONDS_ENV:
-                        if repo_stub_obj.size == 0:
+                        if repo_stub.size == 0:
                             log_message_suffix = f"Peek: Repo is empty. {log_message_suffix}" # Standard delay will apply
                             current_logger.info(f"Peek-ahead for {repo_stub_full_name_for_log} indicates it's empty. {log_message_suffix}", extra={'org_group': f"{organization_name}/{project_name}"})
                         elif current_commit_sha_for_cache and repo_id_for_peek_key in previous_scan_cache:
