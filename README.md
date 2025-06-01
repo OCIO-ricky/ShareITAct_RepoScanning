@@ -48,8 +48,20 @@ Using Docker (specifically `docker-compose`) is the preferred method for running
     ```bash
     cp docs/.env.template .env
     ```
-    Now, **edit the `.env` file** in the project root directory. Populate it with your API tokens (GitHub, GitLab, Azure DevOps), target organizations/groups/projects, and any other necessary configurations (e.g., `GOOGLE_API_KEY` for AI features).
-    **Important:** Do NOT commit the `.env` file with your actual secrets to version control.
+    Now, **edit the `.env` file** in the project root directory. 
+    
+     ```bash
+    # -------------------------------
+    #  AUTHENTICATION TOKENS
+    # -------------------------------
+    # --- Authentication Tokens & API Keys (IMPORTANT: Keep these secure!) ---
+    GITHUB_TOKEN="YOUR_GITHUB_PAT" # Personal Access Token for GitHub
+    GITLAB_TOKEN="YOUR_GITLAB_PAT" # Personal Access Token for GitLab
+    AZURE_DEVOPS_TOKEN="YOUR_AZURE_DEVOPS_PAT" # Personal Access Token for Azure DevOps
+    GOOGLE_API_KEY=YOUR_GOOGLE_API_KEY # For AI features (Gemini)
+    ```
+    Populate it with your API tokens (GitHub, GitLab, Azure DevOps), target organizations/groups/projects, and any other necessary configurations (e.g., `GOOGLE_API_KEY` for AI features).
+    **Important:** The .gitignore file will NOT commit the `.env` file to GitHub with your actual secrets.
 
 ### Option 1: Running All Configured Scans Concurrently
 
