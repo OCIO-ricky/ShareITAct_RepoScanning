@@ -416,7 +416,7 @@ def get_targets_from_cli_or_env(cli_arg_value: Optional[str], env_config_value: 
         targets = [item.strip() for item in cli_arg_value.split(',') if item.strip()]
         source = "CLI"
     elif env_config_value:
-        main_logger.info(f"{ANSI_GREEN}Using {entity_name_plural} from .env: {', '.join(env_config_value)}{ANSI_RESET}")
+        main_logger.info(f"Using {entity_name_plural} from .env: {ANSI_GREEN}{', '.join(env_config_value)}{ANSI_RESET}")
         targets = env_config_value
         source = ".env"
     if not targets:
