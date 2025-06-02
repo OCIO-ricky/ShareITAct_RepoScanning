@@ -131,7 +131,9 @@ def _orchestrate_platform_scan(
     if platform_name == "gitlab" and not platform_url_for_scan: # GitLab needs a default if none provided
         platform_url_for_scan = cfg.GITLAB_URL_ENV
 
-
+    org_list_from_cfg = getattr(cfg, env_target_cfg_attr_name)
+    main_logger.debug(f"DEBUG _orchestrate_platform_scan: Value of '{env_target_cfg_attr_name}' from cfg before passing to target_retrieval_func: {org_list_from_cfg}")
+    
     # 3. Target Retrieval
     raw_targets_list = target_retrieval_func(
         getattr(args, cli_target_arg_name, None),
@@ -139,6 +141,7 @@ def _orchestrate_platform_scan(
         entity_name_plural,
         main_logger
     )
+
 
     targets_to_scan: List[str] = []
     if target_parsing_func: # For Azure
@@ -716,10 +719,14 @@ def main_cli():
     script_start_time = time.time()
 
     cfg = Config()
+
     setup_global_logging() # Ensures logging is set up based on Config
     main_logger = logging.getLogger(__name__)
     main_logger_diag = main_logger # Use the same logger for diagnostics
 
+#    setup_global_logging(log_level_str="DEBUG") # Set up global logging with DEBUG level    
+
+    main_logger.debug(f"{ANSI_YELLOW}DEBUG main_cli: cfg.GITHUB_ORGS_ENV after Config() init: {cfg.GITHUB_ORGS_ENV}{ANSI_RESET}")
     parser = argparse.ArgumentParser(description="Share IT Act Repository Scanning Tool")
     subparsers = parser.add_subparsers(dest="command", help="Available commands.", required=True)
 

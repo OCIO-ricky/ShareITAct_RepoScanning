@@ -16,8 +16,6 @@ class Config:
     """
     def __init__(self):
         load_dotenv() # Load .env for non-auth configurations
-
-        print(f"DEBUG: Raw GITHUB_ORGS from os.getenv: '{os.getenv('GITHUB_ORGS')}'") # Add this line
  
         # --- General Settings ---
         limit_str = os.getenv("LimitNumberOfRepos", "0").strip()

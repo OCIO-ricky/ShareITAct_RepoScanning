@@ -157,7 +157,7 @@ class RepoIdMappingManager:
                 org_needs_update = current_org_in_mapping != organization
            #     self.logger.info(f"{ANSI_RED}PRIVATEID_MANAGER - Org check for {private_id_value}: Incoming='{organization}', Existing='{current_org_in_mapping}', NeedsUpdate={org_needs_update}{ANSI_RESET}")
                 if org_needs_update:
-                    self.logger.info(f"Updating Organization for PrivateID {private_id_value}. Old: '{current_org_in_mapping}', New: '{organization}'.", extra={'org_group': org_group_context_for_log})
+                    self.logger.debug(f"Updating Organization for PrivateID {private_id_value}. Old: '{current_org_in_mapping}', New: '{organization}'.", extra={'org_group': org_group_context_for_log})
                     existing_data['org'] = organization
                     updated = True
                 
@@ -166,7 +166,7 @@ class RepoIdMappingManager:
                 url_needs_update = current_url_in_mapping != repository_url
             #    self.logger.info(f"{ANSI_RED}PRIVATEID_MANAGER - URL check for {private_id_value}: Incoming='{repository_url}', Existing='{current_url_in_mapping}', NeedsUpdate={url_needs_update}{ANSI_RESET}")
                 if url_needs_update:
-                    self.logger.info(f"Updating RepositoryURL for PrivateID {private_id_value}. Old: '{current_url_in_mapping}', New: '{repository_url}'.", extra={'org_group': org_group_context_for_log})
+                    self.logger.debug(f"Updating RepositoryURL for PrivateID {private_id_value}. Old: '{current_url_in_mapping}', New: '{repository_url}'.", extra={'org_group': org_group_context_for_log})
                     existing_data['url'] = repository_url
                     updated = True
 
@@ -175,7 +175,7 @@ class RepoIdMappingManager:
                 repo_name_needs_update = current_repo_name_in_mapping != repo_name
             #    self.logger.info(f"{ANSI_RED}PRIVATEID_MANAGER - RepoName check for {private_id_value}: Incoming='{repo_name}', Existing='{current_repo_name_in_mapping}', NeedsUpdate={repo_name_needs_update}{ANSI_RESET}")
                 if repo_name_needs_update:
-                    self.logger.info(f"Updating RepositoryName for PrivateID {private_id_value}. Old: '{current_repo_name_in_mapping}', New: '{repo_name}'.", extra={'org_group': org_group_context_for_log})
+                    self.logger.debug(f"Updating RepositoryName for PrivateID {private_id_value}. Old: '{current_repo_name_in_mapping}', New: '{repo_name}'.", extra={'org_group': org_group_context_for_log})
                     existing_data['repo'] = repo_name
                     updated = True
 
@@ -184,7 +184,7 @@ class RepoIdMappingManager:
                 emails_need_update = parsed_incoming_emails_list != existing_emails_list
             #    self.logger.info(f"{ANSI_RED}PRIVATEID_MANAGER - Emails check for {private_id_value}: ParsedIncoming={parsed_incoming_emails_list}, ExistingLoaded={existing_emails_list}, NeedsUpdate={emails_need_update}{ANSI_RESET}")
                 if emails_need_update:
-                    self.logger.info(f"Updating contact emails for PrivateID {private_id_value}. Old: {';'.join(existing_emails_list)}, New: {';'.join(parsed_incoming_emails_list)}", extra={'org_group': org_group_context_for_log})
+                    self.logger.debug(f"Updating contact emails for PrivateID {private_id_value}. Old: {';'.join(existing_emails_list)}, New: {';'.join(parsed_incoming_emails_list)}", extra={'org_group': org_group_context_for_log})
                     existing_data['emails'] = parsed_incoming_emails_list
                     self.updated_email_count += 1
                     updated = True
