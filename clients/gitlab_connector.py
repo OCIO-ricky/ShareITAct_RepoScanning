@@ -748,7 +748,7 @@ def estimate_api_calls_for_group(
     This is used by the orchestrator for pre-scan estimation.
     """
     current_logger = logger_instance # Directly use the passed-in adapter
-    current_logger.info(f"Estimating API calls for GitLab group: {group_path}")
+    current_logger.info(f"{ANSI_YELLOW}Pre-scan to estimating API calls for GitLab group: {group_path}{ANSI_RESET}")
 
     if is_placeholder_token(token):
         current_logger.error("GitLab token is a placeholder or missing. Cannot estimate.")
