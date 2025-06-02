@@ -592,7 +592,7 @@ def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> boo
     final_catalog_filepath = os.path.join(cfg.OUTPUT_DIR, cfg.CATALOG_JSON_FILE)
     if write_json_file(final_code_json_structure, final_catalog_filepath):
         main_logger.info(f"Successfully merged {len(processed_projects_for_final_catalog)} projects into {final_catalog_filepath}")
-        main_logger.info("--- Merge Operation Finished Successfully ---")
+        main_logger.info(f"{ANSI_GREEN}--- Merge Operation Finished Successfully ---{ANSI_RESET}")
 
         stats = {
             "total_projects_in_catalog": 0,
