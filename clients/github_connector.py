@@ -393,7 +393,8 @@ def _get_repo_stubs_and_estimate_api_calls(
     Internal helper to list repository stubs, filter them, and estimate API calls.
     Returns a list of enriched repository info dicts and the estimated API calls for them.
     """
-    logger_instance.info(f"Analyzing all repository stubs for '{org_name}'...  Be patient, this may take a while...")
+    message = f"Analyzing all repository stubs for '{org_name}'...  Be patient, this may take a while..."
+    logger_instance.info(message.center(100, "."))
     github_cache_config = PLATFORM_CACHE_CONFIG["github"]
 
     all_repo_stubs_in_org = []

@@ -237,7 +237,6 @@ def _orchestrate_platform_scan(
     for target_id in targets_to_scan:
         try:
             prescan_info = prescan_data_map.get(target_id)
-            main_logger.info(f"{'=' * 25} Starting processing for {platform_name} target: {target_id} {'=' * (70 - 25 - 10 - len(platform_name) - len(target_id))}")
             # The calculation for the second '=' part ensures the total line length is roughly consistent,
             # assuming a total desired length around 70-80 characters. Adjust as needed.
 
@@ -307,7 +306,7 @@ def scan_and_process_single_target(
     main_stream_logger = logging.getLogger(__name__) # Logger for messages intended for the main stdout stream
 
     # Log to main stream immediately that we are attempting to process this target
-    main_stream_logger.info(f"{ANSI_GREEN}Attempting to process {platform} target: {target_identifier}{ANSI_RESET}")
+    main_stream_logger.info(f"{ANSI_GREEN}Processing {platform} target: {target_identifier}{ANSI_RESET}")
 
     # --- Log File Backup and Clearing Logic ---
     # Construct log file name and path components
