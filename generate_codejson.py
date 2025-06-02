@@ -237,6 +237,10 @@ def _orchestrate_platform_scan(
     for target_id in targets_to_scan:
         try:
             prescan_info = prescan_data_map.get(target_id)
+            main_logger.info(f"{'=' * 25} Starting processing for {platform_name} target: {target_id} {'=' * (70 - 25 - 10 - len(platform_name) - len(target_id))}")
+            # The calculation for the second '=' part ensures the total line length is roughly consistent,
+            # assuming a total desired length around 70-80 characters. Adjust as needed.
+
             if not prescan_info or "enriched_list" not in prescan_info:
                 main_logger.error(f"Pre-scan data (enriched list) not found for {platform_name} target '{target_id}'. Skipping.")
                 overall_platform_success = False
