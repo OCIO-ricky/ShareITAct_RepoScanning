@@ -383,7 +383,8 @@ def _get_project_stubs_and_estimate_api_calls(
     Internal helper to list project stubs, filter them, and estimate API calls.
     Returns a list of enriched project info dicts and the estimated API calls for them.
     """
-    logger_instance.info(f"Fetching all project stubs for group '{group_full_path}'...")
+    logger_instance.info(f"{ANSI_YELLOW}Pre-scanning{ANSI_RESET} all repository stubs for ''{group_full_path}'...  Be patient, this may take a while...")
+     
     gitlab_cache_config = PLATFORM_CACHE_CONFIG["gitlab"]
     all_project_stubs_in_group = []
     try:
@@ -748,7 +749,7 @@ def estimate_api_calls_for_group(
     This is used by the orchestrator for pre-scan estimation.
     """
     current_logger = logger_instance # Directly use the passed-in adapter
-    current_logger.info(f"{ANSI_YELLOW}Pre-scan to estimating API calls for GitLab group: {group_path}{ANSI_RESET}")
+    current_logger.info(f"Pre-scan to {ANSI_YELLOW}estimating API calls{ANSI_RESET} for GitLab group: {group_path}")
 
     if is_placeholder_token(token):
         current_logger.error("GitLab token is a placeholder or missing. Cannot estimate.")
