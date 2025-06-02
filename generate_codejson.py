@@ -156,7 +156,7 @@ def _orchestrate_platform_scan(
     # 4. Pre-scan for API Call Estimation
     platform_total_estimated_api_calls = 0
     prescan_data_map: Dict[str, Dict[str, Any]] = {}
-    main_logger.info(f"--- Starting {platform_name} {ANSI_YELLOW}Pre-scan for API Call Estimation{ANSI_RESET} for {len(targets_to_scan)} {entity_name_plural} ---")
+    main_logger.info(f"--- Starting {platform_name} Pre-scan for API Call Estimation for {len(targets_to_scan)} {entity_name_plural} ---")
 
     client_for_rate_limit = None # Initialize
     if platform_name == "github" and targets_to_scan:
