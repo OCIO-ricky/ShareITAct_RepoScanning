@@ -300,8 +300,8 @@ def fetch_commit_history_graphql(
     owner: str,
     repo_name: str,
     default_branch_name: Optional[str] = None,
-    max_commits_to_fetch_for_labor: int = 5000, # Safety limit
     logger_instance: Optional[logging.Logger] = None, # Accept a logger instance
+    max_commits_to_fetch_for_labor: int = 5000, # Safety limit
     # Retry parameters for each page fetch
     max_page_retries: int = 2,
     initial_page_delay_seconds: float = 20.0,

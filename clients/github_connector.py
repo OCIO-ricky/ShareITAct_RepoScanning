@@ -316,9 +316,12 @@ def _process_single_github_repository(
 
             try:
                 labor_df = analyze_github_repo_sync(
-                    owner=org_name, repo=repo_name_for_gql, token=token,
+                    owner=org_name, 
+                    repo=repo_name_for_gql, 
+                    token=token,
                     hours_per_commit=hours_per_commit,
                     github_api_url=github_instance_url or "https://api.github.com", 
+                    logger_instance=current_logger,
                     default_branch_override=actual_default_branch_name_for_commits, 
                     cfg_obj=cfg_obj,
                     num_repos_in_target=num_repos_in_target,

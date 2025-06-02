@@ -4,7 +4,7 @@
 # ---------------------------------
 # Just run: docker-compose up -d --build
 #
-# (to rebuilt the image, if you deleted it or changed the Dockerfile): docker-compose build --no-cache
+# (to rebuilt the image, if you deleted it or changed ./Dockerfile): docker-compose build --no-cache
 # or:  docker build -t cdc-repo-scanner . 
 # ---------------------------------
 services:
@@ -68,7 +68,7 @@ services:
 #-------------------------
 # MERGE THESE THE RESULTS
 # -------------------
-#   This service will run after and if scan-github, scan-gitlab, and scan-azure complete successfully.
+#   This service will run ONLY if scan-github, scan-gitlab, and scan-azure completed successfully.
   merge-results:
     image: cdc-repo-scanner:latest
     container_name: scanner-merge-instance
