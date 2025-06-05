@@ -62,6 +62,20 @@ Using Docker (specifically `docker-compose`) is the preferred method for running
     ```
     Populate it with your API tokens (GitHub, GitLab, Azure DevOps), target organizations/groups/projects, and any other necessary configurations (e.g., `GOOGLE_API_KEY` for AI features).
     **Important:** The .gitignore file will NOT commit the `.env` file to GitHub with your actual secrets.
+    ```bash
+    # -------------------------------
+    #  TARGET ORGANIZATIONS/GROUPS/PROJECTS
+    # -------------------------------
+    # ---
+    GITHUB_ORGS=CDCent,CDCgov,informaticslab,cdcai,epi-info,niosh-mining
+
+    GITLAB_URL=https://gitlab.com
+    GITLAB_GROUPS=group1, group2, group3
+
+    AZURE_DEVOPS_API_URL=https://dev.azure.com
+    AZURE_DEVOPS_ORG=MyAzureOrg # Default Azure DevOps organization name
+    AZURE_DEVOPS_TARGETS=MyAzureOrg/ProjectA,MyAzureOrg/ProjectB,AnotherOrg/ProjectC # OrgName/ProjectName pairs
+    ```
 
 ### Option 1: Running All Configured Scans Concurrently
 
