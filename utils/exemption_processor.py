@@ -390,8 +390,8 @@ def _call_ai_for_description(
 
     prompt = f"""
 Your task is to generate a concise, one to two-sentence description for a software repository based on its README content.
-The description should be suitable for a project catalog and accurately reflect the repository's purpose. No need to mention this is a repository.
-Aim for a description between 100 and 300 characters. Output only the description text.
+The description should be suitable for a project catalog and accurately reflect the repository's purpose. No need to mention this is a repository 
+nor the organization name nor the type of license. Aim for a description between 100 and 300 characters. Output only the description text.
 
 Repository Name: {repo_name_for_log}
 README Content (excerpt):
