@@ -202,12 +202,12 @@ def analyze_github_repo_sync(
     token: str, 
     hours_per_commit: Optional[float] = 0.5, 
     github_api_url: str = "https://api.github.com", # Used for constructing GQL client endpoint
+    logger_instance: Optional[logging.Logger] = None,
     default_branch_override: Optional[str] = None, # Added to accept specific default branch
     cfg_obj: Optional[Any] = None, 
     num_repos_in_target: Optional[int] = None,
     is_empty_repo: bool = False,
-    number_of_workers: int = 1, # For logging/context if needed
-    logger_instance: Optional[logging.Logger] = None
+    number_of_workers: int = 1 # For logging/context if needed
 ) -> pd.DataFrame:
     """
     Analyzes a GitHub repository for commit history using GraphQL and estimates labor hours.

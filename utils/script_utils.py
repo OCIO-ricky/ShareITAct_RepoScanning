@@ -33,6 +33,11 @@ except ImportError:
 INACTIVITY_THRESHOLD_YEARS = 2
 VALID_README_STATUSES = {'maintained', 'deprecated', 'experimental', 'active', 'inactive'}
 LOG_DIR_NAME = "logs"
+# ANSI escape codes for coloring output (if not already defined globally)
+ANSI_RED = "\x1b[31;1m"  # Bold Red
+ANSI_RESET = "\x1b[0m"   # Reset to default color
+ANSI_YELLOW = "\x1b[33;1m"  # Bold Yellow
+ANSI_GREEN = "\x1b[32;1m"  # Bold Green
 
 # --- Logging Setup ---
 class ContextualLogFormatter(logging.Formatter):
@@ -112,7 +117,7 @@ def write_json_file(data, filepath):
         logging.getLogger(__name__).info(f"Successfully wrote data to {filepath}")
         return True
     except Exception as e:
-        logging.getLogger(__name__).error(f"Error writing JSON to {filepath}: {e}", exc_info=True)
+        logging.getLogger(__name__).error(f"{ANSI_RED}Opps!:{ANSI_RESET}Error writing JSON to {filepath}: {e}", exc_info=True)
         return False
 
 def backup_existing_file(output_dir, filename):
@@ -413,7 +418,7 @@ def get_targets_from_cli_or_env(cli_arg_value: Optional[str], env_config_value: 
         targets = [item.strip() for item in cli_arg_value.split(',') if item.strip()]
         source = "CLI"
     elif env_config_value:
-        main_logger.info(f"Using {entity_name_plural} from .env: {', '.join(env_config_value)}")
+        main_logger.info(f"Using {entity_name_plural} from .env: {ANSI_GREEN}{', '.join(env_config_value)}{ANSI_RESET}")
         targets = env_config_value
         source = ".env"
     if not targets:
@@ -431,7 +436,7 @@ def parse_azure_targets_from_string_list(raw_target_list: List[str], default_org
                 main_logger.info(f"Azure target '{target_str}' assumes default org '{default_org_from_env}'.")
                 parsed_targets.append(f"{default_org_from_env}/{target_str.strip()}")
             else:
-                main_logger.warning(f"Azure target '{target_str}' is not in Org/Project format and no valid default AZURE_DEVOPS_ORG_ENV is set. Skipping.")
+                main_logger.warning(f"{ANSI_RED}Warning:{ANSI_RESET} Azure target '{target_str}' is not in Org/Project format and no valid default AZURE_DEVOPS_ORG_ENV is set. Skipping.")
     return parsed_targets
 
 # --- Helper for Time Formatting ---

@@ -4,7 +4,7 @@
 # ---------------------------------
 # Just run: docker-compose up -d --build
 #
-# (to rebuilt the image, if you deleted it or changed the Dockerfile): docker-compose build --no-cache
+# (to rebuilt the image, if you deleted it or changed ./Dockerfile): docker-compose build --no-cache
 # or:  docker build -t cdc-repo-scanner . 
 # ---------------------------------
 services:
@@ -17,9 +17,9 @@ services:
       # These environment variables will read values from the .env file, unless you override them here.
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - GITHUB_ORGS=cdcent,cdcgov
-      - SCANNER_MAX_WORKERS=5
-      - AI_ENABLED=true
+      - GITHUB_ORGS=${GITHUB_ORGS}
+      - SCANNER_MAX_WORKERS=${SCANNER_MAX_WORKERS:-5}
+      - AI_ENABLED=${AI_ENABLED:-true}
       - TZ=America/New_York
     volumes:
       - ./output:/app/output 
@@ -34,10 +34,10 @@ services:
     container_name: scanner-gitlab-instance
     environment:
       - GITLAB_TOKEN=${GITLAB_TOKEN}
-      - GITLAB_GROUPS=cdcent
+      - GITLAB_GROUPS=${GITLAB_GROUPS}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - AI_ENABLED=${AI_ENABLED:-true}
-      - SCANNER_MAX_WORKERS=5
+      - SCANNER_MAX_WORKERS=${SCANNER_MAX_WORKERS:-5}
       - TZ=America/New_York
     volumes:
       - ./output:/app/output
@@ -52,10 +52,10 @@ services:
     container_name: scanner-azure-instance
     environment:
       - AZURE_DEVOPS_TOKEN=${AZURE_DEVOPS_TOKEN}
-      - AZURE_DEVOPS_TARGETS="MyAzureOrg/ProjectA,MyAzureOrg/ProjectB"
+      - AZURE_DEVOPS_TARGETS=${AZURE_DEVOPS_TARGETS}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - AI_ENABLED=true
-      - SCANNER_MAX_WORKERS=4
+      - AI_ENABLED=${AI_ENABLED:-true}
+      - SCANNER_MAX_WORKERS=${SCANNER_MAX_WORKERS:-4}
       - TZ=America/New_York
     volumes:
       - ./output:/app/output
@@ -68,7 +68,7 @@ services:
 #-------------------------
 # MERGE THESE THE RESULTS
 # -------------------
-#   This service will run after and if scan-github, scan-gitlab, and scan-azure complete successfully.
+#   This service will run ONLY if scan-github, scan-gitlab, and scan-azure completed successfully.
   merge-results:
     image: cdc-repo-scanner:latest
     container_name: scanner-merge-instance

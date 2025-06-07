@@ -507,7 +507,8 @@ def _get_repo_stubs_and_estimate_api_calls(
     Internal helper to list repository stubs, filter them, and estimate API calls.
     Returns a list of repository stubs to process and the estimated API calls for them.
     """
-    logger_instance.info(f"Analyzing all repository stubs for project '{project_name}' in org '{organization_name}'... Be patient!")
+    logger_instance.info(f"{ANSI_YELLOW}Pre-scanning{ANSI_RESET} all repository stubs for project '{project_name}' in org '{organization_name}'... Be patient!")
+
     azure_cache_config = PLATFORM_CACHE_CONFIG["azure"]
 
     all_repo_stubs_in_project = []

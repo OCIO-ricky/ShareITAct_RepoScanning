@@ -16,7 +16,7 @@ class Config:
     """
     def __init__(self):
         load_dotenv() # Load .env for non-auth configurations
-
+ 
         # --- General Settings ---
         limit_str = os.getenv("LimitNumberOfRepos", "0").strip()
         try:

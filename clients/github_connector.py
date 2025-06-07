@@ -316,9 +316,12 @@ def _process_single_github_repository(
 
             try:
                 labor_df = analyze_github_repo_sync(
-                    owner=org_name, repo=repo_name_for_gql, token=token,
+                    owner=org_name, 
+                    repo=repo_name_for_gql, 
+                    token=token,
                     hours_per_commit=hours_per_commit,
                     github_api_url=github_instance_url or "https://api.github.com", 
+                    logger_instance=current_logger,
                     default_branch_override=actual_default_branch_name_for_commits, 
                     cfg_obj=cfg_obj,
                     num_repos_in_target=num_repos_in_target,
@@ -391,7 +394,8 @@ def _get_repo_stubs_and_estimate_api_calls(
     Internal helper to list repository stubs, filter them, and estimate API calls.
     Returns a list of enriched repository info dicts and the estimated API calls for them.
     """
-    logger_instance.info(f"Analyzing all repository stubs for '{org_name}'...  Be patient, this may take a while...")
+
+    logger_instance.info(f"{ANSI_YELLOW}Pre-scanning{ANSI_RESET} all repository stubs for '{org_name}'...  Be patient, this may take a while...")
     github_cache_config = PLATFORM_CACHE_CONFIG["github"]
 
     all_repo_stubs_in_org = []
