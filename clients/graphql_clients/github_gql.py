@@ -1,6 +1,6 @@
 # clients/graphql_clients/github_gql.py
 """
-GraphQL client for fetching repository data from GitHub.
+GraphQL client for fetching repository data from GitHub with adaptive rate limit handling.
 """
 from datetime import datetime, timezone # Added for rate limit reset time calculation
 import logging
@@ -16,6 +16,21 @@ logger = logging.getLogger(__name__)
 
 GITHUB_GRAPHQL_ENDPOINT = "https://api.github.com/graphql" # Default, can be overridden for GHES
 
+# Custom exception to carry rate limit reset information
+class GithubGqlRateLimitError(TransportQueryError):
+    def __init__(self, *args, errors: Optional[List[Dict[str, Any]]] = None, reset_at_iso: Optional[str] = None, **kwargs):
+        # Ensure 'errors' is passed to the parent if provided
+        super().__init__(*args, errors=errors, **kwargs)
+        self.reset_at_iso: Optional[str] = reset_at_iso
+        self.wait_seconds: Optional[float] = None
+        if reset_at_iso:
+            try:
+                reset_dt = datetime.fromisoformat(reset_at_iso.replace('Z', '+00:00'))
+                now_utc = datetime.now(timezone.utc)
+                self.wait_seconds = max(0.0, (reset_dt - now_utc).total_seconds())
+                logger.info(f"GithubGqlRateLimitError: Calculated wait_seconds: {self.wait_seconds:.2f}s from reset_at: {reset_at_iso}")
+            except ValueError:
+                logger.warning(f"Could not parse resetAt timestamp from GQL payload: {reset_at_iso}")
 
 # Define common README and CODEOWNERS paths to try
 COMMON_README_PATHS = ["README.md", "README.txt", "README", "readme.md"]
@@ -125,21 +140,13 @@ query GetRepositoryDetails(
         name
       }}
     }}
-    # Add more fields if needed for labor hours estimation, e.g., commit history
-    # defaultBranchRef {{
-    #   name # Default branch name, useful for commit history query
-    #   target {{
-    #     ... on Commit {{
-    #       history(first: 1) {{ # Just to get the branch name if not already known
-    #         nodes {{
-    #           oid # Latest commit SHA on default branch
-    #         }}
-    #       }}
-    #     }}
-    #   }}
-    # }}
+  }} # Closing the repository block
+  rateLimit {{ # Query rateLimit as a top-level field
+    limit
+    remaining
+    resetAt
   }}
-}}
+}} # Closing the query block
 """)
 
 def _is_gql_rate_limited_error(query_error: TransportQueryError) -> bool:
@@ -153,6 +160,12 @@ def _is_gql_rate_limited_error(query_error: TransportQueryError) -> bool:
             if isinstance(error_detail, dict) and error_detail.get('type') == 'RATE_LIMITED':
                 return True
     return False
+
+def _get_github_gql_retry_wait_seconds(e: Exception) -> Optional[float]:
+    """Extracts wait_seconds from our custom GithubGqlRateLimitError."""
+    if isinstance(e, GithubGqlRateLimitError):
+        return e.wait_seconds
+    return None
 
 def fetch_repository_details_graphql(
     client: Client,
@@ -174,14 +187,25 @@ def fetch_repository_details_graphql(
 
     def _api_call():
         current_logger.debug(f"Executing GraphQL query for {owner}/{repo_name}")
+        # COMPREHENSIVE_REPO_QUERY now also fetches rateLimit
         result = client.execute(COMPREHENSIVE_REPO_QUERY, variable_values=params)
+        
+        errors = result.get("errors")
+        if errors:
+            current_logger.error(f"GraphQL query for {owner}/{repo_name} returned errors: {errors}")
+            is_rl = any(err.get('type') == 'RATE_LIMITED' for err in errors if isinstance(err, dict))
+            if is_rl:
+                # rateLimit is now a top-level field in the result
+                reset_at = safe_get(result, "rateLimit", "resetAt") 
+                raise GithubGqlRateLimitError(errors=errors, reset_at_iso=reset_at, message=str(errors))
+            raise TransportQueryError(errors=errors, message=str(errors)) # Standard GQL error
+
         current_logger.debug(f"Successfully fetched GraphQL data for {owner}/{repo_name}")
         return result.get("repository")
-
     return execute_with_retry(
         api_call_func=_api_call,
-        is_rate_limit_error_func=lambda e: isinstance(e, TransportQueryError) and _is_gql_rate_limited_error(e),
-        # get_retry_after_seconds_func can be added if GQL errors provide Retry-After headers
+        is_rate_limit_error_func=lambda e: isinstance(e, GithubGqlRateLimitError),
+        get_retry_after_seconds_func=_get_github_gql_retry_wait_seconds,
         max_retries=max_retries,
         initial_delay_seconds=initial_delay_seconds,
         backoff_factor=backoff_factor,
@@ -214,23 +238,28 @@ def fetch_repository_short_metadata_graphql(
     Used for peek-ahead cache checks.
     """
     query_str = """
-        query RepoShortMetadata($owner: String!, $repoName: String!) {
-          repository(owner: $owner, name: $repoName) {
-            id # GraphQL Node ID
-            databaseId # Integer ID, good for cache key
-            nameWithOwner
-            isEmpty
-            pushedAt # Add pushedAt to get the last push date
-            defaultBranchRef {
-              name
-              target {
-                ... on Commit {
-                  oid # This is the commit SHA
-                }
+      query RepoShortMetadata($owner: String!, $repoName: String!) {
+        repository(owner: $owner, name: $repoName) {
+          id # GraphQL Node ID
+          databaseId # Integer ID, good for cache key
+          nameWithOwner
+          isEmpty
+          pushedAt # Add pushedAt to get the last push date
+          defaultBranchRef {
+            name
+            target {
+              ... on Commit {
+                oid # This is the commit SHA
               }
             }
           }
         }
+        rateLimit { # Fetch rateLimit as a top-level field
+          limit
+          remaining
+          resetAt
+        }
+      }
     """
     query = gql(query_str)
     variables = {"owner": owner, "repoName": repo_name}
@@ -239,6 +268,18 @@ def fetch_repository_short_metadata_graphql(
     def _api_call():
         logger_instance.debug(f"GQL Peek: Executing short metadata query for {owner}/{repo_name}", extra={'org_group': org_group_context})
         result = client.execute(query, variable_values=variables)
+
+        errors = result.get("errors")
+        if errors:
+            logger_instance.error(f"GQL Peek: GraphQL query for {owner}/{repo_name} returned errors: {errors}", extra={'org_group': org_group_context})
+            is_rl = any(err.get('type') == 'RATE_LIMITED' for err in errors if isinstance(err, dict))
+            if is_rl:
+                # The rateLimit data will now be at the top level of the result, not under 'repository'
+                reset_at = safe_get(result, "rateLimit", "resetAt")
+                raise GithubGqlRateLimitError(errors=errors, reset_at_iso=reset_at, message=str(errors))
+            raise TransportQueryError(errors=errors, message=str(errors))
+
+        # Repository data is still under result.get("repository")
         if result and result.get("repository"):
             repo_info = result.get("repository")
             commit_sha = safe_get(repo_info, "defaultBranchRef", "target", "oid")
@@ -248,6 +289,8 @@ def fetch_repository_short_metadata_graphql(
                 "lastCommitSHA": commit_sha,
                 "isEmpty": repo_info.get("isEmpty", False),
                 "pushedAt": repo_info.get("pushedAt"), # Return pushedAt
+                # Optionally, you can also return the rateLimit info from the result if needed by the caller
+                # "rateLimit": result.get("rateLimit")
             }
         logger_instance.warning(f"GQL Peek: No repository data returned for {owner}/{repo_name}. Result: {result}", extra={'org_group': org_group_context})
         # If repository is not found, GQL might return data: { repository: null }.
@@ -257,7 +300,8 @@ def fetch_repository_short_metadata_graphql(
     try:
         return execute_with_retry(
             api_call_func=_api_call,
-            is_rate_limit_error_func=lambda e: isinstance(e, TransportQueryError) and _is_gql_rate_limited_error(e),
+            is_rate_limit_error_func=lambda e: isinstance(e, GithubGqlRateLimitError),
+            get_retry_after_seconds_func=_get_github_gql_retry_wait_seconds,
             max_retries=max_retries,
             initial_delay_seconds=initial_delay_seconds,
             backoff_factor=backoff_factor,
@@ -291,6 +335,11 @@ query GetCommitHistory($owner: String!, $name: String!, $branch: String, $afterC
         }
       }
     }
+  }
+  rateLimit { # Fetch rateLimit as a top-level field
+    limit
+    remaining
+    resetAt
   }
 }
 """)
@@ -334,12 +383,23 @@ def fetch_commit_history_graphql(
 
         def _fetch_page():
             current_logger.debug(f"Fetching commit history page {page_num} for {owner}/{repo_name}, cursor: {current_cursor}")
-            return client.execute(COMMIT_HISTORY_QUERY, variable_values=final_params)
+            page_result = client.execute(COMMIT_HISTORY_QUERY, variable_values=final_params)
+            
+            errors = page_result.get("errors")
+            if errors:
+                current_logger.error(f"GraphQL commit history page {page_num} for {owner}/{repo_name} returned errors: {errors}")
+                is_rl = any(err.get('type') == 'RATE_LIMITED' for err in errors if isinstance(err, dict))
+                if is_rl:
+                    reset_at = safe_get(page_result, "rateLimit", "resetAt")
+                    raise GithubGqlRateLimitError(errors=errors, reset_at_iso=reset_at, message=str(errors))
+                raise TransportQueryError(errors=errors, message=str(errors))
+            return page_result
 
         try:
             result = execute_with_retry(
                 api_call_func=_fetch_page,
-                is_rate_limit_error_func=lambda e: isinstance(e, TransportQueryError) and _is_gql_rate_limited_error(e),
+                is_rate_limit_error_func=lambda e: isinstance(e, GithubGqlRateLimitError),
+                get_retry_after_seconds_func=_get_github_gql_retry_wait_seconds,
                 max_retries=max_page_retries,
                 initial_delay_seconds=initial_page_delay_seconds,
                 backoff_factor=page_backoff_factor,
@@ -372,10 +432,10 @@ def fetch_commit_history_graphql(
             has_next_page = page_info.get("hasNextPage", False)
             current_cursor = page_info.get("endCursor")
             current_logger.debug(f"Fetched page of {len(history.get('nodes', []))} commits for {owner}/{repo_name}. Total so far: {fetched_count}. HasNextPage: {has_next_page}")
-        except TransportQueryError as tqe: # This would be a non-rate-limit GQL error, or rate limit after retries
+        except (TransportQueryError, GithubGqlRateLimitError) as tqe: # Catch our custom error too
             current_logger.error(f"GraphQL query failed for commit history page {page_num} of {owner}/{repo_name}: {tqe.errors}")
             break # Stop fetching on error for this repo
-        except Exception as e_page: # Other unexpected errors
+        except Exception as e: # Other unexpected errors
             break # Stop fetching on error
         except Exception as e:
             current_logger.error(f"Unexpected error fetching commit history for {owner}/{repo_name}: {e}", exc_info=True)
@@ -435,7 +495,8 @@ def fetch_rate_limit_status_graphql(
     try:
         result = execute_with_retry(
             api_call_func=_api_call_rate_limit,
-            is_rate_limit_error_func=lambda e: isinstance(e, TransportQueryError) and _is_gql_rate_limited_error(e),
+            is_rate_limit_error_func=lambda e: isinstance(e, GithubGqlRateLimitError), # Should ideally not hit RL here, but good practice
+            get_retry_after_seconds_func=_get_github_gql_retry_wait_seconds,
             max_retries=max_retries_rlq,
             initial_delay_seconds=initial_delay_rlq_seconds,
             backoff_factor=backoff_factor_rlq,
@@ -492,7 +553,7 @@ def fetch_rate_limit_status_graphql(
             )
             return rate_limit_data
         current_logger.warning("Rate limit data not found in GraphQL response when querying for status.")
-        return None # Propagate failure as None
+        return None
     except TransportQueryError as tqe_rl: # Non-rate-limit GQL error, or rate limit after retries for this specific query
         current_logger.error(f"GraphQL query for rate limit status failed: {tqe_rl.errors}")
         return None # Propagate failure as None

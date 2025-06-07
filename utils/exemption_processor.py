@@ -378,12 +378,10 @@ def _call_ai_for_description(
         return None
 
     readme_content_for_ai = repo_data.get('readme_content', '') or ''
-    # If README is empty but a current_description exists, AI might still refine it or decide it's insufficient.
-    # However, if both are empty, it's likely insufficient.
-    if not readme_content_for_ai.strip() and not current_description_for_ai.strip():
-        logger_instance.debug(f"No README content and no existing description for AI description of '{repo_name_for_log}'. Returning sentinel.")
-        return INSUFFICIENT_DESCRIPTION_AI_SENTINEL
 
+    
+    if not readme_content_for_ai.strip():
+        return current_description_for_ai.strip()       
 
     max_input_tokens_for_readme = cfg_obj.MAX_TOKENS_ENV
     # Reserve tokens for prompt structure and expected AI response
@@ -410,17 +408,16 @@ Avoid starting the description with generic phrases like "This repository contai
 You will be given:
 1. An 'Existing Description' (which might be empty or a placeholder).
 2. 'README Content'.
-3. 'Detected Languages'.
+3. 'Detected Languages' (a comma-separated list).
 
 Instructions:
-1.  **Evaluate Existing Description:** If the 'Existing Description' is present, evaluate if it accurately and concisely summarizes the repository's primary purpose based on the 'README Content'. If it's good, you can return it, potentially refining it slightly for conciseness or to better meet length criteria if the README offers clear additions.
+1.  **Evaluate Existing Description:** If 'Existing Description' is present and valid, evaluate if it accurately and concisely summarizes the repository's primary purpose based on the 'README Content'. If it's good, you can return it, potentially refining it slightly for conciseness or to better meet length criteria if the README offers clear additions.
 2.  **Generate New Description:** If 'Existing Description' is empty, a generic placeholder (e.g., "No description provided"), inaccurate, or clearly insufficient compared to the 'README Content', generate a new description based *primarily* on the 'README Content'.
-3.  **Non-Code Repositories:** Consider if the repository is "non-code" (e.g., documentation, data, configuration scripts). Common non-code languages include: {hint_non_code_langs_str}. If so, you can start your description with "A non-code repository containing..." or similar.
-4.  **Insufficient Information:** If, after analyzing the 'README Content', you find it too brief, too vague, or otherwise insufficient to generate a meaningful and accurate description (even if an 'Existing Description' was poor), output ONLY the exact string: "{INSUFFICIENT_DESCRIPTION_AI_SENTINEL}".
+3.  **Non-Code Repositories (with README):** If the 'README Content' and 'Detected Languages' suggest it's "non-code", you can start your description with "A non-code repository containing..." or similar.
+4.  **Insufficient Information (with README):** If, after analyzing the 'README Content', you find it too brief, too vague, or otherwise insufficient to generate a meaningful and accurate description and the 'Existing Description' is poor), output ONLY the exact string: "{INSUFFICIENT_DESCRIPTION_AI_SENTINEL}".
 
 Output:
 - The refined or newly generated description.
-- OR, the exact string "{INSUFFICIENT_DESCRIPTION_AI_SENTINEL}" if applicable.
 
 Repository Name: {repo_name_for_log}
 Detected Languages: {languages_for_ai}
@@ -866,17 +863,21 @@ def process_repository_exemptions(
     initial_org_from_repo_data = processed_repo_data.get('organization', 'UnknownOrg') 
     # Use the passed-in scm_org_for_logging for the logging context
     org_group_context = scm_org_for_logging
+    can_attempt_ai_description_generation=False
 
     # Store the description that came from the SCM connector or a previous cache
     scm_or_cached_description = processed_repo_data.get("description", "")
 
+    # if usageType is empty, set the is_full_processing_needed flag to True
+    is_full_processing_needed = current_permissions.get('usageType') is None
     # --- AI Description Generation (if AI enabled and description is missing) ---
-    can_attempt_ai_description_generation = (
-        cfg_obj.AI_ENABLED_ENV and
-        _MODULE_AI_ENABLED_STATUS and
-        (DISABLE_SSL_ENV != "true") and
-        not cfg_obj.AI_AUTO_DISABLED_SSL_ERROR
-    )
+    if is_full_processing_needed:
+        can_attempt_ai_description_generation = (
+            cfg_obj.AI_ENABLED_ENV and
+            _MODULE_AI_ENABLED_STATUS and
+            (DISABLE_SSL_ENV != "true") and
+            not cfg_obj.AI_AUTO_DISABLED_SSL_ERROR
+        )
 
     if can_attempt_ai_description_generation:
         current_logger.info(f"Attempting AI description generation for '{repo_name}'.")
@@ -908,8 +909,6 @@ def process_repository_exemptions(
 
     is_private_or_internal = processed_repo_data.get('repositoryVisibility', '').lower() in ['private', 'internal']    
     
-    is_full_processing_needed = current_permissions.get('usageType') is None
-
     if not is_full_processing_needed:
         current_logger.info(
             f"For repo '{repo_name}', using pre-existing/cached usageType: "

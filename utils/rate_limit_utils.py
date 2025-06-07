@@ -5,6 +5,7 @@ Utilities for fetching API rate limit status and calculating processing delays.
 import os
 import time
 import logging
+import random # Added for jitter in retry logic
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Any
 
@@ -33,7 +34,8 @@ def _try_float(val: Optional[str]) -> Optional[float]:
 
 def get_github_rate_limit_status(
     gh_client: Github,
-    logger_instance: Optional[logging.Logger] = None
+    logger_instance: Optional[logging.Logger] = None,
+    is_graphql_context: bool = False # Added for consistent signature
 ) -> Optional[Dict[str, Any]]:
     """
     Fetches the current REST API rate limit status from GitHub.
@@ -41,6 +43,9 @@ def get_github_rate_limit_status(
     Returns None if fetching fails.
     """
     active_logger = logger_instance if logger_instance else logger
+    if is_graphql_context: # GitHub GQL provides rateLimit object in query, not headers for this check
+        active_logger.debug("GitHub GraphQL rate limits are checked via the 'rateLimit' object in GQL queries, not this REST API header check.")
+        # Proceeding with REST check as it might still be informative for overall token health.
 
     try:
         rate_limit = gh_client.get_rate_limit()
@@ -63,63 +68,164 @@ def get_github_rate_limit_status(
         active_logger.error(f"Error fetching GitHub rate limit status: {e}", exc_info=True)
         return None
 
+def _calculate_wait_time(
+    attempt: int, # Current attempt number (0-indexed for calculation)
+    retry_after_header: Optional[str],
+    default_initial_delay: float,
+    default_backoff_multiplier: float
+) -> float:
+    """
+    Calculates wait time for retries. Prioritizes Retry-After header.
+    Falls back to exponential backoff with jitter.
+    """
+    if retry_after_header:
+        try:
+            wait_seconds = float(retry_after_header)
+            if wait_seconds > 0:
+                return wait_seconds
+        except ValueError:
+            logger.warning(f"Could not parse Retry-After header value: '{retry_after_header}'. Falling back to exponential backoff.")
+            pass # Fall through to exponential backoff
+    
+    # Exponential backoff with jitter
+    # Jitter helps prevent thundering herd problems. Here, +/- 20% of the calculated delay.
+    jitter_factor = random.uniform(0.8, 1.2) 
+    wait_time = (default_initial_delay * (default_backoff_multiplier ** attempt)) * jitter_factor
+    return wait_time
+
+def _refresh_gitlab_headers(gl_client: gitlab.Gitlab, active_logger: logging.Logger):
+    """
+    Makes lightweight API calls to refresh gl_client.last_response_headers.
+    Raises GitlabHttpError if API calls fail with HTTP errors (e.g., 429).
+    """
+    api_call_made_successfully = False
+    # Attempt 1: Fetch current user (if user object seems valid)
+    if gl_client.user and hasattr(gl_client.user, 'id') and gl_client.user.id is not None:
+        try:
+            active_logger.debug(f"GitLab RateLimit: Attempting to fetch user {gl_client.user.id} to refresh headers.")
+            user_obj = gl_client.users.get(gl_client.user.id) # Make the call
+            if user_obj: # Check if we got a user object back
+                active_logger.debug(f"GitLab RateLimit: Successfully fetched user {user_obj.username}. Headers should be fresh.")
+                api_call_made_successfully = True
+            else:
+                active_logger.warning(f"GitLab RateLimit: Fetching user {gl_client.user.id} returned None/empty. Headers might not be fresh.")
+        except gitlab.exceptions.GitlabHttpError as e_user_http:
+            active_logger.warning(f"GitLab RateLimit: HTTP error fetching user {gl_client.user.id} for headers: {e_user_http}.")
+            raise # Re-raise to be caught by the main retry loop if it's 429
+        except gitlab.exceptions.GitlabError as e_user_get: # Other GitlabErrors
+            active_logger.warning(f"GitLab RateLimit: Non-HTTP API error fetching user {gl_client.user.id} for headers: {e_user_get}. Will try gl_client.version().")
+    else:
+        active_logger.debug("GitLab RateLimit: gl_client.user or gl_client.user.id not available. Skipping user fetch for headers.")
+
+    # Attempt 2: Fetch GitLab version (if user fetch didn't happen or failed with non-HTTP error)
+    if not api_call_made_successfully:
+        try:
+            active_logger.debug("GitLab RateLimit: Attempting to call gl_client.version() to refresh headers.")
+            version_info = gl_client.version() # Make the call
+            if version_info: # Check if we got version info back
+                active_logger.debug(f"GitLab RateLimit: Successfully fetched version {version_info.get('version')}. Headers should be fresh.")
+            else:
+                 active_logger.warning("GitLab RateLimit: gl_client.version() returned None/empty. Headers might not be fresh.")
+        except gitlab.exceptions.GitlabHttpError as e_version_http:
+            active_logger.warning(f"GitLab RateLimit: HTTP error calling gl_client.version() for headers: {e_version_http}.")
+            raise # Re-raise for 429 handling
+        except gitlab.exceptions.GitlabError as e_version_get: # Other GitlabErrors
+            active_logger.error(f"GitLab RateLimit: Non-HTTP API error calling gl_client.version() for headers: {e_version_get}. Headers likely not fresh.")
+            # If this also fails, it's unlikely headers will be populated.
+
 def get_gitlab_rate_limit_status(
     gl_client: gitlab.Gitlab,
-    logger_instance: Optional[logging.Logger] = None
+    logger_instance: Optional[logging.Logger] = None,
+    is_graphql_context: bool = False,
+    max_retries: int = 3,
+    initial_delay_seconds_for_backoff: float = 1.0, # Base for exponential backoff
+    backoff_factor: float = 2.0 # Multiplier for exponential backoff
 ) -> Optional[Dict[str, Any]]:
     """
     Fetches the current API rate limit status from GitLab by making a lightweight call.
     Returns a dictionary with 'remaining', 'limit', and 'reset_at_datetime' (UTC).
     Returns None if fetching fails or headers are not present.
+    Handles 429 errors with retries.
     """
-    try:
-        active_logger = logger_instance if logger_instance else logger
-        # Attempt a lightweight API call to ensure last_response_headers is populated.
-        # First, try getting the current user's info if gl_client.user is available.
-        user_fetched_for_headers = False
-        if gl_client.user and hasattr(gl_client.user, 'id') and gl_client.user.id is not None:
-            try:
-                active_logger.debug(f"GitLab: Attempting to fetch user {gl_client.user.id} to refresh rate limit headers.")
-                gl_client.users.get(gl_client.user.id)
-                user_fetched_for_headers = True
-            except Exception as e_user_get:
-                active_logger.warning(f"GitLab: Failed to fetch user {gl_client.user.id} for rate limit headers: {e_user_get}. Will try gl_client.version().")
-        
-        if not user_fetched_for_headers:
-            active_logger.debug("GitLab: gl_client.user.id not available or user fetch failed. Calling gl_client.version() to refresh rate limit headers.")
-            gl_client.version() # This is a very lightweight call.
+    active_logger = logger_instance if logger_instance else logger
 
-        headers = getattr(gl_client, 'last_response_headers', {})
-        if not headers:
-            active_logger.warning("GitLab: Could not access last_response_headers from the client. Rate limit status unknown.")
-            return None
-
-        remaining_str = headers.get('RateLimit-Remaining')
-        limit_str = headers.get('RateLimit-Limit')
-        reset_timestamp_str = headers.get('RateLimit-ResetTime') # Unix timestamp
-
-        if remaining_str is not None and limit_str is not None and reset_timestamp_str is not None:
-            reset_datetime_utc = datetime.fromtimestamp(float(reset_timestamp_str), tz=timezone.utc)
-            status = {
-                "remaining": int(remaining_str),
-                "limit": int(limit_str),
-                "reset_at_datetime": reset_datetime_utc,
-            }
-            active_logger.debug(f"GitLab Rate Limit Status: Remaining {status['remaining']}/{status['limit']}, Resets at {status['reset_at_datetime'].isoformat()}")
-            return status
-        else:
-            active_logger.warning(f"GitLab rate limit headers not fully populated. Headers: {headers}")
-            return None
-    except gitlab.exceptions.GitlabError as e:
-        active_logger.error(f"GitLab API error while trying to determine rate limit: {e}", exc_info=True)
+    if is_graphql_context:
+       # active_logger.warning(
+       #     "GitLab GraphQL API does not return rate limit headers. "
+       #     "Cannot determine rate limit status programmatically for GraphQL via this method. "
+       #     "GraphQL rate limits are typically handled by reacting to 429 errors."
+       # )
         return None
-    except Exception as e:
-        active_logger.error(f"Unexpected error fetching GitLab rate limit status: {e}", exc_info=True)
-        return None
+
+    for attempt in range(max_retries + 1):
+        try:
+            active_logger.debug(f"GitLab RateLimit: Attempt {attempt + 1}/{max_retries + 1} to fetch and parse headers.")
+            
+            # Make lightweight API calls to refresh headers. This may raise GitlabHttpError (e.g., 429).
+            _refresh_gitlab_headers(gl_client, active_logger)
+
+            # Now parse the refreshed headers
+            headers = getattr(gl_client, 'last_response_headers', {})
+            if not headers:
+                active_logger.warning(f"GitLab: last_response_headers empty after refresh attempt {attempt + 1}. Cannot determine rate limit.")
+                return None # Not a 429 to retry for if _refresh_gitlab_headers succeeded.
+
+            remaining_str = headers.get('RateLimit-Remaining')
+            limit_str = headers.get('RateLimit-Limit')
+            reset_timestamp_str = headers.get('RateLimit-ResetTime') # Unix timestamp
+
+            if remaining_str is not None and limit_str is not None and reset_timestamp_str is not None:
+                reset_datetime_utc = datetime.fromtimestamp(float(reset_timestamp_str), tz=timezone.utc)
+                status = {
+                    "remaining": int(remaining_str),
+                    "limit": int(limit_str),
+                    "reset_at_datetime": reset_datetime_utc,
+                }
+                active_logger.debug(f"GitLab Rate Limit Status: Remaining {status['remaining']}/{status['limit']}, Resets at {status['reset_at_datetime'].isoformat()}")
+                return status # Success
+            else:
+                active_logger.warning(f"GitLab rate limit headers not fully populated after attempt {attempt + 1}. Headers: {headers}")
+                return None # Headers present but incomplete, not a 429 to retry for.
+
+        except gitlab.exceptions.GitlabHttpError as e:
+            if e.response_code == 429:
+                if attempt < max_retries:
+                    retry_after_header = e.response_headers.get('Retry-After')
+                    wait_time = _calculate_wait_time(
+                        attempt, # Pass 0-indexed attempt for backoff calculation
+                        retry_after_header, 
+                        initial_delay_seconds_for_backoff, 
+                        backoff_factor
+                    )
+                    active_logger.warning(
+                        f"GitLab RateLimit: Rate limited on attempt {attempt + 1}/{max_retries + 1}. "
+                        f"Retrying in {wait_time:.2f}s. Error: {e}"
+                    )
+                    time.sleep(wait_time)
+                    continue # To the next attempt
+                else:
+                    active_logger.error(
+                        f"GitLab RateLimit: Rate limited and max retries ({max_retries}) reached. Error: {e}"
+                    )
+                    return None # Max retries for 429
+            else: # Other HTTP errors
+                active_logger.error(f"GitLab HTTP error (not 429) on attempt {attempt + 1}: {e}", exc_info=True)
+                return None # Non-429 HTTP error, do not retry further in this function
+        except gitlab.exceptions.GitlabError as e: # Other Gitlab non-HTTP errors
+            active_logger.error(f"GitLab API error (non-HTTP) on attempt {attempt + 1}: {e}", exc_info=True)
+            return None # Non-HTTP Gitlab error, do not retry
+        except Exception as e: # Catch-all for unexpected errors during an attempt
+            active_logger.error(f"Unexpected error on attempt {attempt + 1} fetching GitLab rate limit status: {e}", exc_info=True)
+            return None # Unexpected error, do not retry
+
+    # If loop completes (all retries for 429 exhausted without success)
+    active_logger.error(f"GitLab RateLimit: Failed to get rate limit status after {max_retries + 1} attempts due to persistent rate limiting or other errors.")
+    return None
 
 def get_azure_devops_rate_limit_status(ado_connection: Optional[Any], # Changed to Optional[Any] to avoid import error if SDK not there
                                        organization_name: str,
-                                       logger_instance: Optional[logging.Logger] = None) -> Optional[Dict[str, Any]]:
+                                       logger_instance: Optional[logging.Logger] = None,
+                                       is_graphql_context: bool = False) -> Optional[Dict[str, Any]]: # Added for consistent signature
     """
     Fetches Azure DevOps rate limit status.
     Attempts to read X-RateLimit-* headers from the last response on the connection's session.
@@ -127,6 +233,9 @@ def get_azure_devops_rate_limit_status(ado_connection: Optional[Any], # Changed 
     """
     active_logger = logger_instance if logger_instance else logger
 
+    if is_graphql_context: # ADO doesn't have GraphQL for this
+        active_logger.debug("Azure DevOps does not use GraphQL for repository data in this tool; is_graphql_context flag ignored for ADO rate limit check.")
+        
     if not ado_connection or not hasattr(ado_connection, 'session'):
         active_logger.warning(
             f"Azure DevOps connection object is not available or invalid for org '{organization_name}'. "
