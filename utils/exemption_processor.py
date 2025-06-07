@@ -256,7 +256,6 @@ def _call_ai_for_organization(
     org_group_context_for_log: str,
     logger_instance: logging.Logger
 ) -> str | None:
-    global _MODULE_AI_ENABLED_STATUS 
 
     if not cfg_obj.AI_ENABLED_ENV: # Check global AI enable flag from config
         logger_instance.debug("AI processing is globally disabled in .env. Skipping AI organization call.")
@@ -360,7 +359,6 @@ def _call_ai_for_description(
     Uses AI to generate a short description for the repository based on its README content.
     Relies on existing AI_ENABLED_ENV and AI readiness checks.
     """
-    global _MODULE_AI_ENABLED_STATUS
     repo_name_for_log = repo_data.get('name', 'UnknownRepo')
 
     # These checks are implicitly handled by the should_attempt_ai_description logic
@@ -443,7 +441,6 @@ def _call_ai_for_exemption(
     org_group_context_for_log: str,
     logger_instance: logging.Logger
 ) -> tuple[str | None, str | None]:
-    global _MODULE_AI_ENABLED_STATUS
     repo_name_for_log = repo_data.get('name', 'UnknownRepo')
 
  
