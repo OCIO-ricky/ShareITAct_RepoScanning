@@ -93,6 +93,11 @@ VALID_AI_EXEMPTION_CODES = [
     EXEMPT_BY_MISSION_SYSTEM, EXEMPT_BY_CIO,
 ]
 SENSITIVE_KEYWORDS = ["HIPAA", "PHI", "CUI", "PII", "Internal use only", "Patient data"]
+EXPERIMENTAL_DEMO_KEYWORDS = [
+    "experimental", "demo", "demonstration", "poc", "proof of concept",
+    "exploratory", "test", "sample", "example", "tutorial", "playground",
+    "prototype", "lab", "spike"
+]
 NON_CODE_LANGUAGES = [
     None, '', 'Markdown', 'Text', 'HTML', 'CSS', 'XML', 'YAML', 'JSON',
     'Shell', 'Batchfile', 'PowerShell', 'Dockerfile', 'Makefile', 'CMake',
@@ -759,7 +764,7 @@ def process_repository_exemptions(
         )
         if ai_generated_desc and ai_generated_desc.strip():
             processed_repo_data["description"] = ai_generated_desc
-            current_logger.info(f"Successfully used AI-generated description for '{repo_name}'.")
+            current_logger.debug(f"Successfully used AI-generated description for '{repo_name}'.")
         else:
             current_logger.info(f"AI description generation failed or returned empty for '{repo_name}'. Falling back to SCM/cached description: '{scm_or_cached_description[:50]}...'")
             processed_repo_data["description"] = scm_or_cached_description # Fallback to SCM/cached
@@ -829,6 +834,17 @@ def process_repository_exemptions(
                         current_permissions['exemptionText'] = f"Non-code repository (languages: [{languages_str}])"
                         exemption_applied = True
                         current_logger.info(f"Repo '{repo_name}': Exempted as non-code (Languages: [{languages_str}]).")
+
+                if not exemption_applied and readme_content:
+                    found_exp_keywords = [
+                        kw for kw in EXPERIMENTAL_DEMO_KEYWORDS 
+                        if re.search(r'\b' + re.escape(kw) + r'\b', readme_content, re.IGNORECASE)
+                    ]
+                    if found_exp_keywords:
+                        current_permissions['usageType'] = EXEMPT_BY_CIO
+                        current_permissions['exemptionText'] = f"Code is experimental/demo/exploratory and may not qualify as 'custom-developed code' under the Share IT Act. (Keywords found: [{', '.join(found_exp_keywords)}])"
+                        exemption_applied = True
+                        current_logger.info(f"Repo '{repo_name}': Exempted as experimental/demo ({EXEMPT_BY_CIO}) due to keywords: {found_exp_keywords}.")
 
                 if not exemption_applied and should_attempt_ai: 
                     if is_empty_repo:
