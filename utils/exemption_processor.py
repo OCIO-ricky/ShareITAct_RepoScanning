@@ -388,12 +388,31 @@ def _call_ai_for_description(
         readme_content_for_ai = readme_content_for_ai[:effective_max_readme_len] + "\n... [README Content Truncated]"
         logger_instance.warning(f"README for AI description of '{repo_name_for_log}' truncated.")
 
+    languages_list = repo_data.get('languages', [])
+    languages_for_ai = ", ".join(filter(None, languages_list)) if languages_list else "Not available" # Filter out None/empty strings
+
+    # Create a hint string of common non-code languages for the prompt
+    # Exclude None and empty strings from NON_CODE_LANGUAGES for the hint
+    hint_non_code_langs_str = ", ".join([lang for lang in NON_CODE_LANGUAGES if lang])
+
     prompt = f"""
 Your task is to generate a concise, one to two-sentence description for a software repository based on its README content.
-The description should be suitable for a project catalog and accurately reflect the repository's purpose. No need to mention this is a repository 
-nor the organization name nor the type of license. Aim for a description between 100 and 300 characters. Output only the description text.
+The description should be suitable for a project catalog and accurately reflect the repository's purpose.
+Aim for a description between 100 and 300 characters.
+
+First, evaluate if the repository appears to be a "non-code" repository based on its name, detected languages, and README.
+A non-code repository might primarily contain documentation, data files, configuration scripts, or similar non-executable software artifacts.
+Common non-code languages include: {hint_non_code_langs_str}.
+If 'Detected Languages' primarily consists of these, or if the README and name strongly suggest it, it's likely a non-code repository.
+
+- If you determine it is likely a non-code repository, you can start your description with a phrase like "A non-code repository containing..." or "This repository primarily hosts documentation for..." or similar, and then describe its contents.
+- If it appears to contain software code, generate a standard description of its purpose.
+
+Do not mention the organization name or the type of license in the description.
+Output only the description text.
 
 Repository Name: {repo_name_for_log}
+Detected Languages: {languages_for_ai}
 README Content (excerpt):
 ---
 {readme_content_for_ai}
@@ -401,6 +420,7 @@ README Content (excerpt):
 Generate a short description:
 """
     try:
+
         logger_instance.info(f"Calling AI model '{cfg_obj.AI_MODEL_NAME_ENV}' for description of '{repo_name_for_log}'...")
         model = genai.GenerativeModel(cfg_obj.AI_MODEL_NAME_ENV)
         response = model.generate_content(
