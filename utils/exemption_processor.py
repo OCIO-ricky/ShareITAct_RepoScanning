@@ -397,8 +397,10 @@ def _call_ai_for_description(
 
     prompt = f"""
 Your task is to generate a concise, one to two-sentence description for a software repository based on its README content.
-The description should be suitable for a project catalog and accurately reflect the repository's purpose.
+The description should accurately reflect the repository's purpose.
 Aim for a description between 100 and 300 characters.
+Focus on the main functionality, primary subject, or key content of the repository.
+Avoid mentioning common configuration files (e.g., .gitignore, Dockerfile, CI/CD pipeline configurations) or standard development practices unless they are the *central theme* or a unique, defining characteristic of the repository.
 
 First, evaluate if the repository appears to be a "non-code" repository based on its name, detected languages, and README.
 A non-code repository might primarily contain documentation, data files, configuration scripts, or similar non-executable software artifacts.
