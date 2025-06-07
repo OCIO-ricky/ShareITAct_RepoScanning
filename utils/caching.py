@@ -40,7 +40,8 @@ def load_previous_scan_data(file_path: str, platform: str) -> Dict[str, Dict]:
     if not os.path.exists(file_path):
         # Try to derive org_slug for context even if file not found
         org_slug_context = _parse_org_from_filename(file_path, platform) or platform
-        logger.info(f"No previous scan data file found at {file_path}. Proceeding with full scan for this target.", extra={'org_group': org_slug_context})
+        logger.info(f"No previous scan data file found at {file_path}.", extra={'org_group': org_slug_context})
+        logger.info(f"Proceeding with full scan for this target. Processing...", extra={'org_group': org_slug_context})
         return previous_data_map
 
     platform_key = platform.lower()
