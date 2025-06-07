@@ -46,7 +46,8 @@ try:
         setup_target_logger,
         write_json_file, backup_existing_file,
         parse_semver, infer_version, infer_status,
-        process_and_finalize_repo_data_list, # Removed backup_and_clear_log_file
+        process_and_finalize_repo_data_list,
+        _cleanup_final_repo_data as util_cleanup_final_repo_data, # Import for direct use
         get_targets_from_cli_or_env, parse_azure_targets_from_string_list,
         format_duration
     )
@@ -517,7 +518,12 @@ def _prepare_project_for_final_catalog(
     # Cleanup internal/temporary fields
     for key_to_pop in ['_private_contact_emails', '_is_empty_repo', 'lastCommitSHA', 'repo_id']:
         updated_project_data.pop(key_to_pop, None)
-    return updated_project_data
+    
+    # Call the comprehensive cleanup utility from script_utils.py
+    # This will handle _source_platform, _source_org, and general None value cleaning.
+    cleaned_data_for_final_catalog = util_cleanup_final_repo_data(updated_project_data)
+    
+    return cleaned_data_for_final_catalog
 
 def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> bool:
     """
