@@ -323,6 +323,8 @@ def _cleanup_final_repo_data(repo_data_item: Dict[str, Any]) -> Dict[str, Any]:
     repo_data_item.pop('archived', None)
     repo_data_item.pop('_status_from_readme', None)
     repo_data_item.pop('_is_generic_organization', None)
+    repo_data_item.pop('_source_platform', None) # Remove before final output
+    repo_data_item.pop('_source_org', None)      # Remove before final output
 
     final_cleaned_item = {}
     for k, v_item in repo_data_item.items():

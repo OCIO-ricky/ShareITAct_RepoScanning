@@ -323,7 +323,8 @@ def _process_single_github_repository(
                     cfg_obj=cfg_obj,
                     num_repos_in_target=num_repos_in_target,
                     is_empty_repo=repo_data.get('_is_empty_repo', False),
-                    number_of_workers=num_workers
+                    number_of_workers=num_workers,
+                    logger_instance=current_logger
                 )
                 if not labor_df.empty:
                     repo_data["laborHours"] = round(float(labor_df["EstimatedHours"].sum()), 2)

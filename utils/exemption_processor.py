@@ -339,36 +339,8 @@ Determine the organization based on the rules above.
         else:
             logger_instance.warning(f"AI analysis for '{repo_name_for_ai}' could not find the organization name. Ignoring.")
             return None
-    except (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied) as ai_auth_err:
-        err_str = str(ai_auth_err).lower()
-        if "api key not valid" in err_str or "api_key_invalid" in err_str or "permission_denied" in err_str:
-            logger_instance.error(
-                f"{ANSI_RED}Error during AI organization call for repository '{repo_name_for_ai}': API key is invalid or lacks permissions. "
-                f"Disabling AI for the rest of this run. Error: {ai_auth_err}{ANSI_RESET}"
-            )
-            _MODULE_AI_ENABLED_STATUS = False # Disable at module level if key is bad
-        else:
-            logger_instance.error(f"Authorization/Argument error during AI organization call for '{repo_name_for_ai}': {ai_auth_err}")
-        return None
-    except (requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError) as ssl_like_error:
-        error_message_lower = str(ssl_like_error).lower()
-        is_ssl_error = (
-            "ssl" in error_message_lower or \
-            "certificate" in error_message_lower or \
-            "tlsv1 alert" in error_message_lower or \
-            "handshake failed" in error_message_lower or \
-            (isinstance(ssl_like_error, google_api_exceptions.ServiceUnavailable) and "unavailable" in error_message_lower) # ServiceUnavailable can wrap SSL
-        )
-        if is_ssl_error:
-            logger_instance.error(
-                f"{ANSI_RED}SSL/Network Error during AI organization call for '{repo_name_for_ai}': {ssl_like_error}. "
-                f"AI features will be auto-disabled for the rest of this run. "
-                f"Please check your corporate network's CA certificate setup in the Docker container (see README).{ANSI_RESET}",
-                extra={'org_group': org_group_context_for_log}
-            )
-            cfg_obj.AI_AUTO_DISABLED_SSL_ERROR = True
-        else: # Not an SSL error, but still a service/network issue
-            logger_instance.error(f"A non-SSL network/service error occurred during AI organization call for '{repo_name_for_ai}': {ssl_like_error}", exc_info=True)
+    except (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied, requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError) as common_ai_err:
+        _handle_common_ai_errors(common_ai_err, "organization inference", repo_name_for_ai, cfg_obj, org_group_context_for_log, logger_instance)
         return None
     except Exception as ai_err:
         logger_instance.error(f"Error during AI call for repository '{repo_name_for_ai}': {ai_err}")
@@ -376,6 +348,93 @@ Determine the organization based on the rules above.
     finally:
         if _MODULE_AI_ENABLED_STATUS and cfg_obj.AI_DELAY_ENABLED_ENV > 0: # Use delay from cfg_obj
             logger_instance.debug(f"Pausing for {cfg_obj.AI_DELAY_ENABLED_ENV} seconds to respect AI rate limit...")
+            time.sleep(cfg_obj.AI_DELAY_ENABLED_ENV)
+
+def _call_ai_for_description(
+    repo_data: dict,
+    cfg_obj: Config,
+    org_group_context_for_log: str,
+    logger_instance: logging.Logger
+) -> str | None:
+    """
+    Uses AI to generate a short description for the repository based on its README content.
+    Relies on existing AI_ENABLED_ENV and AI readiness checks.
+    """
+    global _MODULE_AI_ENABLED_STATUS
+    repo_name_for_log = repo_data.get('name', 'UnknownRepo')
+
+    # These checks are implicitly handled by the should_attempt_ai_description logic
+    # in the calling function, but good for direct calls or clarity.
+    if not cfg_obj.AI_ENABLED_ENV:
+        logger_instance.debug("AI processing is globally disabled. Skipping AI description generation.")
+        return None
+    if cfg_obj.AI_AUTO_DISABLED_SSL_ERROR:
+        logger_instance.warning(f"{ANSI_YELLOW}AI features auto-disabled (SSL error). Skipping AI description for '{repo_name_for_log}'.{ANSI_RESET}")
+        return None
+    if not _MODULE_AI_ENABLED_STATUS or not genai:
+        logger_instance.debug("AI module status indicates disabled. Skipping AI description generation.")
+        return None
+    if DISABLE_SSL_ENV == "true":
+        logger_instance.warning(f"AI description for '{repo_name_for_log}' skipped (DISABLE_SSL_VERIFICATION=true).")
+        return None
+
+    readme_content_for_ai = repo_data.get('readme_content', '') or ''
+    if not readme_content_for_ai.strip():
+        logger_instance.debug(f"No README content for AI description of '{repo_name_for_log}'. Skipping.")
+        return None
+
+    max_input_tokens_for_readme = cfg_obj.MAX_TOKENS_ENV
+    # Reserve tokens for prompt structure and expected AI response
+    effective_max_readme_len = max_input_tokens_for_readme - 1000 # Generous buffer
+    if len(readme_content_for_ai) > effective_max_readme_len:
+        readme_content_for_ai = readme_content_for_ai[:effective_max_readme_len] + "\n... [README Content Truncated]"
+        logger_instance.warning(f"README for AI description of '{repo_name_for_log}' truncated.")
+
+    prompt = f"""
+Your task is to generate a concise, one to two-sentence description for a software repository based on its README content.
+The description should be suitable for a project catalog and accurately reflect the repository's purpose. No need to mention this is a repository.
+Aim for a description between 100 and 300 characters. Output only the description text.
+
+Repository Name: {repo_name_for_log}
+README Content (excerpt):
+---
+{readme_content_for_ai}
+---
+Generate a short description:
+"""
+    try:
+        logger_instance.info(f"Calling AI model '{cfg_obj.AI_MODEL_NAME_ENV}' for description of '{repo_name_for_log}'...")
+        model = genai.GenerativeModel(cfg_obj.AI_MODEL_NAME_ENV)
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=cfg_obj.AI_TEMPERATURE_ENV, # Use existing temp
+                max_output_tokens=100 # Descriptions should be short
+            ),
+            request_options={"timeout": 30}
+        )
+        ai_generated_description = response.text.strip()
+        
+        if ai_generated_description:
+            ai_generated_description = re.sub(r'[\r\n]+', ' ', ai_generated_description)
+            ai_generated_description = re.sub(r'\s{2,}', ' ', ai_generated_description)
+            ai_generated_description = ai_generated_description.strip().replace('"', "'")
+            logger_instance.info(f"AI generated description for '{repo_name_for_log}': \"{ai_generated_description}\"")
+            return ai_generated_description
+        else:
+            logger_instance.warning(f"AI did not generate a description for '{repo_name_for_log}'.")
+            return None
+
+    except (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied, requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError) as common_ai_err:
+        # Consolidated error handling similar to other AI functions
+        _handle_common_ai_errors(common_ai_err, "description generation", repo_name_for_log, cfg_obj, org_group_context_for_log, logger_instance)
+        return None
+    except Exception as ai_err:
+        logger_instance.error(f"Error during AI description generation for '{repo_name_for_log}': {ai_err}", exc_info=True)
+        return None
+    finally:
+        if _MODULE_AI_ENABLED_STATUS and cfg_obj.AI_DELAY_ENABLED_ENV > 0:
+            logger_instance.debug(f"Pausing for {cfg_obj.AI_DELAY_ENABLED_ENV}s after AI description call...")
             time.sleep(cfg_obj.AI_DELAY_ENABLED_ENV)
 
 def _call_ai_for_exemption(
@@ -481,36 +540,8 @@ Repository Information:
         else:
             logger_instance.warning(f"AI exemption analysis for '{repo_name}' returned an unexpected format: '{ai_result_text}'. Ignoring.")
             return None, None
-    except (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied) as ai_auth_err:
-        err_str = str(ai_auth_err).lower()
-        if "api key not valid" in err_str or "api_key_invalid" in err_str or "permission_denied" in err_str:
-            logger_instance.error(
-                f"{ANSI_RED}Error during AI exemption call for repository '{repo_name}': API key is invalid or lacks permissions. "
-                f"Disabling AI for the rest of this run. Error: {ai_auth_err}{ANSI_RESET}"
-            )
-            _MODULE_AI_ENABLED_STATUS = False # Disable at module level if key is bad
-        else:
-            logger_instance.error(f"Authorization/Argument error during AI exemption call for '{repo_name}': {ai_auth_err}")
-        return None, None
-    except (requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError) as ssl_like_error:
-        error_message_lower = str(ssl_like_error).lower()
-        is_ssl_error = (
-            "ssl" in error_message_lower or \
-            "certificate" in error_message_lower or \
-            "tlsv1 alert" in error_message_lower or \
-            "handshake failed" in error_message_lower or \
-            (isinstance(ssl_like_error, google_api_exceptions.ServiceUnavailable) and "unavailable" in error_message_lower) # ServiceUnavailable can wrap SSL
-        )
-        if is_ssl_error:
-            logger_instance.error(
-                f"{ANSI_RED}SSL/Network Error during AI exemption call for '{repo_name}': {ssl_like_error}. "
-                f"AI features will be auto-disabled for the rest of this run. "
-                f"Please check your corporate network's CA certificate setup in the Docker container (see README).{ANSI_RESET}",
-                extra={'org_group': org_group_context_for_log}
-            )
-            cfg_obj.AI_AUTO_DISABLED_SSL_ERROR = True
-        else: # Not an SSL error, but still a service/network issue
-            logger_instance.error(f"A non-SSL network/service error occurred during AI exemption call for '{repo_name}': {ssl_like_error}", exc_info=True)
+    except (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied, requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError) as common_ai_err:
+        _handle_common_ai_errors(common_ai_err, "exemption analysis", repo_name_for_log, cfg_obj, org_group_context_for_log, logger_instance)
         return None, None
     except Exception as ai_err:
         logger_instance.error(f"Error during AI exemption call for repository '{repo_name}': {ai_err}")
@@ -519,6 +550,36 @@ Repository Information:
         if _MODULE_AI_ENABLED_STATUS and cfg_obj.AI_DELAY_ENABLED_ENV > 0: # Use delay from cfg_obj
             logger_instance.debug(f"Pausing for {cfg_obj.AI_DELAY_ENABLED_ENV} seconds to respect AI rate limit...")
             time.sleep(cfg_obj.AI_DELAY_ENABLED_ENV)
+
+def _handle_common_ai_errors(
+    error: Exception,
+    ai_task_description: str,
+    repo_name_for_log: str,
+    cfg_obj: Config,
+    org_group_context_for_log: str,
+    logger_instance: logging.Logger
+):
+    """Handles common errors from AI calls, updating global AI status if needed."""
+    global _MODULE_AI_ENABLED_STATUS
+    err_str = str(error).lower()
+
+    if isinstance(error, (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied)):
+        if "api key not valid" in err_str or "api_key_invalid" in err_str or "permission_denied" in err_str:
+            logger_instance.error(
+                f"{ANSI_RED}Error during AI {ai_task_description} for '{repo_name_for_log}': API key invalid/lacks permissions. "
+                f"Disabling AI for this run. Error: {error}{ANSI_RESET}"
+            )
+            _MODULE_AI_ENABLED_STATUS = False
+        else:
+            logger_instance.error(f"Auth/Arg error during AI {ai_task_description} for '{repo_name_for_log}': {error}")
+    elif isinstance(error, (requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError)): # Check for SSLError or general GoogleAPICallError
+        is_ssl_error = "ssl" in err_str or "certificate" in err_str or "tlsv1 alert" in err_str or "handshake failed" in err_str or \
+                       (isinstance(error, google_api_exceptions.ServiceUnavailable) and "unavailable" in err_str)
+        if is_ssl_error:
+            logger_instance.error(f"{ANSI_RED}SSL/Network Error during AI {ai_task_description} for '{repo_name_for_log}': {error}. AI auto-disabled.{ANSI_RESET}", extra={'org_group': org_group_context_for_log})
+            cfg_obj.AI_AUTO_DISABLED_SSL_ERROR = True
+        else:
+            logger_instance.error(f"Non-SSL network/service error during AI {ai_task_description} for '{repo_name_for_log}': {error}", exc_info=True)
 
 def _extract_emails_from_content(content: Optional[str], source_name: str, logger_instance: logging.Logger) -> List[str]:
     if not content: return []
@@ -654,6 +715,36 @@ def process_repository_exemptions(
     # Use the passed-in scm_org_for_logging for the logging context
     org_group_context = scm_org_for_logging
 
+    # Store the description that came from the SCM connector or a previous cache
+    scm_or_cached_description = processed_repo_data.get("description", "")
+
+    # --- AI Description Generation (if AI enabled and description is missing) ---
+    # This is placed early to use readme_content before it might be popped or modified.
+    # Logic: Prioritize AI description if doing a full scan (readme_content available)
+    # and AI is enabled. Fallback to SCM/cached if AI fails or isn't applicable.
+    can_attempt_ai_description_generation = (
+        cfg_obj.AI_ENABLED_ENV and
+        _MODULE_AI_ENABLED_STATUS and
+        (DISABLE_SSL_ENV != "true") and
+        not cfg_obj.AI_AUTO_DISABLED_SSL_ERROR and
+        readme_content and readme_content.strip() # Key condition: README must be available
+    )
+
+    if can_attempt_ai_description_generation:
+        current_logger.info(f"Attempting AI description generation for '{repo_name}' (full scan with README).")
+        ai_generated_desc = _call_ai_for_description(
+            repo_data=processed_repo_data, # Pass current state, including readme_content
+            cfg_obj=cfg_obj,
+            org_group_context_for_log=org_group_context,
+            logger_instance=current_logger
+        )
+        if ai_generated_desc and ai_generated_desc.strip():
+            processed_repo_data["description"] = ai_generated_desc
+            current_logger.info(f"Successfully used AI-generated description for '{repo_name}'.")
+        else:
+            current_logger.info(f"AI description generation failed or returned empty for '{repo_name}'. Falling back to SCM/cached description: '{scm_or_cached_description[:50]}...'")
+            processed_repo_data["description"] = scm_or_cached_description # Fallback to SCM/cached
+    # --- End AI Description Generation ---
     current_logger.debug(f"Processing exemptions/fallbacks for SCM org '{scm_org_for_logging}', repo '{repo_name}'. Initial repo_data.organization: '{initial_org_from_repo_data}'.")
 
     if not isinstance(processed_repo_data['permissions'].get('licenses'), list):
