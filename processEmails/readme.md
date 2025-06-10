@@ -1,10 +1,11 @@
 # Email Processing and Forwarding Script
 
 This Python script automates the processing of emails from an Outlook 365 mailbox. It searches for specific `PrivateID`s in email subject lines, matches them against a `privateid_mappings.csv` file, and forwards the email requests to the appropriate code owners.
+**Note:** This version uses Basic Authentication (username/password). The authenticating service account may need delegate/full access permissions if scanning a shared mailbox different from its own.
 
 ## Features
 
-*   Connects to Outlook 365 using IMAP and SMTP via OAuth 2.0 for secure authentication.
+*   Connects to Outlook 365 using IMAP (for reading) and SMTP (for sending) via Basic Authentication.
 *   Parses a CSV file (`privateid_mappings.csv`) to map `PrivateID`s to code owner contact emails.
 *   Scans a specified mailbox folder (e.g., INBOX) for unread emails with subject line as stated in the environment vaariable `TARGET_SUBJECT`: 
     ```
@@ -26,16 +27,8 @@ This Python script automates the processing of emails from an Outlook 365 mailbo
     ```
     python-dotenv
     imap-tools
-    msal
     ```
-3.  **Azure AD App Registration**:
-    *   An application must be registered in Azure Active Directory.
-    *   The App Registration needs the following API permissions (admin consented):
-        *   `https://outlook.office365.com/IMAP.AccessAsUser.All` (or equivalent Application permission like `Mail.ReadWrite` if configured for application access policies)
-        *   `https://outlook.office365.com/SMTP.Send` (or equivalent Application permission like `Mail.Send`)
-    *   A client secret must be generated for this app.
-    *   You will need the Application (Client) ID, Directory (Tenant) ID, and the Client Secret.
-4.  **`privateid_mappings.csv` File**:
+3.  **`privateid_mappings.csv` File**:
     *   This CSV file maps `PrivateID`s to contact emails.
     *   It should be located in the path specified by `PRIVATEID_MAPPINGS_CSV_PATH` in the `.env` file (default is `output/privateid_mappings.csv` relative to the script's execution directory).
     *   **Format**:
@@ -54,17 +47,13 @@ The script is configured using an `.env` file in the same directory as the scrip
 
 *   `OUTLOOK_IMAP_SERVER`: IMAP server address (e.g., `outlook.office365.com`).
 *   `OUTLOOK_IMAP_PORT`: IMAP server port (e.g., `993`).
-*   `OUTLOOK_EMAIL_ADDRESS`: The email address of the mailbox the script will access (service account email).
+*   `OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS`: The email address of the service account used for **authentication**.
+*   `OUTLOOK_SERVICE_ACCOUNT_PASSWORD`: The password for the authenticating service account.
+*   `TARGET_MAILBOX_EMAIL_TO_SCAN`: The email address of the mailbox the script will **scan** (e.g., `shareit@cdc.gov`). 
 *   `OUTLOOK_SMTP_SERVER`: SMTP server address (e.g., `smtp.office365.com`).
 *   `OUTLOOK_SMTP_PORT`: SMTP server port (e.g., `587`).
-*   `AZURE_CLIENT_ID`: Your Azure AD App Registration's Application (Client) ID.
-*   `AZURE_TENANT_ID`: Your Azure AD Directory (Tenant) ID.
-*   `AZURE_CLIENT_SECRET`: The client secret generated for your Azure AD App.
-*   `OAUTH_SCOPE`: OAuth scope (default: `https://outlook.office365.com/.default`).
 *   `PRIVATEID_MAPPINGS_CSV_PATH`: Path to the `privateid_mappings.csv` file.
-*   `IMAP_MAILBOX_TO_CHECK`: The mailbox folder to scan for new emails (e.g., `INBOX`).
-*   `IMAP_PROCESSED_FOLDER`: Folder to move successfully processed emails to (e.g., `ProcessedRequests`). The script will attempt to create it if it doesn't exist.
-*   `IMAP_MANUAL_REVIEW_FOLDER`: Folder to move emails that couldn't be automatically processed or require manual attention (e.g., `NeedsManualReview`). The script will attempt to create it if it doesn't exist.
+ attempt to create it if it doesn't exist.
 *   `TARGET_SUBJECT` (Optional): A specific subject line pattern to target. Use `[privateid]` as a placeholder for the ID (e.g., `"Request for source code repository: [privateid]"`). If set, only emails matching this subject pattern (and are unread) will be processed for ID extraction. If left blank, the script searches for any known `privateid` in the subject of unread emails.
 
 **Example `.env.template`:**
@@ -72,20 +61,19 @@ The script is configured using an `.env` file in the same directory as the scrip
 # Outlook IMAP Settings
 OUTLOOK_IMAP_SERVER="outlook.office365.com"
 OUTLOOK_IMAP_PORT="993"
-OUTLOOK_EMAIL_ADDRESS="your_service_account_email@yourdomain.com" # The mailbox to access
+
+# Credentials for the account that will perform the login
+OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS="your_authenticating_service_account_email@yourdomain.com"
+OUTLOOK_SERVICE_ACCOUNT_PASSWORD="password_for_authenticating_service_account"
+
+# Target mailbox to scan (e.g., a shared mailbox like shareit@cdc.gov).
+# Leave blank to scan the service account's own mailbox.
+# The service account must have delegate/full access permissions to this mailbox if it's different.
+TARGET_MAILBOX_EMAIL_TO_SCAN="email_address_of_mailbox_to_scan@yourdomain.com"
 
 # Outlook SMTP Settings (for forwarding)
 OUTLOOK_SMTP_SERVER="smtp.office365.com"
 OUTLOOK_SMTP_PORT="587"
-# SMTP username is often the same as OUTLOOK_EMAIL_ADDRESS
-
-# Azure AD App Registration Details (for OAuth 2.0)
-AZURE_CLIENT_ID="your_app_client_id"
-AZURE_TENANT_ID="your_directory_tenant_id"
-AZURE_CLIENT_SECRET="your_app_client_secret"
-
-# OAuth Scopes
-OAUTH_SCOPE="https://outlook.office365.com/.default"
 
 # CSV File Path
 PRIVATEID_MAPPINGS_CSV_PATH="output/privateid_mappings.csv"
@@ -108,7 +96,9 @@ TARGET_SUBJECT=
     ```
 4.  **Create and configure your `.env` file** based on `.env.template`.
 5.  **Ensure your `privateid_mappings.csv` file** is present at the location specified in `PRIVATEID_MAPPINGS_CSV_PATH` and is correctly formatted.
-6.  **Verify Azure AD App Permissions**: Ensure the service principal associated with your Azure AD App has been granted the necessary permissions to access the target mailbox. This might involve Exchange Online PowerShell cmdlets like `Add-MailboxPermission` or configuring application access policies, depending on your permission model (delegated vs. application).
+6.  **Verify Service Account Access**:
+    *   Ensure the service account (`OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS`) has IMAP and SMTP access enabled, and that Basic Authentication is permitted.
+    *   If `TARGET_MAILBOX_EMAIL_TO_SCAN` is different from the service account, ensure the service account has "Full Access" (delegate) permissions to the target mailbox. This is typically configured by an Exchange/Microsoft 365 administrator.
 
 ## Running the Script
 
@@ -123,8 +113,8 @@ The script will log its actions to the console.
 ## Important Notes
 
 *   **Security**:
-    *   Protect your `.env` file, especially the `AZURE_CLIENT_SECRET`. Ensure it's not committed to version control (it should be in your `.gitignore`).
-    *   Follow the principle of least privilege when granting API permissions in Azure AD.
+    *   Protect your `.env` file, especially the `OUTLOOK_SERVICE_ACCOUNT_PASSWORD`. Ensure it's not committed to version control (it should be in your `.gitignore`).
+    *   Basic Authentication is inherently less secure than OAuth 2.0. Use with caution.
 *   **Testing**:
     *   Thoroughly test the script with a non-production mailbox first.
     *   Initially, you might want to set `fetch_criteria = 'ALL'` (instead of `AND(seen=False)`) in the `process_mailbox` function for testing with existing emails in a test folder, but remember to change it back for production to only process new/unread emails.
