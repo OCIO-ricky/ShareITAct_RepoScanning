@@ -31,7 +31,6 @@ This module applies a cascade of rules and heuristics:
 - Cleans up temporary processing fields before returning the updated repository
   data dictionary.
 """
-
 import re
 import html
 import logging
@@ -92,7 +91,6 @@ VALID_AI_EXEMPTION_CODES = [
     EXEMPT_BY_LAW, EXEMPT_BY_NATIONAL_SECURITY, EXEMPT_BY_AGENCY_SYSTEM,
     EXEMPT_BY_MISSION_SYSTEM, EXEMPT_BY_CIO,
 ]
-SENSITIVE_KEYWORDS = ["HIPAA", "PHI", "CUI", "PII", "Internal use only", "Patient data"]
 NON_CODE_LANGUAGES = [
     None, '', 'Markdown', 'Text', 'HTML', 'CSS', 'XML', 'YAML', 'JSON',
     'Shell', 'Batchfile', 'PowerShell', 'Dockerfile', 'Makefile', 'CMake',
@@ -153,6 +151,8 @@ logger.info(f"Using Default Public Contact Email: {PUBLIC_CONTACT_EMAIL_DEFAULT}
 # This global flag will now reflect the combination of API key validity AND the passed-in config.
 _MODULE_AI_ENABLED_STATUS = False # Internal status reflecting API key validity and library import
 PLACEHOLDER_GOOGLE_API_KEY = "YOUR_GOOLE_API_KEY"
+# Constants for AI description handling
+INSUFFICIENT_DESCRIPTION_AI_SENTINEL = "N/A"
 
 # --- SSL Verification Check and urllib3 Warning Suppression (Module Level) ---
 DISABLE_SSL_ENV = os.getenv("DISABLE_SSL_VERIFICATION", "false").lower()
@@ -256,7 +256,6 @@ def _call_ai_for_organization(
     org_group_context_for_log: str,
     logger_instance: logging.Logger
 ) -> str | None:
-    global _MODULE_AI_ENABLED_STATUS 
 
     if not cfg_obj.AI_ENABLED_ENV: # Check global AI enable flag from config
         logger_instance.debug("AI processing is globally disabled in .env. Skipping AI organization call.")
@@ -339,36 +338,8 @@ Determine the organization based on the rules above.
         else:
             logger_instance.warning(f"AI analysis for '{repo_name_for_ai}' could not find the organization name. Ignoring.")
             return None
-    except (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied) as ai_auth_err:
-        err_str = str(ai_auth_err).lower()
-        if "api key not valid" in err_str or "api_key_invalid" in err_str or "permission_denied" in err_str:
-            logger_instance.error(
-                f"{ANSI_RED}Error during AI organization call for repository '{repo_name_for_ai}': API key is invalid or lacks permissions. "
-                f"Disabling AI for the rest of this run. Error: {ai_auth_err}{ANSI_RESET}"
-            )
-            _MODULE_AI_ENABLED_STATUS = False # Disable at module level if key is bad
-        else:
-            logger_instance.error(f"Authorization/Argument error during AI organization call for '{repo_name_for_ai}': {ai_auth_err}")
-        return None
-    except (requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError) as ssl_like_error:
-        error_message_lower = str(ssl_like_error).lower()
-        is_ssl_error = (
-            "ssl" in error_message_lower or \
-            "certificate" in error_message_lower or \
-            "tlsv1 alert" in error_message_lower or \
-            "handshake failed" in error_message_lower or \
-            (isinstance(ssl_like_error, google_api_exceptions.ServiceUnavailable) and "unavailable" in error_message_lower) # ServiceUnavailable can wrap SSL
-        )
-        if is_ssl_error:
-            logger_instance.error(
-                f"{ANSI_RED}SSL/Network Error during AI organization call for '{repo_name_for_ai}': {ssl_like_error}. "
-                f"AI features will be auto-disabled for the rest of this run. "
-                f"Please check your corporate network's CA certificate setup in the Docker container (see README).{ANSI_RESET}",
-                extra={'org_group': org_group_context_for_log}
-            )
-            cfg_obj.AI_AUTO_DISABLED_SSL_ERROR = True
-        else: # Not an SSL error, but still a service/network issue
-            logger_instance.error(f"A non-SSL network/service error occurred during AI organization call for '{repo_name_for_ai}': {ssl_like_error}", exc_info=True)
+    except (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied, requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError) as common_ai_err:
+        _handle_common_ai_errors(common_ai_err, "organization inference", repo_name_for_ai, cfg_obj, org_group_context_for_log, logger_instance)
         return None
     except Exception as ai_err:
         logger_instance.error(f"Error during AI call for repository '{repo_name_for_ai}': {ai_err}")
@@ -378,13 +349,228 @@ Determine the organization based on the rules above.
             logger_instance.debug(f"Pausing for {cfg_obj.AI_DELAY_ENABLED_ENV} seconds to respect AI rate limit...")
             time.sleep(cfg_obj.AI_DELAY_ENABLED_ENV)
 
+def _call_ai_for_description(
+    repo_data: dict,
+    cfg_obj: Config,
+    org_group_context_for_log: str,
+    logger_instance: logging.Logger,
+    current_description_for_ai: str
+) -> str | None:
+    """
+    Uses AI to generate a short description for the repository based on its README content.
+    Relies on existing AI_ENABLED_ENV and AI readiness checks.
+    """
+    repo_name_for_log = repo_data.get('name', 'UnknownRepo')
+
+    # These checks are implicitly handled by the should_attempt_ai_description logic
+    # in the calling function, but good for direct calls or clarity.
+    if not cfg_obj.AI_ENABLED_ENV:
+        logger_instance.debug("AI processing is globally disabled. Skipping AI description generation.")
+        return None
+    if cfg_obj.AI_AUTO_DISABLED_SSL_ERROR:
+        logger_instance.warning(f"{ANSI_YELLOW}AI features auto-disabled (SSL error). Skipping AI description for '{repo_name_for_log}'.{ANSI_RESET}")
+        return None
+    if not _MODULE_AI_ENABLED_STATUS or not genai:
+        logger_instance.debug("AI module status indicates disabled. Skipping AI description generation.")
+        return None
+    if DISABLE_SSL_ENV == "true":
+        logger_instance.warning(f"AI description for '{repo_name_for_log}' skipped (DISABLE_SSL_VERIFICATION=true).")
+        return None
+
+    readme_content_for_ai = repo_data.get('readme_content', '') or ''
+
+    
+    if not readme_content_for_ai.strip():
+        return current_description_for_ai.strip()       
+
+    max_input_tokens_for_readme = cfg_obj.MAX_TOKENS_ENV
+    # Reserve tokens for prompt structure and expected AI response
+    effective_max_readme_len = max_input_tokens_for_readme - 1000 # Generous buffer
+    if len(readme_content_for_ai) > effective_max_readme_len:
+        readme_content_for_ai = readme_content_for_ai[:effective_max_readme_len] + "\n... [README Content Truncated]"
+        logger_instance.warning(f"README for AI description of '{repo_name_for_log}' truncated.")
+
+    languages_list = repo_data.get('languages', [])
+    languages_for_ai = ", ".join(filter(None, languages_list)) if languages_list else "Not available" # Filter out None/empty strings
+
+    # Create a hint string of common non-code languages for the prompt
+    # Exclude None and empty strings from NON_CODE_LANGUAGES for the hint
+    hint_non_code_langs_str = ", ".join([lang for lang in NON_CODE_LANGUAGES if lang])
+
+    prompt = f"""
+Your task is to generate or refine a concise, one to two-sentence description for a software repository.
+The description should accurately reflect the repository's primary purpose and be between 100 and 300 characters.
+Focus on the main functionality, primary subject, or key content.
+Avoid mentioning common configuration files or standard development practices unless they are the *central theme*.
+Do not mention the organization name or license.
+Avoid starting the description with generic phrases like "This repository contains..." or "This is a project that...". Get straight to the core purpose.
+
+You will be given:
+1. An 'Existing Description' (which might be empty or a placeholder).
+2. 'README Content'.
+3. 'Detected Languages' (a comma-separated list).
+
+Instructions:
+1.  **Evaluate Existing Description:** If 'Existing Description' is present and valid, evaluate if it accurately and concisely summarizes the repository's primary purpose based on the 'README Content'. If it's good, you can return it, potentially refining it slightly for conciseness or to better meet length criteria if the README offers clear additions.
+2.  **Generate New Description:** If 'Existing Description' is empty, a generic placeholder (e.g., "No description provided"), inaccurate, or clearly insufficient compared to the 'README Content', generate a new description based *primarily* on the 'README Content'.
+3.  **Non-Code Repositories (with README):** If the 'README Content' and 'Detected Languages' suggest it's "non-code", you can start your description with "A non-code repository containing..." or similar.
+4.  **Insufficient Information (with README):** If, after analyzing the 'README Content', you find it too brief, too vague, or otherwise insufficient to generate a meaningful and accurate description and the 'Existing Description' is poor), output ONLY the exact string: "{INSUFFICIENT_DESCRIPTION_AI_SENTINEL}".
+
+Output:
+- The refined or newly generated description.
+
+Repository Name: {repo_name_for_log}
+Detected Languages: {languages_for_ai}
+Existing Description: {current_description_for_ai}
+README Content (excerpt):
+---
+{readme_content_for_ai}
+---
+Description:
+"""
+    try:
+
+        logger_instance.info(f"Calling AI model '{cfg_obj.AI_MODEL_NAME_ENV}' for description of '{repo_name_for_log}'...")
+        model = genai.GenerativeModel(cfg_obj.AI_MODEL_NAME_ENV)
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=cfg_obj.AI_TEMPERATURE_ENV, # Use existing temp
+                max_output_tokens=100 # Descriptions should be short
+            ),
+            request_options={"timeout": 30}
+        )
+        ai_generated_description = response.text.strip()
+        
+        if ai_generated_description:
+            if ai_generated_description == INSUFFICIENT_DESCRIPTION_AI_SENTINEL:
+                logger_instance.info(f"AI indicated insufficient info for description of '{repo_name_for_log}'.")
+                return INSUFFICIENT_DESCRIPTION_AI_SENTINEL
+            ai_generated_description = re.sub(r'[\r\n]+', ' ', ai_generated_description) # type: ignore
+            ai_generated_description = re.sub(r'\s{2,}', ' ', ai_generated_description)
+            ai_generated_description = ai_generated_description.strip().replace('"', "'")
+            logger_instance.info(f"AI generated description for '{repo_name_for_log}': \"{ai_generated_description}\"")
+            return ai_generated_description
+        else:
+            logger_instance.debug(f"AI did not generate a description for '{repo_name_for_log}'.")
+            return None # Explicitly return None if AI gives empty response
+
+    except (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied, requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError) as common_ai_err:
+        # Consolidated error handling similar to other AI functions
+        _handle_common_ai_errors(common_ai_err, "description generation", repo_name_for_log, cfg_obj, org_group_context_for_log, logger_instance)
+        return None
+    except Exception as ai_err:
+        logger_instance.error(f"Error during AI description generation for '{repo_name_for_log}': {ai_err}", exc_info=True)
+        return None
+    finally:
+        if _MODULE_AI_ENABLED_STATUS and cfg_obj.AI_DELAY_ENABLED_ENV > 0:
+            logger_instance.debug(f"Pausing for {cfg_obj.AI_DELAY_ENABLED_ENV}s after AI description call...")
+            time.sleep(cfg_obj.AI_DELAY_ENABLED_ENV)
+
+def _call_ai_for_exploratory_status(
+    repo_data: dict,
+    cfg_obj: Config,
+    org_group_context_for_log: str,
+    logger_instance: logging.Logger
+) -> tuple[bool, str | None]:
+    """
+    Uses AI to determine if the repository is primarily experimental/demo/exploratory.
+    Returns a tuple (is_exploratory_bool, justification_str_or_None).
+    """
+    repo_name_for_log = repo_data.get('name', 'UnknownRepo')
+
+    if not cfg_obj.AI_ENABLED_ENV:
+        logger_instance.debug("AI processing globally disabled. Skipping AI exploratory status check.")
+        return False, None
+    if cfg_obj.AI_AUTO_DISABLED_SSL_ERROR:
+        logger_instance.warning(f"{ANSI_YELLOW}AI features auto-disabled (SSL error). Skipping AI exploratory status for '{repo_name_for_log}'.{ANSI_RESET}")
+        return False, None
+    if not _MODULE_AI_ENABLED_STATUS or not genai:
+        logger_instance.debug("AI module status indicates disabled. Skipping AI exploratory status check.")
+        return False, None
+    if DISABLE_SSL_ENV == "true":
+        logger_instance.warning(f"AI exploratory status for '{repo_name_for_log}' skipped (DISABLE_SSL_VERIFICATION=true).")
+        return False, None
+
+    readme_content_for_ai = repo_data.get('readme_content', '') or ''
+    if not readme_content_for_ai.strip():
+        logger_instance.debug(f"No README content for AI exploratory status of '{repo_name_for_log}'. Assuming not exploratory by AI.")
+        return False, "No README content for AI analysis."
+
+    max_input_tokens_for_readme = cfg_obj.MAX_TOKENS_ENV
+    effective_max_readme_len = max_input_tokens_for_readme - 1000 # Generous buffer
+    if len(readme_content_for_ai) > effective_max_readme_len:
+        readme_content_for_ai = readme_content_for_ai[:effective_max_readme_len] + "\n... [README Content Truncated]"
+        logger_instance.warning(f"README for AI exploratory status of '{repo_name_for_log}' truncated.")
+
+    prompt = f"""
+Your task is to determine if a software repository is primarily for experimental, demonstration, tutorial, testing, or exploratory purposes, based on its README content.
+This is to assess if it qualifies as shareable "custom-developed code" under specific regulations.
+
+Analyze the provided 'README Content' for explicit statements or strong contextual clues that indicate the *entire repository's primary purpose* is one of the following:
+-   An experiment or experimental code.
+-   A demonstration or demo only.
+-   A tutorial or walkthrough.
+-   A test bed or for testing purposes only (not referring to a standard test suite within a larger project).
+-   A Proof of Concept (PoC).
+-   A playground or sandbox.
+-   A boilerplate or template.
+
+Do NOT flag the repository if:
+-   Keywords like "test", "example", "demo" refer to a specific directory (e.g., "/examples", "/tests"), a section of the README, or a feature *within* a larger, non-experimental project.
+-   The README describes how to *run tests* for a production-intended project.
+-   The project *provides examples* but is itself a library or tool.
+
+Output Format:
+-   If the repository's primary purpose IS experimental/demo/exploratory, output:
+    `IS_EXPLORATORY|Brief justification based on README evidence.`
+    Example: `IS_EXPLORATORY|The README states, "This repository is a proof-of-concept for the new API."`
+    Example: `IS_EXPLORATORY|The introduction describes this as a "demo project to showcase feature X."`
+-   If the repository's primary purpose IS NOT experimental/demo/exploratory, or if the README is insufficient to make a clear determination, output:
+    `NOT_EXPLORATORY|Not clearly experimental or demo based on README.`
+
+README Content (excerpt):
+---
+{readme_content_for_ai}
+---
+Analysis Result:
+"""
+    try:
+        logger_instance.info(f"Calling AI model '{cfg_obj.AI_MODEL_NAME_ENV}' for exploratory status of '{repo_name_for_log}'...")
+        model = genai.GenerativeModel(cfg_obj.AI_MODEL_NAME_ENV)
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(temperature=cfg_obj.AI_TEMPERATURE_ENV, max_output_tokens=150),
+            request_options={"timeout": 30}
+        )
+        ai_result_text = response.text.strip()
+        logger_instance.debug(f"AI raw response for exploratory status of '{repo_name_for_log}': {ai_result_text}")
+
+        if ai_result_text.startswith("IS_EXPLORATORY|"):
+            justification = ai_result_text.split("|", 1)[1].strip()
+            logger_instance.info(f"AI determined '{repo_name_for_log}' IS exploratory. Reason: {justification}")
+            return True, justification
+        else: # Includes "NOT_EXPLORATORY|" or any other format
+            logger_instance.debug(f"AI determined '{repo_name_for_log}' is NOT clearly exploratory based on README.")
+            return False, None # Or capture the "not exploratory" reason if needed
+
+    except (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied, requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError) as common_ai_err:
+        _handle_common_ai_errors(common_ai_err, "exploratory status", repo_name_for_log, cfg_obj, org_group_context_for_log, logger_instance)
+        return False, None
+    except Exception as ai_err:
+        logger_instance.error(f"Error during AI exploratory status check for '{repo_name_for_log}': {ai_err}", exc_info=True)
+        return False, None
+    finally:
+        if _MODULE_AI_ENABLED_STATUS and cfg_obj.AI_DELAY_ENABLED_ENV > 0:
+            logger_instance.debug(f"Pausing for {cfg_obj.AI_DELAY_ENABLED_ENV}s after AI exploratory status call...")
+            time.sleep(cfg_obj.AI_DELAY_ENABLED_ENV)
+
 def _call_ai_for_exemption(
     repo_data: dict,
     cfg_obj: Config, # Changed to accept Config object
     org_group_context_for_log: str,
     logger_instance: logging.Logger
 ) -> tuple[str | None, str | None]:
-    global _MODULE_AI_ENABLED_STATUS
     repo_name_for_log = repo_data.get('name', 'UnknownRepo')
 
  
@@ -481,36 +667,8 @@ Repository Information:
         else:
             logger_instance.warning(f"AI exemption analysis for '{repo_name}' returned an unexpected format: '{ai_result_text}'. Ignoring.")
             return None, None
-    except (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied) as ai_auth_err:
-        err_str = str(ai_auth_err).lower()
-        if "api key not valid" in err_str or "api_key_invalid" in err_str or "permission_denied" in err_str:
-            logger_instance.error(
-                f"{ANSI_RED}Error during AI exemption call for repository '{repo_name}': API key is invalid or lacks permissions. "
-                f"Disabling AI for the rest of this run. Error: {ai_auth_err}{ANSI_RESET}"
-            )
-            _MODULE_AI_ENABLED_STATUS = False # Disable at module level if key is bad
-        else:
-            logger_instance.error(f"Authorization/Argument error during AI exemption call for '{repo_name}': {ai_auth_err}")
-        return None, None
-    except (requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError) as ssl_like_error:
-        error_message_lower = str(ssl_like_error).lower()
-        is_ssl_error = (
-            "ssl" in error_message_lower or \
-            "certificate" in error_message_lower or \
-            "tlsv1 alert" in error_message_lower or \
-            "handshake failed" in error_message_lower or \
-            (isinstance(ssl_like_error, google_api_exceptions.ServiceUnavailable) and "unavailable" in error_message_lower) # ServiceUnavailable can wrap SSL
-        )
-        if is_ssl_error:
-            logger_instance.error(
-                f"{ANSI_RED}SSL/Network Error during AI exemption call for '{repo_name}': {ssl_like_error}. "
-                f"AI features will be auto-disabled for the rest of this run. "
-                f"Please check your corporate network's CA certificate setup in the Docker container (see README).{ANSI_RESET}",
-                extra={'org_group': org_group_context_for_log}
-            )
-            cfg_obj.AI_AUTO_DISABLED_SSL_ERROR = True
-        else: # Not an SSL error, but still a service/network issue
-            logger_instance.error(f"A non-SSL network/service error occurred during AI exemption call for '{repo_name}': {ssl_like_error}", exc_info=True)
+    except (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied, requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError) as common_ai_err:
+        _handle_common_ai_errors(common_ai_err, "exemption analysis", repo_name_for_log, cfg_obj, org_group_context_for_log, logger_instance)
         return None, None
     except Exception as ai_err:
         logger_instance.error(f"Error during AI exemption call for repository '{repo_name}': {ai_err}")
@@ -519,6 +677,36 @@ Repository Information:
         if _MODULE_AI_ENABLED_STATUS and cfg_obj.AI_DELAY_ENABLED_ENV > 0: # Use delay from cfg_obj
             logger_instance.debug(f"Pausing for {cfg_obj.AI_DELAY_ENABLED_ENV} seconds to respect AI rate limit...")
             time.sleep(cfg_obj.AI_DELAY_ENABLED_ENV)
+
+def _handle_common_ai_errors(
+    error: Exception,
+    ai_task_description: str,
+    repo_name_for_log: str,
+    cfg_obj: Config,
+    org_group_context_for_log: str,
+    logger_instance: logging.Logger
+):
+    """Handles common errors from AI calls, updating global AI status if needed."""
+    global _MODULE_AI_ENABLED_STATUS
+    err_str = str(error).lower()
+
+    if isinstance(error, (google_api_exceptions.InvalidArgument, google_api_exceptions.PermissionDenied)):
+        if "api key not valid" in err_str or "api_key_invalid" in err_str or "permission_denied" in err_str:
+            logger_instance.error(
+                f"{ANSI_RED}Error during AI {ai_task_description} for '{repo_name_for_log}': API key invalid/lacks permissions. "
+                f"Disabling AI for this run. Error: {error}{ANSI_RESET}"
+            )
+            _MODULE_AI_ENABLED_STATUS = False
+        else:
+            logger_instance.error(f"Auth/Arg error during AI {ai_task_description} for '{repo_name_for_log}': {error}")
+    elif isinstance(error, (requests.exceptions.SSLError if requests else None, google_api_exceptions.GoogleAPICallError)): # Check for SSLError or general GoogleAPICallError
+        is_ssl_error = "ssl" in err_str or "certificate" in err_str or "tlsv1 alert" in err_str or "handshake failed" in err_str or \
+                       (isinstance(error, google_api_exceptions.ServiceUnavailable) and "unavailable" in err_str)
+        if is_ssl_error:
+            logger_instance.error(f"{ANSI_RED}SSL/Network Error during AI {ai_task_description} for '{repo_name_for_log}': {error}. AI auto-disabled.{ANSI_RESET}", extra={'org_group': org_group_context_for_log})
+            cfg_obj.AI_AUTO_DISABLED_SSL_ERROR = True
+        else:
+            logger_instance.error(f"Non-SSL network/service error during AI {ai_task_description} for '{repo_name_for_log}': {error}", exc_info=True)
 
 def _extract_emails_from_content(content: Optional[str], source_name: str, logger_instance: logging.Logger) -> List[str]:
     if not content: return []
@@ -628,9 +816,31 @@ def process_repository_exemptions(
     logger_instance: Optional[logging.Logger] = None # Make it optional for now, fallback to module logger
 ) -> Dict[str, Any]: # Assuming 'Any' is a placeholder for 'Config' type
     """
-    Processes a repository's data to determine exemptions and set usageType.    
+    Processes a repository's data to determine description, organization plus any exemptions.    
     Returns a dictionary (which could be a modified copy or the original with modifications) 
     containing the processed repository data.
+    
+    EXEMPTION LOGIC SEQUENCE:
+    The logic for determining exemptions follows a specific order of precedence:
+
+    1-Manual README Markers: The code first checks if the readme_content contains an Exemption: marker along with an Exemption justification:. 
+    If valid markers are found, the usageType and exemptionText are set based on these manual entries, and an internal flag exemption_applied is set to True.
+
+    2-Non-Code Repository Check: If no manual exemption was applied (exemption_applied is still False), the code then checks if the repository is 
+    purely non-code based on its languages. If so, it's exempted as EXEMPT_NON_CODE, and exemption_applied is set to True.
+
+    3-AI Exploratory Status Check: If no exemption has been applied yet (exemption_applied is still False) and the conditions for attempting AI 
+    are met (AI enabled, README content exists, etc.), the _call_ai_for_exploratory_status function is invoked. If the AI determines the repository 
+    is exploratory/demo, the usageType is set (typically to EXEMPT_BY_CIO), an appropriate exemptionText is generated based on the AI's reason, and 
+    exemption_applied is set to True.
+
+    4-AI General Exemption Check: If still no exemption has been applied (exemption_applied is False) and AI is enabled, the _call_ai_for_exemption 
+    function is called to determine if other types of exemptions (like EXEMPT_BY_LAW, EXEMPT_BY_MISSION_SYSTEM, etc.) apply based on the repository's 
+    content. If the AI suggests a valid exemption, it's applied, and exemption_applied becomes True.
+
+    Because the check for manual README markers occurs first and sets the exemption_applied flag, subsequent checks, including the AI-driven inference 
+    for exploratory status and other exemptions, are skipped if a manual exemption is successfully processed.    
+    
     """
     # Use the passed-in logger_instance if available, otherwise fall back to the module-level logger.
     # This ensures that if a specific logger (e.g., target_logger) is provided, it's used.
@@ -653,7 +863,42 @@ def process_repository_exemptions(
     initial_org_from_repo_data = processed_repo_data.get('organization', 'UnknownOrg') 
     # Use the passed-in scm_org_for_logging for the logging context
     org_group_context = scm_org_for_logging
+    can_attempt_ai_description_generation=False
 
+    # Store the description that came from the SCM connector or a previous cache
+    scm_or_cached_description = processed_repo_data.get("description", "")
+
+    # if usageType is empty, set the is_full_processing_needed flag to True
+    is_full_processing_needed = current_permissions.get('usageType') is None
+    # --- AI Description Generation (if AI enabled and description is missing) ---
+    if is_full_processing_needed:
+        can_attempt_ai_description_generation = (
+            cfg_obj.AI_ENABLED_ENV and
+            _MODULE_AI_ENABLED_STATUS and
+            (DISABLE_SSL_ENV != "true") and
+            not cfg_obj.AI_AUTO_DISABLED_SSL_ERROR
+        )
+
+    if can_attempt_ai_description_generation:
+        current_logger.info(f"Attempting AI description generation for '{repo_name}'.")
+        ai_generated_desc = _call_ai_for_description(
+            repo_data=processed_repo_data,
+            cfg_obj=cfg_obj,
+            org_group_context_for_log=org_group_context,
+            logger_instance=current_logger,
+            current_description_for_ai=scm_or_cached_description # Pass current description
+        )
+        if ai_generated_desc == INSUFFICIENT_DESCRIPTION_AI_SENTINEL:
+            processed_repo_data["description"] = INSUFFICIENT_DESCRIPTION_AI_SENTINEL
+            current_logger.debug(f"AI indicated insufficient info for '{repo_name}', using standard insufficient info message.")
+        elif ai_generated_desc and ai_generated_desc.strip(): # AI provided a valid description
+            processed_repo_data["description"] = ai_generated_desc # Use AI's description
+            current_logger.debug(f"Successfully used AI-generated description for '{repo_name}'.")
+        else:
+            current_logger.info(f"AI description generation failed or returned empty (but not sentinel) for '{repo_name}'. Falling back to SCM/cached or insufficient message.")
+            # Fallback to SCM/cached description if it exists, otherwise use the insufficient message
+            processed_repo_data["description"] = scm_or_cached_description if scm_or_cached_description else INSUFFICIENT_DESCRIPTION_AI_SENTINEL
+    # --- End AI Description Generation ---
     current_logger.debug(f"Processing exemptions/fallbacks for SCM org '{scm_org_for_logging}', repo '{repo_name}'. Initial repo_data.organization: '{initial_org_from_repo_data}'.")
 
     if not isinstance(processed_repo_data['permissions'].get('licenses'), list):
@@ -664,8 +909,6 @@ def process_repository_exemptions(
 
     is_private_or_internal = processed_repo_data.get('repositoryVisibility', '').lower() in ['private', 'internal']    
     
-    is_full_processing_needed = current_permissions.get('usageType') is None
-
     if not is_full_processing_needed:
         current_logger.info(
             f"For repo '{repo_name}', using pre-existing/cached usageType: "
@@ -720,6 +963,24 @@ def process_repository_exemptions(
                         exemption_applied = True
                         current_logger.info(f"Repo '{repo_name}': Exempted as non-code (Languages: [{languages_str}]).")
 
+                if not exemption_applied and readme_content:
+                    if should_attempt_ai and not is_empty_repo:
+                        is_exploratory_by_ai, ai_exploratory_reason = _call_ai_for_exploratory_status(
+                            repo_data=processed_repo_data,
+                            cfg_obj=cfg_obj,
+                            org_group_context_for_log=org_group_context,
+                            logger_instance=current_logger
+                        )
+                        if is_exploratory_by_ai:
+                            current_permissions['usageType'] = EXEMPT_BY_CIO # Or a more specific code if desired
+                            reason_text = f"AI Reason: {ai_exploratory_reason}" if ai_exploratory_reason else "AI determined the code is experimental/demo/exploratory."
+                            current_permissions['exemptionText'] = f"Code is experimental/demo/exploratory and do not qualify as 'custom-developed code' under the Share IT Act. ({reason_text})"
+                            exemption_applied = True
+                            current_logger.info(f"Repo '{repo_name}': Exempted as experimental/demo ({EXEMPT_BY_CIO}) based on AI analysis. Reason: {ai_exploratory_reason}")
+                    else:
+                        current_logger.debug(f"AI exploratory check skipped for '{repo_name}' (AI disabled, empty repo, or no README).")
+
+
                 if not exemption_applied and should_attempt_ai: 
                     if is_empty_repo:
                         current_logger.info(f"Repository '{repo_name}' is marked as empty. Skipping AI exemption analysis.")
@@ -737,14 +998,6 @@ def process_repository_exemptions(
                             exemption_applied = True
                             current_logger.info(f"Repo '{repo_name}': Exempted via AI analysis ({ai_usage_type}).")
 
-                if not exemption_applied and readme_content:
-                    found_keywords = [kw for kw in SENSITIVE_KEYWORDS if re.search(r'\b' + re.escape(kw) + r'\b', readme_content, re.IGNORECASE)]
-                    if found_keywords:
-                        current_permissions['usageType'] = EXEMPT_BY_LAW
-                        current_permissions['exemptionText'] = f"Flagged: Found keywords in README: [{', '.join(found_keywords)}]"
-                        exemption_applied = True
-                        current_logger.info(f"Repo '{repo_name}': Exempted due to sensitive keywords ({EXEMPT_BY_LAW}): {found_keywords}.")
-                
                 if not exemption_applied: 
                     if not should_attempt_ai and not is_empty_repo and (DISABLE_SSL_ENV != "true") and not (cfg_obj and cfg_obj.AI_AUTO_DISABLED_SSL_ERROR):
                         current_logger.debug(f"AI was disabled for exemption analysis for '{repo_name}' (config or module status). Applying default usageType.")

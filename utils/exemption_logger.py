@@ -105,7 +105,17 @@ class ExemptionLogger:
                 # Reset file pointer and create DictReader
                 csvfile.seek(0)
                 reader = csv.DictReader(csvfile)
-                # Fieldnames are now confirmed correct by the check above
+
+                # CRITICAL FIX: Check if DictReader successfully found fieldnames
+                if not reader.fieldnames:
+                    logger.error(
+                        f"csv.DictReader could not determine fieldnames from '{self.log_file_path}'. "
+                        "The file might be empty after the header or improperly formatted. "
+                        "No existing exemptions will be loaded."
+                    )
+                    self.logged_exemptions_by_private_id.clear() # Ensure it's empty
+                    return # Exit early if no fieldnames
+                # Fieldnames are now confirmed by DictReader as well.
 
                 count = 0
                 for row_num, row in enumerate(reader, start=2): # Start count from 2 (after header)

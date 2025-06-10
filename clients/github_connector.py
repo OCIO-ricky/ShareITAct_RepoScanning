@@ -25,6 +25,7 @@ from github import Github, GithubException, UnknownObjectException, RateLimitExc
 
 # Import the new GraphQL client
 from .graphql_clients import github_gql
+from . import CriticalConnectorError # Import the new custom exception
 
 # ANSI escape codes for coloring output
 ANSI_YELLOW = "\x1b[33;1m"
@@ -362,13 +363,25 @@ def _process_single_github_repository(
         current_logger.info(f"END _process_single_github_repository for {repo_full_name_logging} (Success)")
         return repo_data
 
-    except RateLimitExceededException as rle_repo: 
+    except RateLimitExceededException as rle_repo:
         current_logger.error(f"GitHub API (PyGithub context) rate limit exceeded processing repo {repo_full_name_logging}. Details: {rle_repo}")
         repo_data["processing_error"] = f"GitHub API Rate Limit Error: {rle_repo}"
-    except github_gql.TransportQueryError as gql_err: 
+    except github_gql.TransportQueryError as gql_err: # This is from the GQL client call
         current_logger.error(f"GraphQL query error for {repo_full_name_logging}: {gql_err.errors}")
-        if "processing_error" not in repo_data: 
-            repo_data["processing_error"] = f"GraphQL Query Error: {gql_err.errors}"
+        is_schema_error = False
+        if gql_err.errors and isinstance(gql_err.errors, list):
+            for error_detail in gql_err.errors:
+                if isinstance(error_detail, dict) and error_detail.get('extensions', {}).get('code') == 'undefinedField':
+                    is_schema_error = True
+                    break
+        if is_schema_error:
+            critical_msg = f"CRITICAL GQL SCHEMA ERROR for {repo_full_name_logging}: {gql_err.errors}. This likely affects all repos for this target using this query."
+            current_logger.critical(f"{ANSI_RED}{critical_msg}{ANSI_RESET}")
+            raise CriticalConnectorError(critical_msg) from gql_err # Propagate as critical
+        else:
+            # Non-critical GQL error, treat as per-repo processing error
+            if "processing_error" not in repo_data:
+                repo_data["processing_error"] = f"GraphQL Query Error: {gql_err.errors}"
     except GithubException as gh_err_repo: 
         current_logger.error(f"GitHub API (PyGithub context) error processing repo {repo_full_name_logging}: {gh_err_repo.status} {getattr(gh_err_repo, 'data', str(gh_err_repo))}.", exc_info=False)
         repo_data["processing_error"] = f"GitHub API Error: {gh_err_repo.status}"
@@ -729,6 +742,8 @@ def fetch_repositories(
     github_cache_config = PLATFORM_CACHE_CONFIG["github"]
     processed_repo_list: List[Dict[str, Any]] = []
     repo_count_for_org_processed_or_submitted = 0
+    abort_target_processing_flag = False
+    critical_error_encountered_in_target: Optional[CriticalConnectorError] = None
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_repo_name = {}
@@ -739,6 +754,10 @@ def fetch_repositories(
                         current_logger.info(f"Global debug limit ({debug_limit}) reached. Stopping submissions for {org_name}.")
                         break
                     processed_counter[0] += 1
+                
+                if abort_target_processing_flag:
+                    current_logger.warning(f"Aborting further submissions for {org_name} due to a critical error in a previous worker.")
+                    break
                 
                 repo_stub_obj = enriched_repo["repo_stub_obj"]
                 repo_name_for_log = enriched_repo["repo_name_for_log"]
@@ -790,8 +809,20 @@ def fetch_repositories(
                 if repo_data_result and repo_data_result.get("processing_status") != "skipped_fork":
                     processed_repo_list.append(repo_data_result)
             except Exception as exc:
-                current_logger.error(f"Repo {repo_name_for_log} generated an exception: {exc}", exc_info=True)
-                processed_repo_list.append({"name": repo_name_for_log.split('/')[-1], "organization": org_name, "processing_error": f"Thread execution failed: {exc}"})
+                if isinstance(exc, CriticalConnectorError):
+                    current_logger.critical(f"{ANSI_RED}CRITICAL ERROR processing {repo_name_for_log} (target: {org_name}): {exc}. Signaling to abort this target.{ANSI_RESET}")
+                    abort_target_processing_flag = True
+                    critical_error_encountered_in_target = exc # Store the first critical error
+                    processed_repo_list.append({"name": repo_name_for_log.split('/')[-1],
+                                                "organization": org_name,
+                                                "processing_error": f"Critical Target Error: {exc}"})
+                else:
+                    current_logger.error(f"Repo {repo_name_for_log} generated an exception: {exc}", exc_info=True)
+                    processed_repo_list.append({"name": repo_name_for_log.split('/')[-1], "organization": org_name, "processing_error": f"Thread execution failed: {exc}"})
+
+    if critical_error_encountered_in_target:
+        current_logger.error(f"Re-raising critical error for target {org_name} to halt its processing in the orchestrator.")
+        raise critical_error_encountered_in_target
 
     current_logger.info(f"Finished processing for {repo_count_for_org_processed_or_submitted} repos from GitHub org: {org_name}. Collected {len(processed_repo_list)} results.")
     return processed_repo_list

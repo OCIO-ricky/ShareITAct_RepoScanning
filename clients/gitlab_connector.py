@@ -605,7 +605,11 @@ def fetch_repositories(
     else:
         # Fallback if global delay not provided (less optimal)
         current_logger.warning(f"Global inter-submission delay not provided for GitLab group '{group_path}'. Calculating locally (less optimal).")
-        current_rate_limit_status = get_gitlab_rate_limit_status(gl_for_listing, current_logger)
+        # When calling for local calculation, explicitly set is_graphql_context=True
+        current_rate_limit_status = get_gitlab_rate_limit_status(
+            gl_client=gl_for_listing, 
+            logger_instance=current_logger, 
+            is_graphql_context=True)
         if not current_rate_limit_status:
             current_logger.error(f"Could not determine current rate limit for '{group_path}'. Aborting target.")
             return []

@@ -41,15 +41,17 @@ except ImportError as e:
 
 # Import utils - Ensure these files exist and are importable
 try:
-    from utils import Config, ExemptionLogger, RepoIdMappingManager
+    from utils import Config, ExemptionLogger, RepoIdMappingManager # Assuming CriticalConnectorError is not in utils
     from utils.script_utils import ( # Keep this line
         setup_target_logger,
         write_json_file, backup_existing_file,
         parse_semver, infer_version, infer_status,
-        process_and_finalize_repo_data_list, # Removed backup_and_clear_log_file
+        process_and_finalize_repo_data_list,
+        _cleanup_final_repo_data as util_cleanup_final_repo_data, # Import for direct use
         get_targets_from_cli_or_env, parse_azure_targets_from_string_list,
         format_duration
     )
+    from clients import CriticalConnectorError # Import the custom exception
     from utils.caching import load_previous_scan_data # Added import for cache loading
 except ImportError as e:
     # This print is fine for critical startup errors
@@ -263,6 +265,11 @@ def _orchestrate_platform_scan(
                 graphql_endpoint_url_for_workers=common_gql_endpoint_for_workers if platform_name == "github" else None
             )
             if not success_for_target:
+                # Check if the failure was due to a CriticalConnectorError, which would have been logged already.
+                # The 'success_for_target' being False after a CriticalConnectorError is the signal.
+                main_logger.critical(
+                    f"{ANSI_RED}Critical error processing target '{target_id}' for platform '{platform_name}'. Aborting further scans for this platform.{ANSI_RESET}"
+                )
                 overall_platform_success = False
                 main_logger.warning(f"Processing marked as unsuccessful for {platform_name} target: {target_id}. Check logs for details.")
         except Exception as e_target_processing:
@@ -449,10 +456,12 @@ def scan_and_process_single_target(
             [repo for repo in fetched_repos if repo is not None and not repo.get("processing_error")],
             cfg, repo_id_mapping_mgr, exemption_mgr, target_logger, platform # Pass platform
         )
-        errored_repos = [repo for repo in fetched_repos if repo and repo.get("processing_error")]
-        if errored_repos:
-            intermediate_data.extend(errored_repos)
-
+        # Removed the block that adds back errored_repos to intermediate_data
+        # errored_repos = [repo for repo in fetched_repos if repo and repo.get("processing_error")]
+        # if errored_repos:
+        #     connector_logger_adapter.info(f"Note: {len(errored_repos)} repositories encountered processing errors and will be logged but not added to the intermediate file for {target_identifier}.")
+        #     # intermediate_data.extend(errored_repos) # This line is now removed/commented out
+        
 
     intermediate_filename = f"intermediate_{platform}_{target_identifier.replace('/', '_').replace('.', '_')}.json"
     intermediate_filepath = os.path.join(cfg.OUTPUT_DIR, intermediate_filename)
@@ -509,7 +518,12 @@ def _prepare_project_for_final_catalog(
     # Cleanup internal/temporary fields
     for key_to_pop in ['_private_contact_emails', '_is_empty_repo', 'lastCommitSHA', 'repo_id']:
         updated_project_data.pop(key_to_pop, None)
-    return updated_project_data
+    
+    # Call the comprehensive cleanup utility from script_utils.py
+    # This will handle _source_platform, _source_org, and general None value cleaning.
+    cleaned_data_for_final_catalog = util_cleanup_final_repo_data(updated_project_data)
+    
+    return cleaned_data_for_final_catalog
 
 def merge_intermediate_catalogs(cfg: Config, main_logger: logging.Logger) -> bool:
     """

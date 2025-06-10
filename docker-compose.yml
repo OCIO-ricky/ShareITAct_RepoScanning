@@ -30,6 +30,7 @@ services:
  
   scan-gitlab:
     image: cdc-repo-scanner:latest
+  #  build: . 
     depends_on: [scan-github] 
     container_name: scanner-gitlab-instance
     environment:

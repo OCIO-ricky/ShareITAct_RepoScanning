@@ -54,9 +54,13 @@ def setup_global_logging(log_level_str="INFO", log_file="logs/generate_codejson_
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
     except Exception as e:
-        logging.error(f"Failed to set up file handler for {log_file}: {e}", exc_info=True)
+        # Use root_logger here as well, or print, if logger itself is failing.
+        # Using print for this specific bootstrap error might be safer.
+        print(f"ERROR: Failed to set up file handler for {log_file}: {e}")
 
+    # Set httpx and httpcore log levels to WARNING to reduce verbosity
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     # Use the root logger for this initial message
     logging.getLogger().info("Global logging configured with contextual formatter.")
-
