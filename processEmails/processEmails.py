@@ -7,20 +7,15 @@
 # $> python process_email_requests.py
 #
 # Test thoroughly in a development environment.
-#
 import os
 import csv
 import re
-import smtplib
 import logging
-import time
-from datetime import datetime # Keep for email_utils.formatdate if used elsewhere, but not directly for auth
+import sys
 from dotenv import load_dotenv
-from imap_tools import MailBox, AND, MailMessageFlags # MailBoxAuthType no longer needed for basic auth
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders, utils as email_utils
+from O365 import Account, MSGraphProtocol
+from O365.message import Message as O365Message # For type hinting
+from O365.mailbox import MailBox as O365Mailbox # For type hinting
 
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -40,24 +35,21 @@ def get_env_var(var_name, is_required=True, default=None):
     return value if value else default
 
 try:
-    # IMAP Settings
-    OUTLOOK_IMAP_SERVER = get_env_var("OUTLOOK_IMAP_SERVER")
-    OUTLOOK_IMAP_PORT = int(get_env_var("OUTLOOK_IMAP_PORT", default="993"))
-    OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS = get_env_var("OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS") # For authentication
-    OUTLOOK_SERVICE_ACCOUNT_PASSWORD = get_env_var("OUTLOOK_SERVICE_ACCOUNT_PASSWORD") # For authentication
-    TARGET_MAILBOX_EMAIL_TO_SCAN = get_env_var("TARGET_MAILBOX_EMAIL_TO_SCAN", is_required=False, default="").strip() # Mailbox to actually scan
+    # Mailbox to Scan (Required)
+    # This is the email address of the mailbox (e.g., shared mailbox) the application will process.
+    TARGET_MAILBOX_EMAIL_TO_SCAN = get_env_var("TARGET_MAILBOX_EMAIL_TO_SCAN", is_required=True).strip()
 
-    # SMTP Settings
-    OUTLOOK_SMTP_SERVER = get_env_var("OUTLOOK_SMTP_SERVER")
-    OUTLOOK_SMTP_PORT = int(get_env_var("OUTLOOK_SMTP_PORT", default="587"))
+    # Graph API Settings (for OAuth Client Credentials Flow)
+    GRAPH_CLIENT_ID = get_env_var("GRAPH_CLIENT_ID")
+    GRAPH_CLIENT_SECRET = get_env_var("GRAPH_CLIENT_SECRET")
+    GRAPH_TENANT_ID = get_env_var("GRAPH_TENANT_ID")
 
     # File and Folder Settings
     PRIVATEID_MAPPINGS_CSV_PATH = get_env_var("PRIVATEID_MAPPINGS_CSV_PATH", default="output/privateid_mappings.csv")
-    IMAP_MAILBOX_TO_CHECK = get_env_var("IMAP_MAILBOX_TO_CHECK", default="INBOX") # Folder name within the target mailbox
-    IMAP_PROCESSED_FOLDER = get_env_var("IMAP_PROCESSED_FOLDER", is_required=False) # Folder name within the target mailbox
-    IMAP_MANUAL_REVIEW_FOLDER = get_env_var("IMAP_MANUAL_REVIEW_FOLDER", is_required=False) # Folder name within the target mailbox
+    MAILBOX_FOLDER_TO_CHECK = get_env_var("MAILBOX_FOLDER_TO_CHECK", default="Inbox") # Folder name within the target mailbox
+    PROCESSED_FOLDER_NAME = get_env_var("PROCESSED_FOLDER_NAME", is_required=False) # Folder name for processed emails
+    MANUAL_REVIEW_FOLDER_NAME = get_env_var("MANUAL_REVIEW_FOLDER_NAME", is_required=False) # Folder name for manual review
     TARGET_SUBJECT = get_env_var("TARGET_SUBJECT", is_required=False, default="").strip()
-
 
 except ValueError as e:
     logger.critical(f"Configuration error: {e}. Exiting.")
@@ -116,80 +108,80 @@ def load_privateid_mappings(csv_path: str) -> dict:
         raise
     return mappings
 
-def forward_email_message(original_msg_obj, to_emails: list, from_email: str, subject_prefix="Fwd: "):
+def forward_email_message_graph(
+    target_o365_mailbox: O365Mailbox,
+    original_o365_msg: O365Message,
+    to_emails: list,
+    subject_prefix="Fwd: "
+):
     """
-    Forwards the original email message object to the specified recipients.
-    original_msg_obj is an email.message.Message object.
+    Forwards the original O365 Message object to specified recipients by creating a new email
+    and attaching the original as a .eml file.
+    The 'from_email' is implicitly the authenticated account (service principal or user).
     """
     if not to_emails:
         logger.warning("No recipient emails provided for forwarding.")
         return False
 
-    forward_msg = MIMEMultipart()
-    forward_msg['From'] = from_email
-    forward_msg['To'] = ", ".join(to_emails)
-    forward_msg['Date'] = email_utils.formatdate(localtime=True)
+    new_forward_msg = target_o365_mailbox.new_message()
+    new_forward_msg.to.add(to_emails)
 
-    original_subject = original_msg_obj.get('subject', "No Subject")
-    forward_msg['Subject'] = f"{subject_prefix}{original_subject}"
+    original_subject = original_o365_msg.subject if original_o365_msg.subject else "No Subject"
+    new_forward_msg.subject = f"{subject_prefix}{original_subject}"
 
     intro_text = (
         f"Hello,\n\nThe following email request regarding '{original_subject}' "
-        f"(received from: {original_msg_obj.get('from', 'Unknown Sender')}) "
+        f"(received from: {original_o365_msg.sender.address if original_o365_msg.sender else 'Unknown Sender'}) "
         "is being forwarded for your attention.\n\n"
         "Regards,\nShareIT Auto-Processor\n\n"
         "--- Original Message Below ---"
     )
-    forward_msg.attach(MIMEText(intro_text, 'plain'))
-
-    # Attach the original email as .eml
-    original_email_bytes = original_msg_obj.as_bytes()
-    eml_attachment = MIMEBase('message', 'rfc822')
-    eml_attachment.set_payload(original_email_bytes)
-    encoders.encode_noop(eml_attachment) # No actual encoding needed for message/rfc822
-    eml_attachment.add_header('Content-Disposition', 'attachment; filename="forwarded_request.eml"')
-    forward_msg.attach(eml_attachment)
+    new_forward_msg.body = intro_text # O365 library handles plain text vs HTML
 
     try:
-        with smtplib.SMTP(OUTLOOK_SMTP_SERVER, OUTLOOK_SMTP_PORT) as server:
-            server.set_debuglevel(0) # Set to 1 for verbose SMTP logs
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            logger.info(f"SMTP: Attempting to login with user {OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS}")
-            # The 'from_email' here is OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS, used for login
-            server.login(OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS, OUTLOOK_SERVICE_ACCOUNT_PASSWORD)
-            logger.info(f"SMTP: Successfully logged in as {OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS}")
+        # Attach the original email as .eml
+        original_mime_content = original_o365_msg.get_mime_content() # bytes
+        if original_mime_content:
+            new_forward_msg.attachments.add_from_bytes(
+                name=b'forwarded_request.eml', # Name must be bytes for add_from_bytes
+                content=original_mime_content,
+                media_type='message/rfc822'
+            )
+        else:
+            logger.warning(f"Could not retrieve MIME content for original email UID {original_o365_msg.object_id}. Forwarding without .eml attachment.")
 
-            server.sendmail(from_email, to_emails, forward_msg.as_string())
-        logger.info(f"Successfully forwarded email (Original Subject: {original_subject}) from {OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS} to: {', '.join(to_emails)}")
-        return True
-    except smtplib.SMTPAuthenticationError:
-        logger.error("SMTP authentication failed. Check service account credentials and SMTP permissions.")
-    except smtplib.SMTPException as e:
-        logger.error(f"SMTP error while forwarding email: {e}")
     except Exception as e:
-        logger.error(f"Unexpected error during email forwarding: {e}")
+        logger.error(f"Error attaching original email as .eml (UID: {original_o365_msg.object_id}): {e}")
+        # Continue to send the wrapper email even if .eml attachment fails
+
+    try:
+        new_forward_msg.send()
+        logger.info(f"Successfully sent forwarded email (Original Subject: {original_subject}) to: {', '.join(to_emails)}")
+        return True
+    except Exception as e:
+        logger.error(f"Microsoft Graph API error while sending forwarded email: {e}")
     return False
 
-def ensure_mailbox_folder_exists(mb_client, folder_full_path):
-    """Checks if a mailbox folder exists, and creates it if not.
-       folder_full_path is the complete path to the folder, e.g., 'shared@example.com\\Processed' or 'Processed'"""
-    if not folder_full_path:
-        return
+def ensure_mailbox_folder_exists_graph(o365_mailbox: O365Mailbox, folder_name: str):
+    """Checks if a mailbox folder exists, and creates it if not. Returns the folder object."""
+    if not folder_name:
+        return None
+    
+    target_folder = o365_mailbox.get_folder(folder_name=folder_name)
+    if target_folder:
+        logger.debug(f"Folder '{folder_name}' already exists in mailbox '{o365_mailbox.main_resource}'.")
+        return target_folder
+    
+    logger.info(f"Folder '{folder_name}' does not exist in mailbox '{o365_mailbox.main_resource}'. Attempting to create it.")
     try:
-        if not mb_client.folder.exists(folder_full_path):
-            logger.info(f"Folder '{folder_full_path}' does not exist. Attempting to create it.")
-            mb_client.folder.create(folder_full_path)
-            logger.info(f"Successfully created folder '{folder_full_path}'.")
-        else:
-            logger.debug(f"Folder '{folder_full_path}' already exists.")
+        # Creates a new folder under the root of the mailbox.
+        # If you need subfolders like "Parent/Child", you'd get "Parent" then create "Child" in it.
+        created_folder = o365_mailbox.create_child_folder(folder_name)
+        logger.info(f"Successfully created folder '{folder_name}' in mailbox '{o365_mailbox.main_resource}'.")
+        return created_folder
     except Exception as e:
-        # Log the specific folder path that caused the error
-        logger.error(f"Could not create or verify folder '{folder_full_path}': {e}")
-        # Optionally, re-raise if this is critical, or handle gracefully
-        # raise
-
+        logger.error(f"Could not create or verify folder '{folder_name}' in mailbox '{o365_mailbox.main_resource}': {e}")
+        raise # Re-raise if folder creation is critical
 
 # --- Main Processing Logic ---
 def process_mailbox():
@@ -197,24 +189,51 @@ def process_mailbox():
 
     # --- Initial Login Check ---
     try:
-        logger.info(f"Attempting initial IMAP login to {OUTLOOK_IMAP_SERVER} as {OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS} to verify credentials...")
-        with MailBox(OUTLOOK_IMAP_SERVER, port=OUTLOOK_IMAP_PORT) as test_mailbox:
-            test_mailbox.login(OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS, OUTLOOK_SERVICE_ACCOUNT_PASSWORD, initial_folder="INBOX")
-        logger.info("Initial IMAP login successful. Credentials verified.")
-    except Exception as e: # Catches MailboxLoginError and other connection issues
-        logger.critical(f"Initial IMAP login failed: {e}. Please check credentials and server settings. Exiting.")
-        return # Exit the function if login fails
+        logger.info(f"Attempting to authenticate with Microsoft Graph API using Client ID: {GRAPH_CLIENT_ID} and Tenant ID: {GRAPH_TENANT_ID}")
+        credentials = (GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET)
+        protocol = MSGraphProtocol(api_version='v1.0', tenant_id=GRAPH_TENANT_ID) # Added tenant_id here
+
+        # TARGET_MAILBOX_EMAIL_TO_SCAN is now required, so it will be used as the account_resource.
+        # This is the UPN the application will primarily interact with or authenticate in the context of.
+        account_resource = TARGET_MAILBOX_EMAIL_TO_SCAN
+        
+        account = Account(credentials, auth_flow_type='credentials', tenant_id=GRAPH_TENANT_ID, protocol=protocol, main_resource=account_resource)
+
+        if not account.authenticate(scope=['https://graph.microsoft.com/.default']):
+            # This path is taken if MSAL client setup was okay, but token acquisition failed for other reasons
+            logger.critical("Microsoft Graph API authentication failed (token acquisition problem). "
+                            "Check App Registration permissions, client secret validity, or network issues. Exiting.")
+            return False # Signal failure
+        logger.info("Successfully authenticated with Microsoft Graph API.")
+
+    except ValueError as ve: # Catches MSAL config ValueErrors like invalid tenant
+        error_message_lower = str(ve).lower()
+        if "aadsts90002" in error_message_lower or \
+           "invalid_tenant" in error_message_lower or \
+           "unable to get authority configuration" in error_message_lower:
+            logger.critical(
+                f"Microsoft Graph API authentication failed: Likely an invalid Tenant ID ('{GRAPH_TENANT_ID}') or misconfiguration. "
+                f"Please verify 'GRAPH_CLIENT_ID', 'GRAPH_CLIENT_SECRET', and especially 'GRAPH_TENANT_ID' in your .env file. "
+                f"Ensure the tenant exists and the application is registered correctly. Original error: {ve}",
+                # exc_info=True # Removed to suppress traceback for this specific error
+            )
+        else:
+            # Other ValueErrors during auth setup
+            logger.critical(f"Microsoft Graph API authentication setup failed due to a configuration or value error: {ve}. Exiting.", exc_info=True)
+        return False # Signal failure
+    except Exception as e:
+        logger.critical(f"An unexpected error occurred during Microsoft Graph API authentication setup: {e}. Exiting.", exc_info=True)
+        return False # Signal failure
 
     try:
         # --- Load Mappings (only if login was successful) ---
         privateid_mappings = load_privateid_mappings(PRIVATEID_MAPPINGS_CSV_PATH)
     except Exception:
         logger.critical("Failed to load private ID mappings. Cannot proceed.")
-        return
+        return False # Signal failure
 
     if not privateid_mappings:
         logger.warning("No private ID mappings loaded. No emails will be processed for forwarding.")
-        # Still proceed to check emails to move them to manual review if configured
         # return # Uncomment this if you want to exit if no mappings are found
 
     processed_count = 0
@@ -245,136 +264,128 @@ def process_mailbox():
             logger.info(f"Compiled general PrivateID search regex for {len(sorted_pid_keys)} IDs.")
 
     try:
-        # Determine the base path for mailbox operations
-        # For Exchange/Outlook 365, paths to shared mailbox folders are often like "sharedmailbox@domain.com\FolderName"
-        # The backslash is important for Exchange. imap-tools handles this.
-        mailbox_prefix = ""
-        effective_mailbox_target = OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS # Default to service account's own mailbox
-        if TARGET_MAILBOX_EMAIL_TO_SCAN:
-            mailbox_prefix = f"{TARGET_MAILBOX_EMAIL_TO_SCAN}\\" # Note: imap-tools might use / or auto-detect
-            effective_mailbox_target = TARGET_MAILBOX_EMAIL_TO_SCAN
-            logger.info(f"Targeting shared/specific mailbox: {TARGET_MAILBOX_EMAIL_TO_SCAN}")
-        else:
-            logger.info(f"Targeting service account's own mailbox: {OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS}")
+        # TARGET_MAILBOX_EMAIL_TO_SCAN is now guaranteed by the initial check.
+        effective_mailbox_target = TARGET_MAILBOX_EMAIL_TO_SCAN
+        logger.info(f"Targeting mailbox: {effective_mailbox_target}")
 
-        # Construct full paths for mailbox folders
-        # IMAP_MAILBOX_TO_CHECK is relative to the target mailbox context
-        folder_to_scan_full_path = f"{mailbox_prefix}{IMAP_MAILBOX_TO_CHECK}"
+        target_o365_mailbox = account.mailbox(resource=effective_mailbox_target)
+        if not target_o365_mailbox:
+            logger.error(f"Could not access mailbox for {effective_mailbox_target}. Check permissions. Exiting.")
+            return False # Signal failure
+        logger.info(f"Successfully connected to mailbox: {effective_mailbox_target}")
 
-        processed_folder_full_path = None
-        if IMAP_PROCESSED_FOLDER:
-            processed_folder_full_path = f"{mailbox_prefix}{IMAP_PROCESSED_FOLDER}"
+        folder_to_scan = target_o365_mailbox.get_folder(folder_name=MAILBOX_FOLDER_TO_CHECK)
+        if not folder_to_scan:
+            logger.error(f"Folder '{MAILBOX_FOLDER_TO_CHECK}' not found in mailbox '{effective_mailbox_target}'. Exiting.")
+            return False # Signal failure
+        logger.info(f"Scanning folder: '{folder_to_scan.name}' (ID: {folder_to_scan.folder_id})")
 
-        manual_review_folder_full_path = None
-        if IMAP_MANUAL_REVIEW_FOLDER:
-            manual_review_folder_full_path = f"{mailbox_prefix}{IMAP_MANUAL_REVIEW_FOLDER}"
+        processed_o365_folder = None
+        if PROCESSED_FOLDER_NAME:
+            processed_o365_folder = ensure_mailbox_folder_exists_graph(target_o365_mailbox, PROCESSED_FOLDER_NAME)
+            if not processed_o365_folder: logger.warning(f"Could not ensure 'Processed' folder '{PROCESSED_FOLDER_NAME}' exists. Emails will not be moved there.")
 
+        manual_review_o365_folder = None
+        if MANUAL_REVIEW_FOLDER_NAME:
+            manual_review_o365_folder = ensure_mailbox_folder_exists_graph(target_o365_mailbox, MANUAL_REVIEW_FOLDER_NAME)
+            if not manual_review_o365_folder: logger.warning(f"Could not ensure 'Manual Review' folder '{MANUAL_REVIEW_FOLDER_NAME}' exists. Emails will not be moved there.")
 
-        with MailBox(OUTLOOK_IMAP_SERVER, port=OUTLOOK_IMAP_PORT) as mailbox:
-            logger.info(f"IMAP: Attempting to login as {OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS} to server {OUTLOOK_IMAP_SERVER}")
-            # Login to the service account's own context first.
-            # The initial_folder here refers to a folder in the service account's own mailbox.
-            # It's often fine to use the default or the service account's INBOX.
-            mailbox.login(OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS, OUTLOOK_SERVICE_ACCOUNT_PASSWORD, initial_folder="INBOX")
-            logger.info(f"Successfully authenticated as {OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS}.")
+        # Fetch unread emails
+        # O365 query: field_name__operator=value (e.g., is_read=False)
+        unread_query = folder_to_scan.new_query().on_attribute('isRead').equals(False)
+        logger.info(f"Fetching unread emails from '{folder_to_scan.name}'...")
 
-            logger.info(f"Setting current folder to: '{folder_to_scan_full_path}' for mailbox {effective_mailbox_target}")
-            try:
-                mailbox.folder.set(folder_to_scan_full_path)
-                logger.info(f"Successfully set folder to '{mailbox.folder.get()}'.")
-            except Exception as e:
-                logger.error(f"Failed to set IMAP folder to '{folder_to_scan_full_path}': {e}. Check folder name and permissions for {OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS} on {effective_mailbox_target}.")
-                return # Cannot proceed if folder cannot be set
+        emails_to_process = list(folder_to_scan.get_messages(limit=None, query=unread_query)) # Get all matching
+        logger.info(f"Found {len(emails_to_process)} unread email(s) in '{folder_to_scan.name}'.")
 
-            if processed_folder_full_path: ensure_mailbox_folder_exists(mailbox, processed_folder_full_path)
-            if manual_review_folder_full_path: ensure_mailbox_folder_exists(mailbox, manual_review_folder_full_path)
+        if not emails_to_process:
+            logger.info("No new emails to process.")
+            return True # Successful run, just no emails to process
 
-            fetch_criteria = AND(seen=False)
-            logger.info(f"Fetching emails from '{mailbox.folder.get()}' with criteria: {fetch_criteria}")
+        for msg_obj in emails_to_process: # msg_obj is an O365.Message object
+            msg_subject = msg_obj.subject or ""
+            msg_sender = msg_obj.sender.address if msg_obj.sender else "Unknown Sender"
+            msg_date = msg_obj.received.strftime('%Y-%m-%d %H:%M:%S %Z') if msg_obj.received else "Unknown Date"
+            msg_id = msg_obj.object_id # Graph Message ID
 
-            emails_to_process = list(mailbox.fetch(criteria=fetch_criteria, mark_seen=False, bulk=True))
-            logger.info(f"Found {len(emails_to_process)} email(s) matching criteria in '{mailbox.folder.get()}'.")
+            logger.info(f"Processing email ID {msg_id} - Subject: '{msg_subject}' From: '{msg_sender}' Date: '{msg_date}'")
+            processed_count += 1
+            action_taken = False # Flag to track if email was moved or attempted to be forwarded
+            matched_privateid = None
 
-            if not emails_to_process:
-                logger.info("No new emails to process.")
-                return
-
-            for msg in emails_to_process:
-                logger.info(f"Processing email UID {msg.uid} - Subject: '{msg.subject}' From: '{msg.from_}' Date: '{msg.date_str}'")
-                processed_count += 1
-                action_taken = False # Flag to track if email was moved or attempted to be forwarded
-                matched_privateid = None
-                email_subject = msg.subject or ""
-
-                if target_subject_regex:
-                    match = target_subject_regex.search(email_subject)
-                    if match:
-                        potential_pid = match.group(1) # The captured group for [privateid]
-                        if potential_pid in privateid_mappings:
-                            matched_privateid = potential_pid
-                            logger.info(f"Extracted privateid '{matched_privateid}' from subject using TARGET_SUBJECT pattern.")
-                        else:
-                            logger.warning(f"Subject matched TARGET_SUBJECT pattern, but extracted ID '{potential_pid}' not in mappings. Email UID: {msg.uid}, Subject: '{email_subject}'")
+            if target_subject_regex:
+                match = target_subject_regex.search(msg_subject)
+                if match:
+                    potential_pid = match.group(1) # The captured group for [privateid]
+                    if potential_pid in privateid_mappings:
+                        matched_privateid = potential_pid
+                        logger.info(f"Extracted privateid '{matched_privateid}' from subject using TARGET_SUBJECT pattern.")
                     else:
-                        logger.info(f"Email subject '{email_subject}' did not match TARGET_SUBJECT pattern. Email UID: {msg.uid}")
-                
-                # If no match from TARGET_SUBJECT or TARGET_SUBJECT is not set, try general search
-                if not matched_privateid and general_search_pid_regex: # Check if regex was compiled
-                    match_obj = general_search_pid_regex.search(email_subject)
-                    if match_obj:
-                        matched_privateid = match_obj.group(0) # The matched PID itself
-                        logger.info(f"Found matching privateid '{matched_privateid}' in subject using general search regex.")
+                        logger.warning(f"Subject matched TARGET_SUBJECT pattern, but extracted ID '{potential_pid}' not in mappings. Email ID: {msg_id}, Subject: '{msg_subject}'")
+                else:
+                    logger.info(f"Email subject '{msg_subject}' did not match TARGET_SUBJECT pattern. Email ID: {msg_id}")
+            
+            # If no match from TARGET_SUBJECT or TARGET_SUBJECT is not set, try general search
+            if not matched_privateid and general_search_pid_regex: # Check if regex was compiled
+                regex_match_obj = general_search_pid_regex.search(msg_subject)
+                if regex_match_obj:
+                    matched_privateid = regex_match_obj.group(0) # The matched PID itself
+                    logger.info(f"Found matching privateid '{matched_privateid}' in subject using general search regex.")
 
-                if matched_privateid and privateid_mappings.get(matched_privateid): # Ensure PID exists and has contacts
-                    contact_emails = privateid_mappings.get(matched_privateid, [])
-                    if contact_emails: # This check is somewhat redundant due to the outer if, but safe
-                        logger.info(f"Contact emails for '{matched_privateid}': {contact_emails}")
-                        if forward_email_message(msg.obj, contact_emails, OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS):
-                            forwarded_count += 1
-                            action_taken = True
-                            mailbox.flag(msg.uid, [MailMessageFlags.SEEN], True)
-                            if processed_folder_full_path:
-                                logger.info(f"Moving email UID {msg.uid} to '{processed_folder_full_path}'.")
-                                mailbox.move(msg.uid, processed_folder_full_path)
-                        else:
-                            logger.error(f"Failed to forward email for privateid '{matched_privateid}'. Email UID: {msg.uid}")
-                            if manual_review_folder_full_path:
-                                mailbox.flag(msg.uid, [MailMessageFlags.SEEN], True) # Mark seen before moving
-                                mailbox.move(msg.uid, manual_review_folder_full_path)
-                                manual_review_count += 1
-                                action_taken = True # Action was taken (attempted move)
-                    else: # Should not be reached if outer if is `privateid_mappings.get(matched_privateid)`
-                        logger.warning(f"No contact emails configured for privateid '{matched_privateid}' (this should be rare if mappings loaded). Email UID: {msg.uid}")
-                        if manual_review_folder_full_path:
-                             mailbox.flag(msg.uid, [MailMessageFlags.SEEN], True)
-                             mailbox.move(msg.uid, manual_review_folder_full_path)
-                             manual_review_count += 1
-                             action_taken = True
-                else: # No valid PrivateID found or no contacts for it
-                    if not target_subject_regex or (target_subject_regex and not target_subject_regex.search(email_subject)):
-                        if not target_subject_regex and email_subject: # Log only if not using strict pattern or if strict pattern didn't match
-                             logger.info(f"No known or extractable privateid found in subject of email UID {msg.uid} ('{email_subject}').")
-                        elif not email_subject:
-                             logger.info(f"Email UID {msg.uid} has no subject.")
-
-                    if manual_review_folder_full_path:
-                        mailbox.flag(msg.uid, [MailMessageFlags.SEEN], True)
-                        mailbox.move(msg.uid, manual_review_folder_full_path)
-                        manual_review_count += 1
+            if matched_privateid and privateid_mappings.get(matched_privateid): # Ensure PID exists and has contacts
+                contact_emails = privateid_mappings.get(matched_privateid, [])
+                if contact_emails: # This check is somewhat redundant due to the outer if, but safe
+                    logger.info(f"Contact emails for '{matched_privateid}': {contact_emails}")
+                    if forward_email_message_graph(target_o365_mailbox, msg_obj, contact_emails):
+                        forwarded_count += 1
                         action_taken = True
+                        msg_obj.mark_as_read() # Mark as read
+                        if processed_o365_folder:
+                            logger.info(f"Moving email ID {msg_id} to '{processed_o365_folder.name}'.")
+                            msg_obj.move(processed_o365_folder)
+                    else:
+                        logger.error(f"Failed to forward email for privateid '{matched_privateid}'. Email ID: {msg_id}")
+                        if manual_review_o365_folder:
+                            msg_obj.mark_as_read()
+                            msg_obj.move(manual_review_o365_folder)
+                            manual_review_count += 1
+                            action_taken = True # Action was taken (attempted move)
+                else: # Should not be reached if outer if is `privateid_mappings.get(matched_privateid)`
+                    logger.warning(f"No contact emails configured for privateid '{matched_privateid}' (this should be rare if mappings loaded). Email ID: {msg_id}")
+                    if manual_review_o365_folder:
+                            msg_obj.mark_as_read()
+                            msg_obj.move(manual_review_o365_folder)
+                            manual_review_count += 1
+                            action_taken = True
+            else: # No valid PrivateID found or no contacts for it
+                if not target_subject_regex or (target_subject_regex and not target_subject_regex.search(msg_subject)):
+                    if not target_subject_regex and msg_subject: # Log only if not using strict pattern or if strict pattern didn't match
+                            logger.info(f"No known or extractable privateid found in subject of email ID {msg_id} ('{msg_subject}').")
+                    elif not msg_subject:
+                            logger.info(f"Email ID {msg_id} has no subject.")
 
-                if not action_taken: # If no move or forward attempt happened, just mark as seen
-                    mailbox.flag(msg.uid, [MailMessageFlags.SEEN], True)
-                    logger.debug(f"Marked email UID {msg.uid} as SEEN (no other specific action taken).")
+                if manual_review_o365_folder:
+                    msg_obj.mark_as_read()
+                    msg_obj.move(manual_review_o365_folder)
+                    manual_review_count += 1
+                    action_taken = True
+
+            if not action_taken: # If no move or forward attempt happened, just mark as seen
+                try:
+                    msg_obj.mark_as_read()
+                    logger.debug(f"Marked email ID {msg_id} as SEEN (no other specific action taken).")
+                except Exception as e_mark_read:
+                    logger.error(f"Failed to mark email ID {msg_id} as read: {e_mark_read}")
 
     except ConnectionRefusedError:
-        logger.error(f"IMAP connection refused. Check server details ({OUTLOOK_IMAP_SERVER}:{OUTLOOK_IMAP_PORT}) and network.")
-    except smtplib.SMTPAuthenticationError: # This might be better caught in forward_email_message
-        logger.error("SMTP authentication failed. This is unexpected here, check forward_email_message.")
+        # This specific error is less likely with Graph API (HTTP-based)
+        logger.error(f"Connection refused. This is unusual for Graph API. Check network connectivity and Graph API endpoints.")
     except Exception as e:
         logger.critical(f"An error occurred during mailbox processing: {e}", exc_info=True)
+        return False # Signal failure
     finally:
         logger.info(f"Email processing finished. Total emails checked: {processed_count}, Forwarded: {forwarded_count}, Moved to manual review: {manual_review_count}")
-
+    return True # Signal success if we reach here
 if __name__ == "__main__":
-    process_mailbox()
+    if not process_mailbox():
+        sys.exit(1)
