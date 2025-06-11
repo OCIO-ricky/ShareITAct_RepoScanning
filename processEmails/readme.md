@@ -17,7 +17,32 @@ This Python script automates the processing of emails from an Outlook 365 mailbo
 *   Configurable through an `.env` file.
 
 ## Prerequisites
+1.  **Python 3.x**: Ensure Python is installed on the system where the script will run.
+2.  **Azure App Registration**:
+   *   An Azure Active Directory (Azure AD) App Registration is required for the script to authenticate with Microsoft Graph API.
+   *   Your IT support/Azure administrator needs to create this App Registration.
+   *   The App Registration must be granted the following **Application Permissions** for Microsoft Graph API:
+       *   `Mail.ReadWrite`: To read, move, and mark emails as read in the target mailbox.
+       *   `Mail.Send`: To send emails (for forwarding).
+   *   **Admin consent** will likely be required for these permissions.
+   *   It is highly recommended to scope the `Mail.ReadWrite` permission to *only* the specific mailbox the application needs to access (e.g., `shareit@cdc.gov`) using an Application Access Policy in Exchange Online.
+3.  **Required Information from IT HelpDesk**:
+    *   `Client ID` (Application ID) of the Azure App Registration.
+    *   `Client Secret` (Application Password) generated for the App Registration.
+    *   `Tenant ID` (Directory ID) of your Azure AD instance.
+    *   **Example IT Helpdesk Request:**
+        ```
+        Subject: Azure App Registration for Email Processing Script (shareit@cdc.gov)
 
+        Hi Team,
+
+        Could you please create an Azure App Registration for a Python script that needs to process emails in the 'shareit@cdc.gov' mailbox?
+        The script will use the Microsoft Graph API with Client Credentials Flow. We will require the following Application Permissions: Mail.ReadWrite and Mail.Send. Please also scope Mail.ReadWrite to only the 'shareit@cdc.gov' mailbox if possible.
+
+        Once created, please provide the Client ID, Client Secret, and Tenant ID for this App Registration.
+        ```
+
+## Setup
 1.  **Python 3.7+**
 2.  **Required Python Libraries**: Install them using the `requirements.txt` file:
     ```bash
@@ -34,71 +59,33 @@ This Python script automates the processing of emails from an Outlook 365 mailbo
     *   **Format**:
         ```csv
         PrivateID,RepositoryName,RepositoryURL,Organization,ContactEmails,DateAdded
-        github_12345,my-repo,https://...,CDC,user1@example.com;user2@example.com,2023-01-01T...
-        another_id,other-repo,https://...,Agency,user3@example.com,2023-01-02T...
         ```
         The script primarily uses the `PrivateID` and `ContactEmails` columns. Multiple emails in `ContactEmails` should be semicolon-separated.
 
 ## Configuration
 
-The script is configured using an `.env` file in the same directory as the script. Create a `.env` file by copying the `.env.template` and filling in your specific values.
+   Create a `.env` file in the script's directory by copying `.env.template`.<br>
+   Update the `.env` file with the necessary credentials and configuration:
+```dotenv
+# --- Microsoft Graph API Authentication Settings ---
+GRAPH_CLIENT_ID=    "YOUR_AZURE_APP_CLIENT_ID"
+GRAPH_CLIENT_SECRET="YOUR_AZURE_APP_CLIENT_SECRET_VALUE"
+GRAPH_TENANT_ID=    "YOUR_AZURE_TENANT_ID"
 
-**`.env` file variables:**
+# --- Mailbox Configuration ---
+TARGET_MAILBOX_EMAIL_TO_SCAN="shareit@cdc.gov" 
 
-*   `OUTLOOK_IMAP_SERVER`: IMAP server address (e.g., `outlook.office365.com`).
-*   `OUTLOOK_IMAP_PORT`: IMAP server port (e.g., `993`).
-*   `OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS`: The email address of the service account used for **authentication**.
-*   `OUTLOOK_SERVICE_ACCOUNT_PASSWORD`: The password for the authenticating service account.
-*   `TARGET_MAILBOX_EMAIL_TO_SCAN`: The email address of the mailbox the script will **scan** (e.g., `shareit@cdc.gov`). 
-*   `OUTLOOK_SMTP_SERVER`: SMTP server address (e.g., `smtp.office365.com`).
-*   `OUTLOOK_SMTP_PORT`: SMTP server port (e.g., `587`).
-*   `PRIVATEID_MAPPINGS_CSV_PATH`: Path to the `privateid_mappings.csv` file.
- attempt to create it if it doesn't exist.
-*   `TARGET_SUBJECT` (Optional): A specific subject line pattern to target. Use `[privateid]` as a placeholder for the ID (e.g., `"Request for source code repository: [privateid]"`). If set, only emails matching this subject pattern (and are unread) will be processed for ID extraction. If left blank, the script searches for any known `privateid` in the subject of unread emails.
-
-**Example `.env.template`:**
-```env
-# Outlook IMAP Settings
-OUTLOOK_IMAP_SERVER="outlook.office365.com"
-OUTLOOK_IMAP_PORT="993"
-
-# Credentials for the account that will perform the login
-OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS="your_authenticating_service_account_email@yourdomain.com"
-OUTLOOK_SERVICE_ACCOUNT_PASSWORD="password_for_authenticating_service_account"
-
-# Target mailbox to scan (e.g., a shared mailbox like shareit@cdc.gov).
-# Leave blank to scan the service account's own mailbox.
-# The service account must have delegate/full access permissions to this mailbox if it's different.
-TARGET_MAILBOX_EMAIL_TO_SCAN="email_address_of_mailbox_to_scan@yourdomain.com"
-
-# Outlook SMTP Settings (for forwarding)
-OUTLOOK_SMTP_SERVER="smtp.office365.com"
-OUTLOOK_SMTP_PORT="587"
-
-# CSV File Path
+# --- File and Folder Settings ---
 PRIVATEID_MAPPINGS_CSV_PATH="output/privateid_mappings.csv"
-
-# Mailbox Folders
-IMAP_MAILBOX_TO_CHECK="INBOX"
-IMAP_PROCESSED_FOLDER="ProcessedRequests"
-IMAP_MANUAL_REVIEW_FOLDER="NeedsManualReview"
-
-TARGET_SUBJECT=
+MAILBOX_FOLDER_TO_CHECK="Inbox"
+PROCESSED_FOLDER_NAME="ProcessedRequests" # Optional
+MANUAL_REVIEW_FOLDER_NAME="NeedsManualReview" # Optional
+TARGET_SUBJECT="Request for source code repository: [privateid]" # Optional
 ```
+**Important**:
+*   Replace placeholder values (like `YOUR_AZURE_APP_CLIENT_ID`) with the actual credentials provided by your IT support.
+*   `TARGET_MAILBOX_EMAIL_TO_SCAN` is the email address of the mailbox the script will monitor (e.g., the shared mailbox `shareit@cdc.gov`).
 
-## Setup
-
-1.  **Clone the repository** (if applicable) or place the script (`process_email_requests.py`) in your desired directory.
-2.  **Create `requirements.txt`** in the script's directory with the content mentioned in the Prerequisites section.
-3.  **Install dependencies**:
-    ```bash
-    pip install -r requirements.txt
-    ```
-4.  **Create and configure your `.env` file** based on `.env.template`.
-5.  **Ensure your `privateid_mappings.csv` file** is present at the location specified in `PRIVATEID_MAPPINGS_CSV_PATH` and is correctly formatted.
-6.  **Verify Service Account Access**:
-    *   Ensure the service account (`OUTLOOK_SERVICE_ACCOUNT_EMAIL_ADDRESS`) has IMAP and SMTP access enabled, and that Basic Authentication is permitted.
-    *   If `TARGET_MAILBOX_EMAIL_TO_SCAN` is different from the service account, ensure the service account has "Full Access" (delegate) permissions to the target mailbox. This is typically configured by an Exchange/Microsoft 365 administrator.
 
 ## Running the Script
 
@@ -121,5 +108,3 @@ The script will log its actions to the console.
     *   Ensure the `IMAP_PROCESSED_FOLDER` and `IMAP_MANUAL_REVIEW_FOLDER` exist in the mailbox, or that the service account has permission to create them.
 *   **Error Handling**: The script includes basic error handling and logging. Monitor the logs for any issues.
 *   **Idempotency**: The script marks emails as seen and attempts to move them after processing to prevent reprocessing. If an email is processed but the move fails, it might be picked up again if it remains unread. The folder-moving strategy is key to robust processing.
-
-```
