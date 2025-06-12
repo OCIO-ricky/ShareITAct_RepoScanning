@@ -1,0 +1,16 @@
+venv/
+ENV/
+
+# Logs
+logs/
+*.log
+
+# Local configuration
+.env
+*.env
+.env.local
+.env.*.local
+*.csv
+# O365 token cache file
+o365_token.txt
+o365_token.json
