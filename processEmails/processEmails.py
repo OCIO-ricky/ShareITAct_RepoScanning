@@ -212,8 +212,6 @@ def ensure_mailbox_folder_exists_graph(o365_mailbox: O365Mailbox, folder_name: s
 
 def authenticate_graph_api():
     """Authenticates with Microsoft Graph API and handles secret renewal if configured."""
-    global GRAPH_CLIENT_SECRET # Moved to the top of the function
-
     # --- Initial Authentication Attempt ---
     try:
         account = None # Initialize account
