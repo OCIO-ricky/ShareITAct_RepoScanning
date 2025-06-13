@@ -167,10 +167,6 @@ def forward_email_message_graph(
         "--- Original Message Below ---"
     )
 
-    # Skip O365 library for now and go straight to manual Graph API
-    # The O365 library seems to have issues with the attachment format
-    logger.info("Using manual Graph API call for email forwarding...")
-
     # Manual Graph API call
     try:
         # Use the global credentials directly instead of trying to extract from O365 connection
@@ -509,7 +505,8 @@ def process_mailbox():
                     forwarded_count += 1
                     msg_obj.mark_as_read()
                     if processed_o365_folder:
-                        logger.info(f"Moving successfully forwarded email ID {msg_id} to '{processed_o365_folder.name}'.")
+                        logger.info(f"Moving successfully forwarded email to '{processed_o365_folder.name}'.")
+#                        logger.info(f"Moving successfully forwarded email ID {msg_id} to '{processed_o365_folder.name}'.")
                         msg_obj.move(processed_o365_folder)
                     # Email successfully processed and handled.
                 else:
@@ -521,18 +518,21 @@ def process_mailbox():
                 # Not a candidate for forwarding (e.g., no subject match, or match but no contacts, or no subject pattern defined)
                 # This email should be moved to manual review if configured.
                 if manual_review_o365_folder:
-                    logger.info(f"Email ID {msg_id} (Subject: '{msg_subject}') not forwarded. Moving to '{manual_review_o365_folder.name}'.")
+                    logger.info(f"Email (Subject: '{msg_subject}') not forwarded. Moving to '{manual_review_o365_folder.name}'.")
+#                    logger.info(f"Email ID {msg_id} (Subject: '{msg_subject}') not forwarded. Moving to '{manual_review_o365_folder.name}'.")
                     msg_obj.mark_as_read()
                     msg_obj.move(manual_review_o365_folder)
                     manual_review_count += 1
                 else:
                     # No manual review folder, and not forwarded (and not a forwarding failure).
                     # This is the "catch-all" case where the original script would just mark as read.
-                    logger.info(f"Email ID {msg_id} (Subject: '{msg_subject}') not forwarded and no manual review folder. Marking as read.")
+                    logger.info(f"Email (Subject: '{msg_subject}') not forwarded and no manual review folder. Marking as read.")
+#                    logger.info(f"Email ID {msg_id} (Subject: '{msg_subject}') not forwarded and no manual review folder. Marking as read.")
                     try:
                         msg_obj.mark_as_read()
                     except Exception as e_mark_read:
-                        logger.error(f"Failed to mark email ID {msg_id} as read in catch-all: {e_mark_read}")
+                        logger.error(f"Failed to mark email as read in catch-all: {e_mark_read}")
+#                        logger.error(f"Failed to mark email ID {msg_id} as read in catch-all: {e_mark_read}")
 
     except ConnectionRefusedError:
         # This specific error is less likely with Graph API (HTTP-based)
