@@ -65,6 +65,9 @@ This Python script automates the processing of emails from an Outlook 365 mailbo
 ## Configuration
 
    Create a `.env` file in the script's directory by copying `.env.template`.<br>
+```bash
+cp docs/.env.template .env
+```
    Update the `.env` file with the necessary credentials and configuration:
 ```dotenv
 # --- Microsoft Graph API Authentication Settings ---
