@@ -11,9 +11,12 @@ from datetime import datetime, timedelta, timezone
 import os
 import csv
 import re
+import base64
 import logging
+import requests
 import json # For parsing Graph API error responses
 import sys
+# import base64 # No longer needed here if library handles encoding from bytes
 from dotenv import load_dotenv
 from O365 import Account, MSGraphProtocol
 from O365.message import Message as O365Message # For type hinting
@@ -25,8 +28,8 @@ LOG_DIR = "logs"
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
-log_file_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-log_file_name = os.path.join(LOG_DIR, f"process_emails_{log_file_timestamp}.log")
+# Use a fixed log file name to append to the same file on each run
+log_file_name = os.path.join(LOG_DIR, "process_emails.log")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -135,27 +138,27 @@ def load_privateid_mappings(csv_path: str) -> dict:
         raise
     return mappings
 
+
+
 def forward_email_message_graph(
-    target_o365_mailbox: O365Mailbox,
-    original_o365_msg: O365Message,
+    target_o365_mailbox,  # O365Mailbox
+    original_o365_msg,    # O365Message
     to_emails: list,
-    subject_prefix="Fwd: "
+    subject_prefix="Fwd: ",
+    account=None          # <-- NEW: optional O365 Account object
 ):
     """
     Forwards the original O365 Message object to specified recipients by creating a new email
-    and attaching the original as a .eml file.
-    The 'from_email' is implicitly the authenticated account (service principal or user).
+    and attaching the original as a .eml file. If the O365 library fails, falls back to a manual
+    Microsoft Graph API call.
     """
-    if not to_emails:
-        logger.warning("No recipient emails provided for forwarding.")
+    if not to_emails or not all(isinstance(addr, str) for addr in to_emails):
+        logger.warning("No valid recipient emails provided for forwarding.")
         return False
 
-    new_forward_msg = target_o365_mailbox.new_message()
-    new_forward_msg.to.add(to_emails)
-
+    # Compose subject and body
     original_subject = original_o365_msg.subject if original_o365_msg.subject else "No Subject"
-    new_forward_msg.subject = f"{subject_prefix}{original_subject}"
-
+    subject = f"{subject_prefix}{original_subject}"
     intro_text = (
         f"Hello,\n\nThe following email request regarding '{original_subject}' "
         f"(received from: {original_o365_msg.sender.address if original_o365_msg.sender else 'Unknown Sender'}) "
@@ -163,31 +166,137 @@ def forward_email_message_graph(
         "Regards,\nShareIT Auto-Processor\n\n"
         "--- Original Message Below ---"
     )
-    new_forward_msg.body = intro_text # O365 library handles plain text vs HTML
 
+    # Skip O365 library for now and go straight to manual Graph API
+    # The O365 library seems to have issues with the attachment format
+    logger.info("Using manual Graph API call for email forwarding...")
+
+    # Manual Graph API call
     try:
-        # Attach the original email as .eml
-        original_mime_content = original_o365_msg.get_mime_content() # bytes
-        if original_mime_content:
-            new_forward_msg.attachments.add_from_bytes(
-                name='forwarded_request.eml', # Name should be a string
-                content=original_mime_content,
-                media_type='message/rfc822'
+        # Use the global credentials directly instead of trying to extract from O365 connection
+        # This is more reliable for client credentials flow
+        
+        # Get a fresh token using MSAL or direct OAuth2 call
+        token_url = f"https://login.microsoftonline.com/{GRAPH_TENANT_ID}/oauth2/v2.0/token"
+        token_data = {
+            'client_id': GRAPH_CLIENT_ID,
+            'client_secret': GRAPH_CLIENT_SECRET,
+            'scope': 'https://graph.microsoft.com/.default',
+            'grant_type': 'client_credentials'
+        }
+        
+        logger.debug("Requesting fresh access token...")
+        token_response = requests.post(token_url, data=token_data, timeout=30)
+        
+        if token_response.status_code != 200:
+            logger.error(f"Failed to get access token: {token_response.status_code} {token_response.text}")
+            return False
+            
+        token_json = token_response.json()
+        access_token = token_json.get('access_token')
+        
+        if not access_token:
+            logger.error("No access token in response")
+            return False
+
+        # Build recipients - ensure proper format
+        to_recipients = []
+        for email in to_emails:
+            if email and isinstance(email, str):
+                to_recipients.append({
+                    "emailAddress": {
+                        "address": email.strip()
+                    }
+                })
+
+        if not to_recipients:
+            logger.error("No valid recipients for manual Graph API call.")
+            return False
+
+        # Get mailbox address for Graph API
+        mailbox_address = getattr(target_o365_mailbox, 'address', None) or TARGET_MAILBOX_EMAIL_TO_SCAN
+        if not mailbox_address:
+            logger.error("No mailbox address found for manual Graph API call.")
+            return False
+
+        # Build attachment (if possible)
+        attachments = []
+        try:
+            original_mime_content = original_o365_msg.get_mime_content()
+            if original_mime_content:
+                # Ensure the MIME content is properly encoded
+                if isinstance(original_mime_content, bytes):
+                    content_bytes = base64.b64encode(original_mime_content).decode('ascii')
+                else:
+                    content_bytes = base64.b64encode(original_mime_content.encode('utf-8')).decode('ascii')
+                
+                attachments.append({
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": "forwarded_request.eml",
+                    "contentType": "message/rfc822",
+                    "contentBytes": content_bytes
+                })
+                logger.debug("Successfully prepared .eml attachment")
+            else:
+                logger.warning("Could not retrieve MIME content for attachment")
+        except Exception as attach_e:
+            logger.warning(f"Failed to prepare attachment: {attach_e}. Sending without attachment.")
+            attachments = []
+
+        # Compose the message payload - ensure all required fields are present
+        message_payload = {
+            "message": {
+                "subject": subject,
+                "body": {
+                    "contentType": "Text",
+                    "content": intro_text
+                },
+                "toRecipients": to_recipients,
+                "importance": "normal"
+            },
+            "saveToSentItems": True
+        }
+        
+        # Add attachments if any
+        if attachments:
+            message_payload["message"]["attachments"] = attachments
+
+        # Temporary debug - remove after testing
+      ##  logger.info(f"Full message payload: {json.dumps(message_payload, indent=2)}")
+
+        url = f"https://graph.microsoft.com/v1.0/users/{mailbox_address}/sendMail"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        logger.debug(f"Sending Graph API request to: {url}")
+        logger.debug(f"Recipients: {[r['emailAddress']['address'] for r in to_recipients]}")
+        
+        response = requests.post(url, headers=headers, json=message_payload, timeout=60)
+        
+        if response.status_code in (200, 202):
+            logger.info(
+                f"Successfully sent forwarded email (Original Subject: {original_subject}) to: {', '.join(to_emails)} via manual Graph API."
             )
+            return True
         else:
-            logger.warning(f"Could not retrieve MIME content for original email UID {original_o365_msg.object_id}. Forwarding without .eml attachment.")
+            logger.error(
+                f"Manual Graph API error while sending forwarded email: {response.status_code}"
+            )
+            try:
+                error_details = response.json()
+                logger.error(f"Error details: {json.dumps(error_details, indent=2)}")
+            except:
+                logger.error(f"Error response text: {response.text}")
+            return False
 
+    except requests.exceptions.RequestException as req_e:
+        logger.error(f"Request exception during manual Graph API call: {req_e}")
+        return False
     except Exception as e:
-        logger.error(f"Error attaching original email as .eml (UID: {original_o365_msg.object_id}): {e}")
-        # Continue to send the wrapper email even if .eml attachment fails
-
-    try:
-        new_forward_msg.send()
-        logger.info(f"Successfully sent forwarded email (Original Subject: {original_subject}) to: {', '.join(to_emails)}")
-        return True
-    except Exception as e:
-        logger.error(f"Microsoft Graph API error while sending forwarded email: {e}")
-    return False
+        logger.error(f"Manual Graph API exception while sending forwarded email: {e}")
+        return False
 
 def ensure_mailbox_folder_exists_graph(o365_mailbox: O365Mailbox, folder_name: str):
     """Checks if a mailbox folder exists, and creates it if not. Returns the folder object."""
@@ -368,8 +477,12 @@ def process_mailbox():
 
             logger.info(f"Processing email ID {msg_id} - Subject: '{msg_subject}' From: '{msg_sender}' Date: '{msg_date}'")
             processed_count += 1
-            action_taken = False # Flag to track if email was moved or attempted to be forwarded
+            # By default, assume no action will be successfully completed that warrants changing the email's state.
+            # If forwarding fails, we want to skip marking as read or moving.
+
             matched_privateid = None
+            can_attempt_forward = False
+            contact_emails_for_forwarding = []
 
             if target_subject_regex:
                 match = target_subject_regex.search(msg_subject)
@@ -378,55 +491,48 @@ def process_mailbox():
                     if potential_pid in privateid_mappings:
                         matched_privateid = potential_pid
                         logger.info(f"Extracted privateid '{matched_privateid}' from subject using TARGET_SUBJECT pattern.")
+                        contact_emails_for_forwarding = privateid_mappings.get(matched_privateid, [])
+                        if contact_emails_for_forwarding:
+                            can_attempt_forward = True
+                        else:
+                            logger.warning(f"PrivateID '{matched_privateid}' found, but no contact emails configured. Email ID: {msg_id}")
                     else:
                         logger.warning(f"Subject matched TARGET_SUBJECT pattern, but extracted ID '{potential_pid}' not in mappings. Email ID: {msg_id}, Subject: '{msg_subject}'")
                 else:
                     logger.info(f"Email subject '{msg_subject}' did not match TARGET_SUBJECT pattern. Email ID: {msg_id}")
+            # else: No target_subject_regex, so can_attempt_forward remains False.
             
-            if matched_privateid and privateid_mappings.get(matched_privateid): # Ensure PID exists and has contacts
-                contact_emails = privateid_mappings.get(matched_privateid, [])
-                if contact_emails: # This check is somewhat redundant due to the outer if, but safe
-                    logger.info(f"Contact emails for '{matched_privateid}': {contact_emails}")
-                    if forward_email_message_graph(target_o365_mailbox, msg_obj, contact_emails):
-                        forwarded_count += 1
-                        action_taken = True
-                        msg_obj.mark_as_read() # Mark as read
-                        if processed_o365_folder:
-                            logger.info(f"Moving email ID {msg_id} to '{processed_o365_folder.name}'.")
-                            msg_obj.move(processed_o365_folder)
-                    else:
-                        logger.error(f"Failed to forward email for privateid '{matched_privateid}'. Email ID: {msg_id}")
-                        if manual_review_o365_folder:
-                            msg_obj.mark_as_read()
-                            msg_obj.move(manual_review_o365_folder)
-                            manual_review_count += 1
-                            action_taken = True # Action was taken (attempted move)
-                else: # Should not be reached if outer if is `privateid_mappings.get(matched_privateid)`
-                    logger.warning(f"No contact emails configured for privateid '{matched_privateid}' (this should be rare if mappings loaded). Email ID: {msg_id}")
-                    if manual_review_o365_folder:
-                            msg_obj.mark_as_read()
-                            msg_obj.move(manual_review_o365_folder)
-                            manual_review_count += 1
-                            action_taken = True
-            else: # No valid PrivateID found or no contacts for it
-                if not target_subject_regex or (target_subject_regex and not target_subject_regex.search(msg_subject)):
-                    if not target_subject_regex and msg_subject: # Log only if not using strict pattern or if strict pattern didn't match
-                            logger.info(f"No known or extractable privateid found in subject of email ID {msg_id} ('{msg_subject}').")
-                    elif not msg_subject:
-                            logger.info(f"Email ID {msg_id} has no subject.")
-
+            if can_attempt_forward:
+                logger.info(f"Attempting to forward email for privateid '{matched_privateid}' to: {contact_emails_for_forwarding}")
+                if forward_email_message_graph(target_o365_mailbox, msg_obj, contact_emails_for_forwarding, account=account):
+                    # Forwarding SUCCEEDED
+                    forwarded_count += 1
+                    msg_obj.mark_as_read()
+                    if processed_o365_folder:
+                        logger.info(f"Moving successfully forwarded email ID {msg_id} to '{processed_o365_folder.name}'.")
+                        msg_obj.move(processed_o365_folder)
+                    # Email successfully processed and handled.
+                else:
+                    # Forwarding FAILED
+                    logger.error(f"Failed to forward email for privateid '{matched_privateid}'. Email ID: {msg_id}. Email will be left unread in current folder.")
+                    # IMPORTANT: Do nothing else to the email (no mark_as_read, no move).
+                    # The loop will continue to the next email, leaving this one as is.
+            else:
+                # Not a candidate for forwarding (e.g., no subject match, or match but no contacts, or no subject pattern defined)
+                # This email should be moved to manual review if configured.
                 if manual_review_o365_folder:
+                    logger.info(f"Email ID {msg_id} (Subject: '{msg_subject}') not forwarded. Moving to '{manual_review_o365_folder.name}'.")
                     msg_obj.mark_as_read()
                     msg_obj.move(manual_review_o365_folder)
                     manual_review_count += 1
-                    action_taken = True
-
-            if not action_taken: # If no move or forward attempt happened, just mark as seen
-                try:
-                    msg_obj.mark_as_read()
-                    logger.debug(f"Marked email ID {msg_id} as SEEN (no other specific action taken).")
-                except Exception as e_mark_read:
-                    logger.error(f"Failed to mark email ID {msg_id} as read: {e_mark_read}")
+                else:
+                    # No manual review folder, and not forwarded (and not a forwarding failure).
+                    # This is the "catch-all" case where the original script would just mark as read.
+                    logger.info(f"Email ID {msg_id} (Subject: '{msg_subject}') not forwarded and no manual review folder. Marking as read.")
+                    try:
+                        msg_obj.mark_as_read()
+                    except Exception as e_mark_read:
+                        logger.error(f"Failed to mark email ID {msg_id} as read in catch-all: {e_mark_read}")
 
     except ConnectionRefusedError:
         # This specific error is less likely with Graph API (HTTP-based)
