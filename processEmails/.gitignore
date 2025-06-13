@@ -14,3 +14,9 @@ logs/
 # O365 token cache file
 o365_token.txt
 o365_token.json
+
+# Ignore CSV files globally
+*.csv
+
+# Keep the mappings directory even if empty
+!mappings/.gitkeep
