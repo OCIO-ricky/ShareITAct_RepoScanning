@@ -97,6 +97,22 @@ AZURE_DEVOPS_EXCEPTION_MAP = {
 MAX_QUICK_CONTENT_RETRIES_AZURE = 2
 QUICK_CONTENT_RETRY_DELAY_SECONDS_AZURE = 3
 
+# Simple mapping of common extensions to language names
+COMMON_EXTENSION_TO_LANGUAGE_MAP = {
+    # Programming Languages
+    '.py': 'Python', '.js': 'JavaScript', '.java': 'Java', '.cs': 'C#', '.ts': 'TypeScript',
+    '.go': 'Go', '.rb': 'Ruby', '.php': 'PHP', '.c': 'C', '.cpp': 'C++', '.h': 'C/C++ Header',
+    '.hpp': 'C++ Header', '.swift': 'Swift', '.kt': 'Kotlin', '.rs': 'Rust', '.scala': 'Scala', '.r': 'R', '.sas': 'SAS',
+    '.pl': 'Perl', '.sh': 'Shell', '.ps1': 'PowerShell', '.vb': 'Visual Basic', '.fs': 'F#',
+    # Markup/Data/Configuration
+    '.html': 'HTML', '.css': 'CSS', '.xml': 'XML', '.json': 'JSON', '.yaml': 'YAML', '.yml': 'YAML',
+    '.md': 'Markdown', '.txt': 'Text', '.sql': 'SQL', '.csv': 'CSV',
+    '.csproj': 'C# Project', '.vbproj': 'VB.NET Project', '.fsproj': 'F# Project', '.sln': 'Solution File',
+    '.tf': 'Terraform', '.bicep': 'Bicep',
+    # Notebooks
+    '.ipynb': 'Jupyter Notebook',
+}
+
 def is_placeholder_token(token: Optional[str]) -> bool:
     """Checks if the Azure DevOps PAT is missing or a known placeholder."""
     return not token or token == PLACEHOLDER_AZURE_TOKEN
@@ -256,6 +272,69 @@ def _fetch_tags_azure_devops(
         logger_instance.error(f"Unexpected error fetching tags for repo ID {repo_id}: {e}", exc_info=True)
     return tag_names
 
+def _get_repository_languages_azure_devops(
+    git_client: GitClient,
+    repo_id: str,
+    project_name: str,
+    repo_default_branch: Optional[str],
+    dynamic_post_api_call_delay_seconds: float,
+    logger_instance: logging.LoggerAdapter
+) -> List[str]:
+    """
+    Fetches the list of files in a repository and determines the programming languages
+    based on file extensions.
+    """
+    if not AZURE_SDK_AVAILABLE:
+        return []
+    if not repo_default_branch:
+        logger_instance.warning(f"Cannot fetch languages for repo ID {repo_id} in {project_name}: No default branch identified.")
+        return []
+
+    # Configuration for limiting files scanned for languages
+    MAX_FILES_TO_SCAN_FOR_LANGUAGES = 2000 # Stop after scanning this many files. Could be made configurable.
+
+    detected_languages = set()
+    try:
+        if dynamic_post_api_call_delay_seconds > 0:
+            logger_instance.debug(f"Applying SYNC post-API call delay (get_items for languages): {dynamic_post_api_call_delay_seconds:.2f}s")
+            time.sleep(dynamic_post_api_call_delay_seconds)
+
+        items = git_client.get_items(
+            repository_id=repo_id,
+            project=project_name,
+            scope_path="/",
+            recursion_level="full", # Fetch all items recursively
+            version_descriptor={'version': repo_default_branch}
+        )
+
+        files_scanned_count = 0
+        if items:
+            for item in items:
+                if item.git_object_type == 'blob' and item.path: # It's a file
+                    files_scanned_count += 1
+                    _, ext = os.path.splitext(item.path.lower())
+                    if ext in COMMON_EXTENSION_TO_LANGUAGE_MAP:
+                        detected_languages.add(COMMON_EXTENSION_TO_LANGUAGE_MAP[ext])
+                
+                if files_scanned_count >= MAX_FILES_TO_SCAN_FOR_LANGUAGES:
+                    logger_instance.info(f"Reached max files ({MAX_FILES_TO_SCAN_FOR_LANGUAGES}) to scan for languages in repo ID {repo_id} (Project: {project_name}). Stopping language scan for this repo.")
+                    break
+            
+            logger_instance.debug(f"Detected languages for repo ID {repo_id} (Project: {project_name}) after scanning up to {files_scanned_count} files: {list(detected_languages)}")
+        else:
+            logger_instance.debug(f"No items found in repo ID {repo_id} for language detection (or repo is empty).")
+
+    except AzureDevOpsServiceError as e:
+        if "TF401019" in str(e) or (hasattr(e, 'status_code') and e.status_code == 404): # Item not found / Empty repo
+            logger_instance.info(f"Repo ID {repo_id} in {project_name} might be empty or default branch content inaccessible for language detection: {e}")
+        else:
+            logger_instance.error(f"Azure DevOps API error fetching items for language detection for repo ID {repo_id}: {e}", exc_info=False)
+    except Exception as e:
+        logger_instance.error(f"Unexpected error fetching items for language detection for repo ID {repo_id}: {e}", exc_info=True)
+
+    return sorted(list(detected_languages))
+
+
 def _process_single_azure_devops_repository(
     git_client: GitClient, 
     core_client: CoreClient, 
@@ -387,11 +466,18 @@ def _process_single_azure_devops_repository(
             dynamic_post_api_call_delay_seconds=dynamic_post_api_call_delay_seconds, logger_instance=current_logger
         )
 
+        repo_languages = _get_repository_languages_azure_devops(
+            git_client=git_client, repo_id=repo.id, project_name=project_name,
+            repo_default_branch=repo.default_branch,
+            dynamic_post_api_call_delay_seconds=dynamic_post_api_call_delay_seconds,
+            logger_instance=current_logger
+        )
+
         repo_data.update({
             "description": repo.project.description if repo.project and repo.project.description else "",
             "repositoryURL": repo.web_url, "homepageURL": repo.web_url, "downloadURL": None, "vcs": "git",
             "repositoryVisibility": repo_visibility, "status": "development", "version": "N/A", "laborHours": 0,
-            "languages": [], "tags": [], 
+            "languages": repo_languages, "tags": [], # Populate with detected languages
             "date": {"created": created_at_iso, "lastModified": pushed_at_iso},
             "permissions": {"usageType": None, "exemptionText": None, "licenses": []}, # readme_content_str was a typo
             "contact": {}, "contractNumber": None, "readme_content": readme_content, # Use the fetched readme_content
@@ -579,7 +665,7 @@ def _get_repo_stubs_and_estimate_api_calls(
                 # Avoid live SHA fetch here to keep estimation light.
                 # The main fetch_repositories loop will do the accurate SHA check.
                 cached_last_modified_str = cached_entry.get('date', {}).get('lastModified')
-                # Project's last_update_time is a rough proxy for repo's pushed_at for ADO stubs
+                # Project's last_update_time is a very rough proxy for repo's pushed_at for ADO stubs
                 stub_last_activity_dt = repo_stub.project.last_update_time if repo_stub.project else None
                 if stub_last_activity_dt and cached_last_modified_str:
                     try:
@@ -596,7 +682,8 @@ def _get_repo_stubs_and_estimate_api_calls(
                 # account for the SHA call that fetch_repositories will make.
                 if not made_sha_call_in_estimation:
                     estimated_api_calls_for_target += 1 # For the SHA call in fetch_repositories
-                estimated_api_calls_for_target += 5 # Adjusted metadata: project details, README, CODEOWNERS, tags, buffer
+                # Metadata: project details, README, CODEOWNERS, tags, file list (languages), buffer
+                estimated_api_calls_for_target += 6
                 if hours_per_commit is not None and hours_per_commit > 0:
                     estimated_api_calls_for_target += getattr(cfg_obj, 'ESTIMATED_LABOR_CALLS_PER_REPO_AZURE_ENV',
                                                               getattr(cfg_obj, 'ESTIMATED_LABOR_CALLS_PER_REPO_ENV', 3))
