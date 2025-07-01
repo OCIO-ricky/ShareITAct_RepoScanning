@@ -907,8 +907,20 @@ def process_repository_exemptions(
     if not isinstance(processed_repo_data.get('contact'), dict):
         processed_repo_data['contact'] = {}
 
-    is_private_or_internal = processed_repo_data.get('repositoryVisibility', '').lower() in ['private', 'internal']    
-    
+    # Determine repository visibility with a fallback for older Azure DevOps/TFS versions
+    is_private_or_internal = False
+    visibility_val = processed_repo_data.get('repositoryVisibility', '').lower()
+    platform_val = processed_repo_data.get('platform', '')
+
+    if visibility_val in ['private', 'internal']:
+        is_private_or_internal = True
+    elif platform_val == 'azure_devops' and 'repositoryVisibility' not in processed_repo_data:
+        # Fallback for older on-prem Azure DevOps Server / TFS versions that may not
+        # return a visibility field in the API response. In this context, all repos
+        # are effectively private/internal to the organization.
+        is_private_or_internal = True
+        current_logger.warning(f"Repo '{repo_name}': 'repositoryVisibility' field not found. Assuming 'private' as a safe default for this Azure DevOps repository.")
+
     if not is_full_processing_needed:
         current_logger.info(
             f"For repo '{repo_name}', using pre-existing/cached usageType: "

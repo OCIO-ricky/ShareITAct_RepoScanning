@@ -20,8 +20,10 @@ For comprehensive business-side documentation and process details, please refer 
 This tool directly supports compliance with the SHARE IT Act by:
 
 -   **Automated Inventory Creation:** Scans repositories across **GitHub, GitLab, and Azure DevOps (ADO)** to automatically gather metadata.  Other than ADO, graphQL is used to more efficiently (faster) query these repositories and to reduce the number of API calls and associated rate limit restrictions. Unfortunately, ADO does not support graphQL and so its REST API is still used instead.
--   **Compliant Metadata Generation:** Produces `code.json` files that are validated against the **code.gov schema v2.0**, meeting federal requirements.
--   **Exemption Assistance:** Utilizes AI-driven insights to infer potential code sharing exemptions based on repository content and metadata.
+-   **Compliant Metadata Generation:** Produces `code.json` files that are validated against the **code.gov schema v2.0**, meeting federal requirements. 
+    > **Note on License Detection:** For GitHub and GitLab, the tool leverages the platform's built-in license detection. For Azure DevOps, which does not provide this feature via its API, the tool manually searches for and verifies the existence of a license file within the repository.
+    > **Note on README Parsing:** For all platforms, including Azure DevOps, the tool fetches and parses the `README.md` file. This is critical for detecting manual exemption markers, inferring metadata (like version or organization), and providing content for AI-driven analysis.
+-   **Exemption Assistance:** Utilizes AI-driven insights to infer potential code sharing exemptions based on repository content (like `README.md`) and metadata.
 -   **Comprehensive Data Collection:** Extracts detailed information including project descriptions, languages, licenses, and estimates labor hours from commit history.
 -   **Centralized Reporting:** Consolidates all generated `code.json` files, exemption logs, and private ID mappings into a structured output for easy review and agency-wide reporting.
 -   **Flexible Deployment:** Offers execution via Docker (recommended for concurrent scans and consistency) or as a standalone CLI tool.
