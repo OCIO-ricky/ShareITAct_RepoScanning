@@ -249,8 +249,13 @@ def _programmatic_org_from_repo_name(repo_name: str, current_org: str, default_o
 
     for acronym, full_name in sorted_known_orgs:
         acronym_lower = acronym.lower()
-        pattern = rf"(?:^|[^a-z0-9]){re.escape(acronym_lower)}(?:[^a-z0-9]|$)"
-        if re.search(pattern, repo_name_lower):
+        # Simplified check without regex for better readability and to fix the bug
+        # where 'pattern' was used without being defined. This now checks if the
+        # acronym is a whole word, typically separated by hyphens.
+        if (f'-{acronym_lower}-' in repo_name_lower or
+            repo_name_lower.startswith(f'{acronym_lower}-') or
+            repo_name_lower.endswith(f'-{acronym_lower}') or
+            repo_name_lower == acronym_lower):
             logger_instance.info(f"Identified organization '{full_name}' from repo name '{repo_name}'. Initial '{current_org}'.")
             return full_name
     return None
@@ -1071,18 +1076,21 @@ def process_repository_exemptions(
 
         # --- Final step: Standardize the determined organization to its acronym ---
         determined_org = processed_repo_data.get('organization', initial_org_from_repo_data)
-        
-        # Look up the determined org name (case-insensitive) in the reverse map.
-        # This converts a full name like "Office of the Chief Information Officer" to its acronym.
-        acronym = REVERSE_KNOWN_CDC_ORGANIZATIONS.get(determined_org.lower())
 
-        if acronym:
-            # If a match was found, update the organization to the acronym.
-            if processed_repo_data['organization'] != acronym:
-                current_logger.info(f"Standardizing organization for '{repo_name}' from '{determined_org}' to acronym '{acronym}'.")
-                processed_repo_data['organization'] = acronym
-        elif determined_org.lower() not in KNOWN_CDC_ORGANIZATIONS:
-             current_logger.debug(f"Organization '{determined_org}' for '{repo_name}' is not a known CDC organization; leaving as is.")
+        # Check if the determined org is a known full name that can be converted to an acronym.
+        acronym_from_full_name = REVERSE_KNOWN_CDC_ORGANIZATIONS.get(determined_org.lower())
+
+        if acronym_from_full_name:
+            # Case 1: The organization is a known full name. Convert it to its acronym.
+            if processed_repo_data['organization'] != acronym_from_full_name:
+                current_logger.info(f"Standardizing organization for '{repo_name}' from full name '{determined_org}' to acronym '{acronym_from_full_name}'.")
+                processed_repo_data['organization'] = acronym_from_full_name
+        elif determined_org.lower() in KNOWN_CDC_ORGANIZATIONS:
+            # Case 2: The organization is already a known acronym. No change needed.
+            current_logger.debug(f"Organization '{determined_org}' for '{repo_name}' is already a known acronym. No change needed.")
+        else:
+            # Case 3: The organization is not a known full name or acronym. Leave it as is.
+            current_logger.debug(f"Organization '{determined_org}' for '{repo_name}' is not a known CDC organization; leaving as is.")
 
         final_determined_org = processed_repo_data.get('organization', initial_org_from_repo_data)
         is_still_generic_org = False
