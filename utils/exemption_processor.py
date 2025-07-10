@@ -138,6 +138,9 @@ KNOWN_CDC_ORGANIZATIONS = {
     "cdc": "Centers for Disease Control and Prevention",  # make this the last item 
 }
 
+# Create a reverse mapping for easy lookup of acronym by full name (case-insensitive)
+REVERSE_KNOWN_CDC_ORGANIZATIONS = {v.lower(): k for k, v in KNOWN_CDC_ORGANIZATIONS.items()}
+
 AI_DELAY_ENABLED = float(os.getenv("AI_DELAY_ENABLED", 0.0))
 logger.info(f"Using AI_DELAY_ENABLED value: {AI_DELAY_ENABLED}")
 
@@ -1065,6 +1068,21 @@ def process_repository_exemptions(
                 current_logger.info(f"Organization for '{repo_name}' is '{processed_repo_data.get('organization', '')}', not calling AI for organization.")
         else:
             current_logger.debug(f"AI is disabled for organization inference for '{repo_name}' (config or module status).")
+
+        # --- Final step: Standardize the determined organization to its acronym ---
+        determined_org = processed_repo_data.get('organization', initial_org_from_repo_data)
+        
+        # Look up the determined org name (case-insensitive) in the reverse map.
+        # This converts a full name like "Office of the Chief Information Officer" to its acronym.
+        acronym = REVERSE_KNOWN_CDC_ORGANIZATIONS.get(determined_org.lower())
+
+        if acronym:
+            # If a match was found, update the organization to the acronym.
+            if processed_repo_data['organization'] != acronym:
+                current_logger.info(f"Standardizing organization for '{repo_name}' from '{determined_org}' to acronym '{acronym}'.")
+                processed_repo_data['organization'] = acronym
+        elif determined_org.lower() not in KNOWN_CDC_ORGANIZATIONS:
+             current_logger.debug(f"Organization '{determined_org}' for '{repo_name}' is not a known CDC organization; leaving as is.")
 
         final_determined_org = processed_repo_data.get('organization', initial_org_from_repo_data)
         is_still_generic_org = False
