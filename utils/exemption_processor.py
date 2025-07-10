@@ -105,8 +105,9 @@ load_dotenv()
 
 
 KNOWN_CDC_ORGANIZATIONS = {
-    "cdc": "Centers for Disease Control and Prevention", "od": "Office of the Director",
-    "om": "Office of Mission Support", "ocoo": "Office of the Chief Operating Officer",
+    "od": "Office of the Director",
+    "om": "Office of Mission Support", 
+    "ocoo": "Office of the Chief Operating Officer",
     "oadc": "Office of the Associate Directory of Communications",
     "ocio": "Office of the Chief Information Officer",
     "oed": "Office of Equal Employment Opportunity and Workplace Equity",
@@ -134,6 +135,7 @@ KNOWN_CDC_ORGANIZATIONS = {
     "cfa": "Center for Forecasting and Outbreak Analytics",
     "ophdst": "Office of Public Health Data, Surveillance, and Technology",
     "amd": "Office of Advanced Molecular Detection", "oamd": "Office of Advanced Molecular Detection",
+    "cdc": "Centers for Disease Control and Prevention",  # make this the last item 
 }
 
 AI_DELAY_ENABLED = float(os.getenv("AI_DELAY_ENABLED", 0.0))
