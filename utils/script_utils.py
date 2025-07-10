@@ -17,6 +17,7 @@ from typing import List, Optional, Dict, Any
 from .config import Config
 from .exemption_logger import ExemptionLogger
 from .privateid_manager import RepoIdMappingManager
+from .exemption_processor import KNOWN_CDC_ORGANIZATIONS, REVERSE_KNOWN_CDC_ORGANIZATIONS
 from .logging_config import ContextualLogFormatter # Import ContextualLogFormatter
 
 # --- Check for packaging library for version parsing ---
@@ -392,6 +393,23 @@ def process_and_finalize_repo_data_list(
             # _is_generic_organization flag is set by exemption_processor
             if repo_data_item.get('_is_generic_organization', False):
                 repo_data_item['organization'] = cfg.AGENCY_NAME
+
+            # --- Standardize Organization to Acronym ---
+            # This is the new, centralized location for this logic.
+            determined_org = repo_data_item.get('organization', 'UnknownOrg')
+            acronym_from_full_name = REVERSE_KNOWN_CDC_ORGANIZATIONS.get(determined_org.lower())
+
+            if acronym_from_full_name:
+                # Case 1: It's a known full name. Convert it to its acronym.
+                if repo_data_item['organization'] != acronym_from_full_name:
+                    target_logger.info(f"Standardizing organization for '{repo_name}' from full name '{determined_org}' to acronym '{acronym_from_full_name}'.", extra={'org_group': repo_org_group_context})
+                    repo_data_item['organization'] = acronym_from_full_name
+            elif determined_org.lower() in KNOWN_CDC_ORGANIZATIONS:
+                # Case 2: It's already a known acronym. No change needed.
+                pass
+            else:
+                # Case 3: It's not a known org. Leave it as is.
+                pass
 
             _finalize_status_version_dates(repo_data_item, target_logger)
             final_cleaned_item = _cleanup_final_repo_data(repo_data_item)

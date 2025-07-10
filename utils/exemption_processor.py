@@ -1074,23 +1074,6 @@ def process_repository_exemptions(
         else:
             current_logger.debug(f"AI is disabled for organization inference for '{repo_name}' (config or module status).")
 
-        # --- Final step: Standardize the determined organization to its acronym ---
-        determined_org = processed_repo_data.get('organization', initial_org_from_repo_data)
-
-        # Check if the determined org is a known full name that can be converted to an acronym.
-        acronym_from_full_name = REVERSE_KNOWN_CDC_ORGANIZATIONS.get(determined_org.lower())
-
-        if acronym_from_full_name:
-            # Case 1: The organization is a known full name. Convert it to its acronym.
-            if processed_repo_data['organization'] != acronym_from_full_name:
-                current_logger.info(f"Standardizing organization for '{repo_name}' from full name '{determined_org}' to acronym '{acronym_from_full_name}'.")
-                processed_repo_data['organization'] = acronym_from_full_name
-        elif determined_org.lower() in KNOWN_CDC_ORGANIZATIONS:
-            # Case 2: The organization is already a known acronym. No change needed.
-            current_logger.debug(f"Organization '{determined_org}' for '{repo_name}' is already a known acronym. No change needed.")
-        else:
-            # Case 3: The organization is not a known full name or acronym. Leave it as is.
-            current_logger.debug(f"Organization '{determined_org}' for '{repo_name}' is not a known CDC organization; leaving as is.")
 
         final_determined_org = processed_repo_data.get('organization', initial_org_from_repo_data)
         is_still_generic_org = False
