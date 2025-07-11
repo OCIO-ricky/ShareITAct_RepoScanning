@@ -61,7 +61,7 @@ class Config:
         self.PEEK_AHEAD_THRESHOLD_DELAY_SECONDS_ENV = float(os.getenv("PEEK_AHEAD_THRESHOLD_DELAY_SECONDS", "0.5")) # Only peek if standard delay is > this
         self.CACHE_HIT_SUBMISSION_DELAY_SECONDS_ENV = float(os.getenv("CACHE_HIT_SUBMISSION_DELAY_SECONDS", "0.05")) # Delay for likely cache hits
 
-        self.FIXED_PRIVATE_REPO_FILTER_DATE_ENV = os.getenv("FIXED_PRIVATE_REPO_FILTER_DATE", "2021-04-21") # Default fixed date
+        self.FIXED_PRIVATE_REPO_FILTER_DATE_ENV = os.getenv("FIXED_PRIVATE_REPO_FILTER_DATE", "2025-06-21") # Default fixed date
 
         # --- Platform-specific target lists from .env (used if not overridden by CLI) ---
         self.GITHUB_ORGS_ENV = [org.strip() for org in os.getenv("GITHUB_ORGS", "").split(',') if org.strip()]
