@@ -76,10 +76,10 @@ services:
     depends_on:
      scan-github:
        condition: service_completed_successfully
-     scan-gitlab:
-       condition: service_completed_successfully
-     scan-azure:
-        condition: service_completed_successfully
+    #  scan-gitlab:
+    #    condition: service_completed_successfully
+    #  scan-azure:
+    #     condition: service_completed_successfully
     environment:
       - AI_ENABLED=false
       - TZ=America/New_York

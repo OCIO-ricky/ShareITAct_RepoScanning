@@ -79,7 +79,7 @@ ANSI_RESET = "\x1b[0m"
 
 # --- Define Exemption Codes as Constants ---
 EXEMPT_BY_LAW = "exemptByLaw"
-EXEMPT_NON_CODE = "exemptNonCode"
+EXEMPT_NON_CODE = "exemptByCIO"
 EXEMPT_BY_NATIONAL_SECURITY = "exemptByNationalSecurity"
 EXEMPT_BY_AGENCY_SYSTEM = "exemptByAgencySystem"
 EXEMPT_BY_MISSION_SYSTEM = "exemptByMissionSystem"
