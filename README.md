@@ -308,5 +308,4 @@ This is useful for quick tests and debugging.
 
 
 ## 🛠 Maintainers
-- CDC / Enterprise DevSecOps (EDSO) - [Boris Ning](mailto:tpz7@cdc.gov?subject=Question%20on%20theShareITAct_RepoScanning&body=Let's%20discuss...)
 - CDC /EA [Ricky F](https://github.com/OCIO-ricky)
