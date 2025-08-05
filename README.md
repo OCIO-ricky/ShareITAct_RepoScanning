@@ -20,6 +20,8 @@ For comprehensive business-side documentation and process details, please refer 
 This tool directly supports compliance with the SHARE IT Act by:
 
 -   **Automated Inventory Creation:** Scans repositories across **GitHub, GitLab, and Azure DevOps (ADO)** to automatically gather metadata.  Other than ADO, graphQL is used to more efficiently (faster) query these repositories and to reduce the number of API calls and associated rate limit restrictions. Unfortunately, ADO does not support graphQL and so its REST API is still used instead.
+> [!NOTE]
+> Unfortunately, **the integration with Azure DevOps repositories was not completed nor tested**.  We made the decision to replace this project with a different source code altogether for scanning the CDC repositories. See @ [ShareIT_Act](https://github.com/CDCgov/ShareIT-Act).
 -   **Compliant Metadata Generation:** Produces `code.json` files that are validated against the **code.gov schema v2.0**, meeting federal requirements. 
     > **Note on License Detection:** For GitHub and GitLab, the tool leverages the platform's built-in license detection. For Azure DevOps, which does not provide this feature via its API, the tool manually searches for and verifies the existence of a license file within the repository.
     > **Note on README Parsing:** For all platforms, including Azure DevOps, the tool fetches and parses the `README.md` file. This is critical for detecting manual exemption markers, inferring metadata (like version or organization), and providing content for AI-driven analysis.
